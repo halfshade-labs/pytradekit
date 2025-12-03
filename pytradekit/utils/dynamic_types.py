@@ -546,7 +546,6 @@ class BybitRestful(Enum):
     balance_list = 'list'
     balance_coin = 'coin'
     balance_walletbalance = 'walletBalance'
-
     order_buy = 'Buy'
     order_side = 'side'
     order_type = 'orderType'
