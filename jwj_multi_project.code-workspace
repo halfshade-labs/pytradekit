@@ -1,0 +1,24 @@
+{
+	"folders": [
+		{
+			"name": "pytradekit",
+			"path": "./pytradekit"
+		},
+		{
+			"name": "new_monitor", 
+			"path": "./new_monitor"
+		},
+		{
+			"name": "market_making",
+			"path": "./market_making"
+		}
+	],
+	"settings": {
+		"python.defaultInterpreterPath": "./pytradekit/venv/bin/python",
+		"python.analysis.extraPaths": [
+			"./pytradekit",
+			"./new_monitor", 
+			"./market_making"
+		]
+	}
+}

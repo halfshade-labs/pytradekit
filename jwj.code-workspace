@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../new_monitor"
+		},
+		{
+			"path": "../market_making"
+		}
+	],
+	"settings": {}
+}

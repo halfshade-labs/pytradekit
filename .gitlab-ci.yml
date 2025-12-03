@@ -1,0 +1,40 @@
+stages:
+  - test
+  - notify_success
+  - notify_failure
+
+test_job:
+  image: python:3.11
+  stage: test
+  script:
+    - echo "Running tests..."
+    - pip install --upgrade pip setuptools wheel
+    - pip install -r requirements.txt
+    - export PYTHONPATH=$PYTHONPATH:$(pwd)
+    - pytest tests/
+  only:
+    - green
+
+notify_success:
+  stage: notify_success
+  script:
+    - >
+      curl -X POST -H 'Content-type: application/json' --data '{"text":"Pytradekit merged and Passed Tests. Please pull.  "}'
+  when: on_success
+  only:
+    - green
+
+notify_failure:
+  stage: notify_failure
+  script:
+    - >
+      curl -X POST -H 'Content-type: application/json' --data '{"text":"Pytradekit tests fail!!!."}' 
+  when: on_failure
+  only:
+    - green
+
+workflow:
+  rules:
+    - if: $CI_COMMIT_BRANCH == "yongtao_work"
+      when: never
+    - when: always
