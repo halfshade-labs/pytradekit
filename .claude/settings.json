@@ -1,0 +1,61 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep:*)",
+      "Bash(ls:*)",
+      "Bash(source:*)",
+      "Bash(find:*)",
+      "Bash(mv:*)",
+      "Bash(mkdir:*)",
+      "Bash(tree:*)",
+      "Bash(touch:*)",
+      "Bash(cat:*)",
+      "Bash(pytest:*)",
+      "Bash(python:*)",
+      "Bash(python3:*)",
+      "Bash(python -m:*)",
+      "Bash(python3 -m:*)",
+      "Bash(python -m pytest:*)",
+      "Bash(python3 -m pytest:*)",
+      "WebFetch(domain:docs.anthropic.com)",
+      "WebFetch(domain:github.com)",
+
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(git pull:*)",
+      "Bash(git checkout:*)",
+      "Bash(git branch:*)",
+
+      "Bash(docker ps:*)",
+      "Bash(docker logs:*)",
+      "Bash(docker exec:*)",
+
+      "Bash(supervisorctl status:*)"
+    ],
+    "deny": [
+      "Bash(rm:*)",
+      "Bash(sudo:*)",
+      "Bash(chmod:*)",
+      "Bash(chown:*)",
+      "Bash(reboot:*)",
+      "Bash(shutdown:*)",
+      "Bash(docker restart:*)",
+      "Bash(docker stop:*)",
+      "Bash(docker start:*)",
+      "Bash(docker build:*)",
+      "Bash(docker-compose:*)",
+      "Bash(git merge:*)",
+      "Bash(git stash:*)",
+      "Bash(git rebase:*)",
+      "Bash(supervisorctl restart:*)",
+      "Bash(supervisorctl stop:*)",
+      "Bash(supervisorctl start:*)",
+      "Bash(supervisorctl update:*)",
+      "Bash(supervisorctl reread:*)"
+    ]
+  }
+}
