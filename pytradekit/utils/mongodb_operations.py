@@ -692,7 +692,7 @@ class MongodbOperations:
     def read_swap_position_risk(self, inst_code, account_id, time_span=None, limit=1):
         params = {}
         if inst_code:
-            params[SwapPositionAttribute.inst_code.name] = inst_code
+            params[SwapPositionAttribute.inst_code.name] = inst_code## TODO swap全部换成perp
         if account_id:
             params[SwapPositionAttribute.account_id.name] = account_id
         if time_span:
