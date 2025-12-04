@@ -22,8 +22,8 @@ from pytradekit.utils.static_types import Database, OrderAttribute, TradeAttribu
     LastAggtradeAttribute, InstcodeBasicAttribute, \
     OrderBookAttribute, OrderDepthRatioAttribute, RankAttribute, BalanceAttribute, DepositWithdrawAttribute, \
     InventoryAttribute, DepthAttribute, PnlAttribute, VolumeFeeAttribute, BudgetAttribute, UserLoanAttribute, \
-    MaxInventoryAttribute
-from pytradekit.utils.dynamic_types import DepositWithdrawAuxiliary, SlackUser, DuplicateFields, ExchangeId
+    MaxInventoryAttribute, ArbitragePoolsReportAttribute
+from pytradekit.utils.dynamic_types import DepositWithdrawAuxiliary, DuplicateFields, ExchangeId
 from pytradekit.utils.custom_types import InstCode
 from pytradekit.utils.exceptions import NoDataException
 
@@ -692,7 +692,7 @@ class MongodbOperations:
     def read_swap_position_risk(self, inst_code, account_id, time_span=None, limit=1):
         params = {}
         if inst_code:
-            params[SwapPositionAttribute.inst_code.name] = inst_code
+            params[SwapPositionAttribute.inst_code.name] = inst_code## TODO swap全部换成perp
         if account_id:
             params[SwapPositionAttribute.account_id.name] = account_id
         if time_span:
@@ -1274,3 +1274,60 @@ class MongodbOperations:
         update = {'$set': update_data}
         self.client[Database.raw_market.name][f'{exchange_id}_{Database.inst_code_basic.name}'].update_one(params,
                                                                                                            update)
+
+    def insert_arbitrage_pools_report(self, report):
+        """
+        存储套利交易池报告
+        
+        Args:
+            report: ArbitragePoolsReport 实例
+        """
+        collection_path = CollectionPath(
+            db_name=Database.cross_exchange_arbitrage.name,
+            collection_name="arbitrage_pools_report"
+        )
+        
+        # 转换为字典，确保 report 字段中的 ArbitragePool 对象也被转换
+        document = report.to_dict()
+        
+        # 生成 _id，保证同日同时间窗口唯一
+        document_id = f"{report.day}_{report.open_time}_{report.close_time}"
+        document["_id"] = document_id
+        
+        self.insert_data(document, collection_path)
+        if self.logger:
+            self.logger.info(f"Inserted arbitrage pools report: {document_id}")
+
+    def read_arbitrage_pools_reports(self, day: str, latest: bool = True):
+        """
+        读取套利交易池报告
+        
+        Args:
+            day: 报告日期 YYYY-MM-DD
+            latest: 是否只返回最新的报告
+        
+        Returns:
+            dict 或 list[dict]: 报告数据
+        """
+        collection_path = CollectionPath(
+            db_name=Database.cross_exchange_arbitrage.name,
+            collection_name=Database.arbitrage_pools_report.name
+        )
+        
+        collection = self.client[collection_path.db_name][collection_path.collection_name]
+        
+        query = {ArbitragePoolsReportAttribute.day.name: day}
+        cursor = collection.find(query).sort(ArbitragePoolsReportAttribute.event_time_ms.name, -1)
+        
+        if latest:
+            cursor = cursor.limit(1)
+        
+        results = []
+        for doc in cursor:
+            # 移除 MongoDB 的 _id 字段，避免序列化问题
+            doc.pop("_id", None)
+            results.append(doc)
+        
+        if latest and results:
+            return results[0]
+        return results

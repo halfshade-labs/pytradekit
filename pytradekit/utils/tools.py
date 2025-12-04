@@ -433,9 +433,9 @@ def unzip_to_df(zip_file_path: str):
 def get_mongo(config, logger, running_mode):
     def get_mongodb_url(config, running_mode=RunningMode.testing_flag.name):
         if running_mode != RunningMode.development_flag.name:
-            return encrypt_decrypt(config.private[Env.mongodb_url.name], 'decrypt')
+            return encrypt_decrypt(config.private[Env.MONGODB_URL.name], 'decrypt')
         else:
-            return encrypt_decrypt(config.private[Env.hb_test_mongodb_url.name], 'decrypt')
+            return encrypt_decrypt(config.private[Env.MONGODB_URL.name], 'decrypt')
 
     mongodb_url = get_mongodb_url(config, running_mode=running_mode)
     mongo = MongodbOperations(mongodb_url, logger=logger)

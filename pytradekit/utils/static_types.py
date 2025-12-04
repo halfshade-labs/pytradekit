@@ -45,6 +45,9 @@ class Database(Enum):
     daily_order = auto()
     loan = auto()
     max_inventory = auto()
+    cross_exchange_arbitrage = auto()
+    arbitrage_pools_report = auto()
+
 
 
 class OrderAttribute(Enum):
@@ -1050,7 +1053,7 @@ class ArbitragePoolsReportAttribute(Enum):
     open_time = auto()
     close_time = auto()
     day = auto()
-    report = auto() # [{inst_code: amount}] amount是24h成交额 单位是USDT 降序排序
+    report = auto()  # list[ArbitragePool]: 套利池列表，每个元素包含 coin、short_leg、long_legs 等信息
     other = auto()
 
 
@@ -1066,4 +1069,21 @@ class ArbitragePoolsReport:
         self.other = other if other is not None else {}
 
     def to_dict(self):
-        return {slot: getattr(self, slot) for slot in self.__slots__}
+        """转换为字典，用于 MongoDB 存储"""
+        result = {}
+        for slot in self.__slots__:
+            value = getattr(self, slot)
+            # 如果 report 字段包含 ArbitragePool 对象，需要转换为字典
+            if slot == "report" and value:
+                # 假设 report 是 list[ArbitragePool] 或 list[dict]
+                if isinstance(value, list) and len(value) > 0:
+                    # 检查第一个元素是否是 ArbitragePool 对象（有 to_mongo_dict 方法）
+                    if hasattr(value[0], "to_mongo_dict"):
+                        result[slot] = [pool.to_mongo_dict() for pool in value]
+                    else:
+                        result[slot] = value
+                else:
+                    result[slot] = value
+            else:
+                result[slot] = value
+        return result

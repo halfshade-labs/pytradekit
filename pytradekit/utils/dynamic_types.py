@@ -3,10 +3,8 @@ from pytradekit.utils.static_types import TradeAttribute, OrderAttribute
 
 
 class Env(Enum):
-    mongodb_url = auto()
-    hb_test_mongodb_url = auto()
-    redis_url = auto()
-    hb_test_redis_url = auto()
+    MONGODB_URL = auto()
+    REDIS_URL = auto()
 
 
 class Api(Enum):
@@ -546,7 +544,6 @@ class BybitRestful(Enum):
     balance_list = 'list'
     balance_coin = 'coin'
     balance_walletbalance = 'walletBalance'
-
     order_buy = 'Buy'
     order_side = 'side'
     order_type = 'orderType'
