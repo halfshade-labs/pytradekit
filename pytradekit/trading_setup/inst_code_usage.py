@@ -185,6 +185,9 @@ def convert_coin_to_inst_code(coin: str, exchange_id=ExchangeId.BN.name, types=I
     inst_code = f'{pair}_{exchange_id}.{types}'
     return inst_code
 
+def convert_symbol_to_inst_code(symbol: str, exchange_id=ExchangeId.BN.name, types=InstCodeType.SPOT.name) -> str:
+    return f'{symbol}_{exchange_id}.{types}'
+
 
 def convert_base_quote_to_inst_code(base: str, quote: str, exchange_id=ExchangeId.BN.name, types=InstCodeType.SPOT.name) -> str:
     """
@@ -226,3 +229,23 @@ def convert_symbol_to_base_quote_format(symbol: str) -> str:
 
     # If no known quote currency found, return as-is (for edge cases)
     return symbol
+
+
+def extract_base_from_inst_code(inst_code: str) -> str:
+    """
+    从 inst_code 提取基础货币（base currency）
+    
+    例如：BTC-USDT_BN.PERP -> BTC
+    
+    Args:
+        inst_code: 交易对代码，如 "BTC-USDT_BN.PERP"
+    
+    Returns:
+        str: 基础货币，如 "BTC"
+    """
+    symbol = convert_inst_code_to_symbol(inst_code)
+    base_quote = convert_symbol_to_base_quote_format(symbol)
+    # base_quote 格式为 "BTC-USDT"，提取 base
+    if "-" in base_quote:
+        return base_quote.split("-")[0]
+    return base_quote
