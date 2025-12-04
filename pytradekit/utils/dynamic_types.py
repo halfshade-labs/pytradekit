@@ -3,10 +3,8 @@ from pytradekit.utils.static_types import TradeAttribute, OrderAttribute
 
 
 class Env(Enum):
-    mongodb_url = auto()
-    hb_test_mongodb_url = auto()
-    redis_url = auto()
-    hb_test_redis_url = auto()
+    MONGODB_URL = auto()
+    REDIS_URL = auto()
 
 
 class Api(Enum):

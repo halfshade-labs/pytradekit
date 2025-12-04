@@ -65,12 +65,62 @@ def send_lark_card_with_config(
         logger.warning(f"Failed to send Lark card: {exc}")
 
 
+def build_lark_card_with_stats(
+    title: str,
+    markdown: str,
+    stats: str = None,
+    template: str = "turquoise",
+) -> Dict[str, Any]:
+    """
+    Build a standard Lark interactive card with title, optional stats, and markdown content.
+
+    Args:
+        title: Card header title
+        markdown: Main markdown body content
+        stats: Optional statistics line (e.g., "Total items: **10**")
+        template: Header template color (default: "turquoise")
+
+    Returns:
+        Dict: Lark interactive card payload
+    """
+    elements = []
+    
+    # Add statistics if provided
+    if stats:
+        elements.append({
+            "tag": "markdown",
+            "content": stats,
+        })
+    
+    # Add main markdown content
+    elements.append({
+        "tag": "markdown",
+        "content": markdown,
+    })
+    
+    card: Dict[str, Any] = {
+        "config": {
+            "wide_screen_mode": True,
+        },
+        "header": {
+            "template": template,
+            "title": {
+                "tag": "plain_text",
+                "content": title,
+            },
+        },
+        "elements": elements,
+    }
+    return card
+
+
 def send_lark_markdown_report(
     config: Any,
     logger: Any,
     title: str,
     markdown: str,
     private_key: str,
+    stats: str = None,
 ) -> None:
     """
     Build and send a simple markdown report as Lark interactive card.
@@ -81,23 +131,7 @@ def send_lark_markdown_report(
         title: Card header title
         markdown: Markdown body content
         private_key: Key in `config.private` that stores encrypted webhook
+        stats: Optional statistics line (e.g., "Total items: **10**")
     """
-    card: Dict[str, Any] = {
-        "config": {
-            "wide_screen_mode": True,
-        },
-        "header": {
-            "template": "turquoise",
-            "title": {
-                "tag": "plain_text",
-                "content": title,
-            },
-        },
-        "elements": [
-            {
-                "tag": "markdown",
-                "content": markdown,
-            },
-        ],
-    }
+    card = build_lark_card_with_stats(title, markdown, stats=stats)
     send_lark_card_with_config(config, logger, card, private_key=private_key)
