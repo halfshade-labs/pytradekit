@@ -1350,3 +1350,4 @@ class TradingProposalType(Enum):
     no_trade = auto()
     trading_proposal = auto()
     wake_up_time = auto()
+
