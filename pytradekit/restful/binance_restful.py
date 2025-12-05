@@ -28,12 +28,12 @@ class BinanceClient:
         self.account_id = account_id
         self.session = requests.session()
         self.logger = logger
-        if is_swap:  # TODO 看是否需要使用继承
-            self._url = BinanceAuxiliary.swap_url.value
-        elif is_alpha:
-            self._url = BinanceAuxiliary.alpha_url.value
-        else:
-            self._url = BinanceAuxiliary.url.value
+        # if is_swap:
+        #     self._url = BinanceAuxiliary.swap_url.value
+        # elif is_alpha:
+        #     self._url = BinanceAuxiliary.alpha_url.value
+        # else:
+        self._url = BinanceAuxiliary.url.value
 
     def _decrypt_private_key(self, private_pem: str, password: str = None) -> str:
 
@@ -545,12 +545,14 @@ class BinanceClient:
         balances = self.request(HttpMmthod.GET.name, url, params=params)
         return balances
 
-    def get_futures_24h_ticker(self, symbol=None):
-        params = {}
-        if symbol is not None:
-            params[RestfulRequestsAttribute.symbol.name] = symbol.upper()
-        url = self._make_public_url(
-            url_path=BinanceAuxiliary.url_futures_ticker_24hr.value,
-            params=params
-        )
-        return self.request(HttpMmthod.GET.name, url, use_sign=False)
+
+class BinanceSwapClient(BinanceClient):
+    def __init__(self, logger, key=None, secret=None, passphrase=None, account_id=None):
+        super().__init__(logger, key, secret, passphrase, account_id)
+        self._url = BinanceAuxiliary.swap_url.value
+
+
+class BinanceAlphaClient(BinanceClient):
+    def __init__(self, logger, key=None, secret=None, passphrase=None, account_id=None):
+        super().__init__(logger, key, secret, passphrase, account_id)
+        self._url = BinanceAuxiliary.alpha_url.value
