@@ -22,7 +22,7 @@ from pytradekit.utils.static_types import Database, OrderAttribute, TradeAttribu
     LastAggtradeAttribute, InstcodeBasicAttribute, \
     OrderBookAttribute, OrderDepthRatioAttribute, RankAttribute, BalanceAttribute, DepositWithdrawAttribute, \
     InventoryAttribute, DepthAttribute, PnlAttribute, VolumeFeeAttribute, BudgetAttribute, UserLoanAttribute, \
-    MaxInventoryAttribute, ArbitragePoolsReportAttribute
+    MaxInventoryAttribute, ArbitragePoolsReportAttribute, PerpPositionAttribute, PerpIncomeAttribute
 from pytradekit.utils.dynamic_types import DepositWithdrawAuxiliary, DuplicateFields, ExchangeId
 from pytradekit.utils.custom_types import InstCode
 from pytradekit.utils.exceptions import NoDataException
@@ -572,8 +572,8 @@ class MongodbOperations:
             params[LastAggtradeAttribute.inst_code.name] = inst_code
         if exchange_id:
             params[LastAggtradeAttribute.exchange_id.name] = exchange_id
-        res = self.client[Database.mvid_official.name][Database.last_agg_trade_time.name].find(
-            params)  ## TODO 修改agg trade 的位置
+        res = self.client[Database.raw_orders.name][Database.last_agg_trade_time.name].find(
+            params)
         res = list(res)
         if len(res) == 0:
             raise NoDataException(f'No last agg trade found for inst_code {inst_code}')
@@ -676,7 +676,7 @@ class MongodbOperations:
         if limit:
             res = self.client[Database.metrics_order_depth.name][
                 f'{exchange_id}_{Database.order_depth_ratio.name}'].find(
-                params).sort(SwapPositionAttribute.event_time_ms.name, -1).limit(limit)
+                params).sort(PerpPositionAttribute.event_time_ms.name, -1).limit(limit)
         else:
             res = self.client[Database.metrics_order_depth.name][
                 f'{exchange_id}_{Database.order_depth_ratio.name}'].find(
@@ -692,16 +692,16 @@ class MongodbOperations:
     def read_swap_position_risk(self, inst_code, account_id, time_span=None, limit=1):
         params = {}
         if inst_code:
-            params[SwapPositionAttribute.inst_code.name] = inst_code## TODO swap全部换成perp
+            params[PerpPositionAttribute.inst_code.name] = inst_code
         if account_id:
-            params[SwapPositionAttribute.account_id.name] = account_id
+            params[PerpPositionAttribute.account_id.name] = account_id
         if time_span:
-            params[SwapPositionAttribute.event_time_ms.name] = {
+            params[PerpPositionAttribute.event_time_ms.name] = {
                 "$gte": time_span.start,
                 "$lte": time_span.end
             }
         res = self.client[Database.raw_accounts.name][Database.swap_position.name].find(params).sort(
-            SwapPositionAttribute.event_time_ms.name,
+            PerpPositionAttribute.event_time_ms.name,
             -1).limit(limit)
         res = list(res)
         if len(res) == 0:
@@ -711,9 +711,9 @@ class MongodbOperations:
     def read_swap_income(self, account_id, inst_code):
         params = {}
         if account_id:
-            params[SwapIncomeAttribute.account_id.name] = account_id
+            params[PerpIncomeAttribute.account_id.name] = account_id
         if inst_code:
-            params[SwapIncomeAttribute.inst_code.name] = inst_code
+            params[PerpIncomeAttribute.inst_code.name] = inst_code
         res = self.client[Database.raw_accounts.name][Database.swap_income.name].find(params)
         res = list(res)
         if len(res) == 0:
