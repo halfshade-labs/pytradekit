@@ -7,14 +7,7 @@ import re
 import time
 import subprocess
 import zipfile
-try:
-    import line_profiler # TODO 哪里使用的，修改一下，格式太乱
-except ImportError:
-    line_profiler = None
-try:
-    import memory_profiler
-except ImportError:
-    memory_profiler = None
+import importlib
 
 from cryptography.fernet import Fernet
 from cryptography.hazmat.backends import default_backend
@@ -35,6 +28,16 @@ from pytradekit.utils.exceptions import DependencyException, ExchangeException
 RETRY_TIMES = 3
 RETRY_INTERVAL = 2
 REPORT_FILE_PATH = '/home/report_data_csv/'
+
+
+def optional_import(name):
+    try:
+        return importlib.import_module(name)
+    except ImportError:
+        return None
+
+line_profiler = optional_import("line_profiler")
+memory_profiler = optional_import("memory_profiler")
 
 
 def synchronized(func):
