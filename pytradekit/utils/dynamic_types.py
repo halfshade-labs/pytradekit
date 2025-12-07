@@ -5,6 +5,8 @@ from pytradekit.utils.static_types import TradeAttribute, OrderAttribute
 class Env(Enum):
     MONGODB_URL = auto()
     REDIS_URL = auto()
+    mongodb_url = auto()
+    redis_url = auto()
 
 
 class Api(Enum):
