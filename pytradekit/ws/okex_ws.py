@@ -79,6 +79,13 @@ class OkexWsManager(WsManager):
         }
         self.start_subscribe(login_params)
 
+    def start_bookticker_stream(self, symbol_list):
+        arg = []
+        for i in symbol_list:
+            arg.append({'channel': 'tickers', 'instId': i})
+        params = {"op": "subscribe", "args": arg}
+        self.start_subscribe(params)
+
     def subscribe(self):
         try:
             self._login()
@@ -94,8 +101,8 @@ class OkexWsManager(WsManager):
             self.logger.exception(e)
 
     def _on_message(self, _ws, message):
-        msg = json.loads(message)
         try:
+            msg = json.loads(message)
             if 'event' in msg and msg['event'] == 'login':
                 if msg['code'] == '0':
                     self._send_order()
