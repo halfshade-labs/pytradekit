@@ -101,7 +101,7 @@ class BaseWebsocketManager:
         self._monitorThread = Thread(target=self._monitor)
         self._monitorThread.daemon = True
         self._monitorThread.start()
-
+        print(self._get_url())
         self.ws = WebSocketApp(
             self._get_url(),
             on_message=self._wrap_callback(self._on_message),

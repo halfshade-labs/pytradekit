@@ -894,6 +894,7 @@ class BinanceAuxiliary(Enum):
     ws_kline_interval = '@kline_15m'
     ws_book_ticker = '@bookTicker'
     ws_orderbook = '@depth'
+    ws_lastprice = '@markPrice@1s'
     ws_ping_sleep = 1800
     ws_reconnect_interval = 60 * 60 * 24
     ws_ping = 'ping'
@@ -921,7 +922,7 @@ class BitfinexAuxiliary(Enum):
 
 class HuobiAuxiliary(Enum):
     url = 'https://api.huobi.pro'
-    url_ws = 'wss://api.huobi.pro/ws/v2'
+    url_ws = 'wss://api.huobi.pro/ws'
     url_exchange = '/v2/settings/common/symbols'
     url_ticker = '/market/tickers'
     swap_url = 'https://api.hbdm.com'
@@ -942,7 +943,7 @@ class HuobiAuxiliary(Enum):
 
 class OkexAuxiliary(Enum):
     url = 'https://www.okx.com'
-    url_ws = 'wss://ws.okx.com:8443/ws/v5/private'
+    url_ws = 'wss://ws.okx.com:8443/ws/v5/public'
     swap_url = 'https://www.okx.com'
     url_swap_position = '/api/v5/account/positions'
     url_swap_interest = '/api/v5/account/interest-accrued'

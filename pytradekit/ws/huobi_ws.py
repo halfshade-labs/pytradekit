@@ -71,6 +71,15 @@ class HuobiWsManager(WsManager):
             time.sleep(n_seconds)
         self.subscribe()
 
+    def start_bookticker_stream(self, symbol_list):
+
+        for index, symbol in enumerate(symbol_list):
+            sub_msg = {
+                "sub": f"market.{symbol}.bbo",
+                "id": f"id_bbo_{symbol}"
+            }
+            self.start_subscribe(sub_msg)
+
     def subscribe(self):
         try:
             self._login()
@@ -93,8 +102,9 @@ class HuobiWsManager(WsManager):
             self.logger.exception(e)
 
     def _on_message(self, _ws, message):
-        msg = json.loads(message)
         try:
+            print(message)
+            msg = json.loads(message)
             if msg['action'] == 'ping':
                 self._pong(msg['data']['ts'])
             elif 'action' in msg and msg['ch'] == 'auth' and msg['code'] == 200:

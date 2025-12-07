@@ -28,12 +28,12 @@ class BinanceClient:
         self.account_id = account_id
         self.session = requests.session()
         self.logger = logger
-        # if is_swap:
-        #     self._url = BinanceAuxiliary.swap_url.value
-        # elif is_alpha:
-        #     self._url = BinanceAuxiliary.alpha_url.value
-        # else:
-        self._url = BinanceAuxiliary.url.value
+        if is_swap:
+            self._url = BinanceAuxiliary.swap_url.value
+        elif is_alpha:
+            self._url = BinanceAuxiliary.alpha_url.value
+        else:
+            self._url = BinanceAuxiliary.url.value
 
     def _decrypt_private_key(self, private_pem: str, password: str = None) -> str:
 
