@@ -40,6 +40,42 @@ line_profiler = optional_import("line_profiler")
 memory_profiler = optional_import("memory_profiler")
 
 
+def convert_pair_to_inst_code(pair: str, exchange_id=ExchangeId.BN.name, types=InstCodeType.SPOT.name) -> str:
+    """
+    trx_usdt --> TRXUSDT_BN.SPOT
+    """
+    parts = pair.split('_')
+    parts = [p.upper() for p in parts]
+    inst_code = f'{parts[0]}-{parts[1]}_{exchange_id}.{types}'
+    return inst_code
+
+
+def convert_coin_to_inst_code(coin: str, exchange_id=ExchangeId.BN.name, types=InstCodeType.SPOT.name) -> str:
+    pair = f'{coin.upper()}-USDT'
+    inst_code = f'{pair}_{exchange_id}.{types}'
+    return inst_code
+
+
+def convert_base_quote_to_inst_code(base: str, quote: str, exchange_id=ExchangeId.BN.name, types=InstCodeType.SPOT.name) -> str:
+    """
+    trxusdt --> TRXUSDT_BN.SPOT
+    """
+    return base.upper() + "-" + quote.upper() + "_" + exchange_id + "." + types
+
+
+def convert_inst_code_to_pair(inst_code: str) -> str:
+    """
+    TRX-USDT_BN.SPOT -> trx-usdt
+    """
+    symbol = inst_code.split('_')[0].upper()
+    return symbol
+
+
+def convert_pair_to_symbol(pair):
+    parts = pair.split('_')
+    return parts[0] + parts[1]
+
+
 def synchronized(func):
     def guarded(self, *args, **kwargs):
         self._semaphore.acquire()
