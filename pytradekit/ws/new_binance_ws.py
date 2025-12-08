@@ -36,7 +36,7 @@ class BinanceWsManager:
         self.status = WebsocketStatus.INIT.name
         self.ws = None
         if is_swap:
-            self._listen_key_url = BinanceAuxiliary.swap_url.value + BinanceAuxiliary.user_swap_data_stream.value
+            self._listen_key_url = BinanceAuxiliary.perp_url.value + BinanceAuxiliary.user_swap_data_stream.value
         else:
             self._listen_key_url = self._get_api_url() + BinanceAuxiliary.user_data_stream.value
 

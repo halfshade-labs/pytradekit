@@ -20,7 +20,7 @@ RETRY_INTERVAL = 5
 
 
 class BinanceClient:
-    def __init__(self, logger, key=None, secret=None, passphrase=None, account_id=None, is_swap=False, is_alpha=False):
+    def __init__(self, logger, key=None, secret=None, passphrase=None, account_id=None, is_perp=False, is_alpha=False):
         self.api_key = key
         if secret is not None:
             self.secret_key = self._decrypt_private_key(secret, passphrase)
@@ -28,8 +28,8 @@ class BinanceClient:
         self.account_id = account_id
         self.session = requests.session()
         self.logger = logger
-        if is_swap:
-            self._url = BinanceAuxiliary.swap_url.value
+        if is_perp:
+            self._url = BinanceAuxiliary.perp_url.value
         elif is_alpha:
             self._url = BinanceAuxiliary.alpha_url.value
         else:
@@ -72,8 +72,27 @@ class BinanceClient:
                 time.sleep(retry_after)
                 return None
 
-            result = resp.json()
-            return result
+            # Check for non-2xx status codes
+            if not resp.ok:
+                error_msg = f"HTTP {resp.status_code} error for {method} {url}"
+                try:
+                    error_body = resp.text[:500]  # Limit error message length
+                    self.logger.error(f"{error_msg}, response: {error_body}")
+                except Exception:
+                    self.logger.error(f"{error_msg}, failed to read response body")
+                raise ExchangeException(f"{error_msg}")
+
+            # Try to parse JSON response
+            try:
+                result = resp.json()
+                return result
+            except ValueError as json_err:
+                error_msg = f"Failed to parse JSON response for {method} {url}, status: {resp.status_code}"
+                response_text = resp.text[:500]  # Limit error message length
+                self.logger.error(f"{error_msg}, response body: {response_text}")
+                raise ExchangeException(f"{error_msg}") from json_err
+        except ExchangeException:
+            raise
         except Exception as e:
             self.logger.exception(e)
             raise ExchangeException(f"Request error {method} {url}") from e
@@ -549,7 +568,7 @@ class BinanceClient:
 class BinanceSwapClient(BinanceClient):
     def __init__(self, logger, key=None, secret=None, passphrase=None, account_id=None):
         super().__init__(logger, key, secret, passphrase, account_id)
-        self._url = BinanceAuxiliary.swap_url.value
+        self._url = BinanceAuxiliary.perp_url.value
 
 
 class BinanceAlphaClient(BinanceClient):

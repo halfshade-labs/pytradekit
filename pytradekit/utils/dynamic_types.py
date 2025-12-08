@@ -5,6 +5,8 @@ from pytradekit.utils.static_types import TradeAttribute, OrderAttribute
 class Env(Enum):
     MONGODB_URL = auto()
     REDIS_URL = auto()
+    mongodb_url = auto()
+    redis_url = auto()
 
 
 class Api(Enum):
@@ -849,11 +851,11 @@ class AdsAuxiliary(Enum):
 
 class BinanceAuxiliary(Enum):
     url = 'https://api.binance.com'
-    swap_url = 'https://fapi.binance.com'
+    perp_url = 'https://fapi.binance.com'
     alpha_url = 'https://www.binance.com'
     url_ws = 'wss://stream.binance.com:9443/ws'
     url_ws_base = 'wss://stream.binance.com:9443'
-    url_swap_ws = 'wss://fstream.binance.com/ws'
+    url_perp_ws = 'wss://fstream.binance.com/ws'
     user_data_stream = '/api/v3/userDataStream'
     user_swap_data_stream = '/fapi/v1/listenKey'
     url_ticker_24hr = '/api/v3/ticker/24hr'
