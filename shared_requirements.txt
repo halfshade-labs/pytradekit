@@ -18,8 +18,4 @@ websocket-client == 1.3.1
 httpx == 0.27.2
 snakeviz == 2.2.0
 freezegun == 1.5.2
-<<<<<<< HEAD
-PyNaCl == 1.5.0
-=======
 pynacl == 1.6.0
->>>>>>> green

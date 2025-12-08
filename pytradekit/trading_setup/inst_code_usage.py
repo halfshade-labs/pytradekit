@@ -200,7 +200,7 @@ def convert_inst_code_to_symbol(inst_code: str) -> str:
     """
     BTCUSDT_BN.SPOT -> btcusdt
     """
-    symbol = inst_code.split('_')[0].upper()
+    symbol = inst_code.split('_')[0].replace('-', '').upper()
     return symbol
 
 

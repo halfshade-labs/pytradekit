@@ -23,8 +23,7 @@ class BinanceWsManager(WsManager):
     def __init__(self, logger, config=None, running_mode=None, queue=None, api_key=None, api_secret=None,
                  strategy_id=None, portfolio_id=None,
                  account_id=None, url=BinanceAuxiliary.url_ws.value, api_url=BinanceAuxiliary.url.value, is_swap=False,
-                 ticker_queue=None, order_book_ticker_queue=None, order_trade_queue=None, balance_queue=None,
-                 kline_queue=None, balance_update_queue=None, start_end_time_dict=None,
+                 ticker_queue=None, kline_queue=None, start_end_time_dict=None,
                  send_params=None, is_supplement=False, bn_client=None, mm_symbol_list=None):
         super().__init__(api_key, logger, start_end_time_dict)
         self.logger = logger
@@ -40,10 +39,6 @@ class BinanceWsManager(WsManager):
         self._portfolio_id = portfolio_id
         self._account_id = account_id
         self._ws_connected = False
-        self._order_book_ticker_queue = order_book_ticker_queue
-        self._order_trade_queue = order_trade_queue
-        self._balance_queue = balance_queue
-        self._balance_update_queue = balance_update_queue
         self._kline_queue = kline_queue
         if is_swap:
             self._listen_key_url = BinanceAuxiliary.perp_url.value + BinanceAuxiliary.user_swap_data_stream.value
@@ -149,6 +144,21 @@ class BinanceWsManager(WsManager):
         self.start_subscribe(params)
         self._ping(BinanceAuxiliary.ws_ping_sleep.value)
 
+    def start_bookticker_stream(self, symbols):
+        params = []
+        for symbol in symbols:
+            params.append(f'{symbol.lower()}{BinanceAuxiliary.ws_book_ticker.value}')
+        self.start_subscribe(params)
+        self._ping(BinanceAuxiliary.ws_ping_sleep.value)
+
+    def start_swap_lastprice_stream(self, symbols):
+        params = []
+        for symbol in symbols:
+            params.append(f'{symbol.lower()}{BinanceAuxiliary.ws_lastprice.value}')
+        print(params)
+        self.start_subscribe(params)
+        self._ping(BinanceAuxiliary.ws_ping_sleep.value)
+
     def start_subscribe(self, params):
         try:
             msg = {'method': BinanceWebSocket.subscribe.value, 'params': params}
@@ -187,49 +197,10 @@ class BinanceWsManager(WsManager):
     def _on_message(self, _ws, message):
         msg = json.loads(message)
         try:
-            if isinstance(msg, list):
-                self._ticker_queue.put_nowait(msg)
-            if BinanceWebSocket.event_type.value in msg:
-                msg[BinanceWebSocket.run_time_ms.value] = get_millisecond_str(get_datetime())
-                if msg[
-                    BinanceWebSocket.event_type.value] == BinanceWebSocket.execution_report.value and self._order_trade_queue:
-                    msg[BinanceWebSocket.portfolio_id.value] = self._portfolio_id
-                    msg[BinanceWebSocket.strategy_id.value] = self._strategy_id
-                    msg[BinanceWebSocket.account_id.value] = self._account_id
-                    self._order_trade_queue.put_nowait(msg)
-                    if self._is_supplement:
-                        self._supplement_orders_thread = Thread(target=self.supplement_orders, args=(msg['T'],))
-                        self._supplement_orders_thread.daemon = True
-                        self._supplement_orders_thread.start()
-
-                elif msg[BinanceWebSocket.event_type.value] == BinanceWebSocket.account_balance.value and self._queue:
-                    msg[BinanceWebSocket.portfolio_id.value] = self._portfolio_id
-                    msg[BinanceWebSocket.strategy_id.value] = self._strategy_id
-                    msg[BinanceWebSocket.account_id.value] = self._account_id
-                    self._balance_queue.put_nowait(msg)
-                elif msg[
-                    BinanceWebSocket.event_type.value] == BinanceWebSocket.balance_update.value and self._balance_update_queue:
-                    deposit_withdraw_data = HandleRestfulDepositWithdraw().run(self.logger, self._api_key,
-                                                                               self._api_secret, self._account_id,
-                                                                               msg[BinanceWebSocket.run_time_ms.value])
-                    msg[BinanceWebSocket.portfolio_id.value] = self._portfolio_id
-                    msg[BinanceWebSocket.strategy_id.value] = self._strategy_id
-                    msg[BinanceWebSocket.account_id.value] = self._account_id
-                    msg[BinanceWebSocket.deposit_withraw.value] = deposit_withdraw_data
-                    self._balance_update_queue.put_nowait(msg)
-                elif msg[BinanceWebSocket.event_type.value] == BinanceWebSocket.agg_trade.value and self._queue:
-                    self._queue.put_nowait(msg)
-                elif msg[BinanceWebSocket.event_type.value] == BinanceWebSocket.kline_raw.value and self._kline_queue:
-                    self._kline_queue.put_nowait(msg)
-            elif BinanceWebSocket.order_book_update_id.value in msg and self._order_book_ticker_queue:
-                try:
-                    if int(msg[BinanceWebSocket.order_book_update_id.value]):
-                        self._order_book_ticker_queue.put_nowait(msg)
-                except:
-                    pass
-
             if BinanceAuxiliary.ws_ping.value in msg:
                 self._pong()
+            else:
+                self._queue.put_nowait(msg)
         except Exception as e:
             self.logger.exception(e)
             self.logger.debug(f"binance message error {msg}")

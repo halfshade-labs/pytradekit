@@ -73,7 +73,6 @@ def convert_inst_code_to_pair(inst_code: str) -> str:
 
 def convert_pair_to_symbol(pair):
     parts = pair.split('_')
-    print()
     return parts[0] + parts[1]
 
 
@@ -485,9 +484,9 @@ def get_mongo(config, logger, running_mode):
 def get_redis(logger, config, running_mode):
     def get_redis_url(config, running_mode=RunningMode.testing_flag.name):
         if running_mode == RunningMode.production_flag.name:
-            return encrypt_decrypt(config.private[Env.redis_url.name], 'decrypt')
+            return encrypt_decrypt(config.private[Env.REDIS_URL.name], 'decrypt')
         else:
-            return encrypt_decrypt(config.private[Env.redis_url.name], 'decrypt')
+            return encrypt_decrypt(config.private[Env.REDIS_URL.name], 'decrypt')
 
     redis_url = get_redis_url(config, running_mode=running_mode)
     return RedisOperations(logger, redis_url)

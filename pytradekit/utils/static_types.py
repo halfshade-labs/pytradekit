@@ -49,7 +49,6 @@ class Database(Enum):
     arbitrage_pools_report = auto()
 
 
-
 class OrderAttribute(Enum):
     event_time_ms = auto()
     run_time_ms = auto()
@@ -439,6 +438,7 @@ class OrderBookWsAttribute(Enum):
     asks = auto()
     lastupdateid = auto()
     changed_within_threshold = auto()
+
 
 class OrderBookWs:
     __slots__ = [attr.name for attr in OrderBookWsAttribute]
@@ -1045,7 +1045,6 @@ class MaxInventory:
 
     def to_dict(self):
         return {slot: getattr(self, slot) for slot in self.__slots__}
-        
 
 
 class ArbitragePoolsReportAttribute(Enum):
@@ -1062,9 +1061,9 @@ class ArbitragePoolsReport:
 
     def __init__(self, event_time_ms, open_time, close_time, day, report, other=None):
         self.event_time_ms = event_time_ms
-        self.open_time = open_time  
+        self.open_time = open_time
         self.close_time = close_time
-        self.day = day  
+        self.day = day
         self.report = report
         self.other = other if other is not None else {}
 
