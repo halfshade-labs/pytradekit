@@ -4,6 +4,7 @@ import hmac
 import base64
 import hashlib
 import urllib.parse
+import gzip
 
 from pytradekit.utils.dynamic_types import HuobiAuxiliary, HuobiWebSocket
 from pytradekit.gateway.websocket.ws_manager import WsManager
@@ -71,6 +72,17 @@ class HuobiWsManager(WsManager):
             time.sleep(n_seconds)
         self.subscribe()
 
+    def start_bookticker_stream(self, symbol_list):
+        for index, symbol in enumerate(symbol_list):
+            topic = f"market.{symbol.lower()}.bbo"
+            params = {'sub': topic}
+            if params not in self._subs:
+                self._subs.append(params)
+        req = {'ch': 'sub', 'params': self._subs}
+        self.start_subscribe(req)
+        self._ping(HuobiAuxiliary.ws_ping_sleep.value,
+                   reconnection_time=HuobiAuxiliary.reconnection_time_sleep.value)
+
     def subscribe(self):
         try:
             self._login()
@@ -93,22 +105,20 @@ class HuobiWsManager(WsManager):
             self.logger.exception(e)
 
     def _on_message(self, _ws, message):
-        msg = json.loads(message)
         try:
-            if msg['action'] == 'ping':
+            if isinstance(message, bytes):
+                message = gzip.decompress(message).decode('utf-8')
+            msg = json.loads(message)
+            if 'ping' in msg:
+                self.send(json.dumps({'pong': msg['ping']}))
+                return
+            if 'action' in msg and msg['action'] == 'ping':
                 self._pong(msg['data']['ts'])
-            elif 'action' in msg and msg['ch'] == 'auth' and msg['code'] == 200:
-                self._send_order()
-            elif 'code' in msg and msg['code'] == 2002:
-                self._login()
-            elif msg['ch'] == 'orders#*':
-                if msg['data'] and msg['data']['eventType'] != 'trigger' and msg['data']['eventType'] != 'deletion':
-                    res = {'data': msg['data']}
-                    res[HuobiWebSocket.portfolio_id.value] = self._portfolio_id
-                    res[HuobiWebSocket.strategy_id.value] = self._strategy_id
-                    res[HuobiWebSocket.account_id.value] = self._account_id
-                    res[HuobiWebSocket.run_time_ms.value] = get_millisecond_str(get_datetime())
-                    self._queue.put_nowait(res)
+                return
+            if 'ch' in msg and 'bbo' in msg['ch']:
+                if self._queue:
+                    self._queue.put_nowait(msg)
+                return
         except Exception as e:
             self.logger.exception(e)
-            self.logger.debug(f"huobi message error {msg}")
+            self.logger.debug(f"huobi message error {message}")
