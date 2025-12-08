@@ -54,15 +54,12 @@ class OkexWsManager(WsManager):
         self.send_json(_rqs_orders)
 
     def _ping(self, n_seconds, reconnection_time=None) -> None:
-        now_times = get_timestamp_s()
-        time.sleep(3)
         while True:
-            # if reconnection_time:
-            #     if int(get_timestamp_s() - now_times) >= reconnection_time:
-            #         break
-            self._send_order()
-            time.sleep(30)
-        # self.subscribe()
+            time.sleep(n_seconds)
+            try:
+                self.send("ping")
+            except Exception as e:
+                self.logger.error(f"Okex heartbeat error: {e}")
 
     def _login(self):
         nonce = str(get_timestamp_s())
@@ -84,7 +81,10 @@ class OkexWsManager(WsManager):
         for i in symbol_list:
             arg.append({'channel': 'tickers', 'instId': i})
         params = {"op": "subscribe", "args": arg}
+        if params not in self._subs:
+            self._subs.append(params)
         self.start_subscribe(params)
+        self._ping(20)
 
     def subscribe(self):
         try:
@@ -102,21 +102,22 @@ class OkexWsManager(WsManager):
 
     def _on_message(self, _ws, message):
         try:
+            if message == 'pong':
+                return
             msg = json.loads(message)
             if 'event' in msg and msg['event'] == 'login':
                 if msg['code'] == '0':
                     self._send_order()
             elif "code" in msg and msg['code'] == '60011':
                 self._login()
-            if 'arg' in msg and msg['arg']['channel'] == 'orders' and "data" in msg:
-                res = {'data': msg['data']}
-                res[OkexWebSocket.portfolio_id.value] = self._portfolio_id
-                res[OkexWebSocket.strategy_id.value] = self._strategy_id
-                res[OkexWebSocket.account_id.value] = self._account_id
-                res[OkexWebSocket.run_time_ms.value] = get_millisecond_str(get_datetime())
-                self._queue.put_nowait(res)
-            elif 'ping' in msg:
-                self._pong(msg['ping'])
+
+            #添加 Ticker 数据处理逻辑
+            if 'arg' in msg and msg['arg']['channel'] == 'tickers' and "data" in msg:
+                if self._queue:
+                    # OKX 数据通常是列表，取出来放入队列
+                    for item in msg['data']:
+                        self._queue.put_nowait(item)
+
         except Exception as e:
             self.logger.exception(e)
-            self.logger.debug(msg)
+            self.logger.debug(message)
