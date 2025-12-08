@@ -851,7 +851,7 @@ class AdsAuxiliary(Enum):
 
 class BinanceAuxiliary(Enum):
     url = 'https://api.binance.com'
-    swap_url = 'https://fapi.binance.com'
+    perp_url = 'https://fapi.binance.com'
     alpha_url = 'https://www.binance.com'
     url_ws = 'wss://stream.binance.com:9443/ws'
     url_ws_base = 'wss://stream.binance.com:9443'
