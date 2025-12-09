@@ -1107,7 +1107,7 @@ class FeeStructureKey(Enum):
 
 class FeeConfigAttribute(Enum):
     """Fee configuration attributes for account settings."""
-    account_id = auto()
-    vip_level = auto()
-    use_platform_token_discount = auto()
-    holding_discount = auto()
+    ACCOUNT_ID = auto()
+    VIP_LEVEL = auto()
+    USE_PLATFORM_TOKEN_DISCOUNT = auto()
+    HOLDING_DISCOUNT = auto()

@@ -4,31 +4,35 @@ Tests for exchange fees module.
 
 import pytest
 from unittest.mock import Mock, MagicMock, patch
-from pytradekit.trading_setup.exchange_fees import FeeCalculator, EXCHANGE_FEES
+from pytradekit.trading_setup.exchange_fees import FeeRateResolver, EXCHANGE_FEES
 from pytradekit.utils.config_agent import ConfigAgent
 from pytradekit.utils.exceptions import DependencyException
 
 
-class TestFeeCalculator:
-    """Test FeeCalculator class."""
+class TestFeeRateResolver:
+
+    """Test FeeRateResolver class."""
 
     def test_init_without_config(self):
-        """Test FeeCalculator initialization without config."""
-        calculator = FeeCalculator()
+        """Test FeeRateResolver initialization without config."""
+        logger = Mock()
+        calculator = FeeRateResolver(logger=logger)
         assert calculator.config is None
         assert calculator.exchange_fees == EXCHANGE_FEES
 
     def test_init_with_config(self):
-        """Test FeeCalculator initialization with config."""
+        """Test FeeRateResolver initialization with config."""
+        logger = Mock()
         config = Mock(spec=ConfigAgent)
-        calculator = FeeCalculator(config)
+        calculator = FeeRateResolver(logger=logger, config=config)
         assert calculator.config == config
         assert calculator.exchange_fees == EXCHANGE_FEES
 
     def test_get_account_fee_config_no_config(self):
         """Test getting account fee config when no config provided."""
-        calculator = FeeCalculator()
-        config = calculator._get_account_fee_config('BN_000', 'BN')
+        logger = Mock()
+        calculator = FeeRateResolver(logger=logger)
+        config = calculator._get_account_fee_config('BN')
         assert config == {
             'vip_level': 0,
             'use_platform_token_discount': False,
@@ -37,6 +41,7 @@ class TestFeeCalculator:
 
     def test_get_account_fee_config_with_config(self):
         """Test getting account fee config from config file."""
+        logger = Mock()
         config = Mock(spec=ConfigAgent)
         config.outer = MagicMock()
         config.outer.sections.return_value = ['BN_ACCOUNT']
@@ -47,27 +52,28 @@ class TestFeeCalculator:
             'holding_discount': 'false'
         }[key]
 
-        calculator = FeeCalculator(config)
+        calculator = FeeRateResolver(logger=logger, config=config)
         
         # Mock ConfigAgent static methods
         with patch.object(ConfigAgent, 'get_str', return_value='BN_000'), \
              patch.object(ConfigAgent, 'get_int', return_value=1), \
              patch.object(ConfigAgent, 'get_boolean', side_effect=[True, False]):
-            result = calculator._get_account_fee_config('BN_000', 'BN')
+            result = calculator._get_account_fee_config('BN')
             assert result['vip_level'] == 1
             assert result['use_platform_token_discount'] is True
             assert result['holding_discount'] is False
 
     def test_get_account_fee_config_wrong_account_id(self):
         """Test getting account fee config with wrong account_id."""
+        logger = Mock()
         config = Mock(spec=ConfigAgent)
         config.outer = MagicMock()
         config.outer.sections.return_value = ['BN_ACCOUNT']
         
-        calculator = FeeCalculator(config)
+        calculator = FeeRateResolver(logger=logger, config=config)
         
         with patch.object(ConfigAgent, 'get_str', return_value='BN_001'):  # Different account_id
-            result = calculator._get_account_fee_config('BN_000', 'BN')
+            result = calculator._get_account_fee_config('BN')
             # Should return default config
             assert result == {
                 'vip_level': 0,
@@ -77,9 +83,10 @@ class TestFeeCalculator:
 
     def test_get_fee_rate_exchange_not_found(self):
         """Test get_fee_rate with non-existent exchange."""
-        calculator = FeeCalculator()
+        logger = Mock()
+        calculator = FeeRateResolver(logger=logger)
         with pytest.raises(DependencyException) as exc_info:
-            calculator.get_fee_rate('BN_000', 'INVALID', 'spot', True)
+            calculator.get_fee_rate('INVALID', 'spot', True)
         assert 'Exchange INVALID not found' in str(exc_info.value)
 
     def test_get_fee_rate_market_type_not_found(self):
@@ -91,11 +98,12 @@ class TestFeeCalculator:
                 'discounts': {'platform_token_discount': 0.25, 'platform_token': 'TEST'}
             }
         }
-        calculator = FeeCalculator()
+        logger = Mock()
+        calculator = FeeRateResolver(logger=logger)
         calculator.exchange_fees['TEST'] = test_exchange
         
         with pytest.raises(DependencyException) as exc_info:
-            calculator.get_fee_rate('TEST_000', 'TEST', 'invalid', True)
+            calculator.get_fee_rate('TEST', 'invalid', True)
         assert 'Market type invalid not found' in str(exc_info.value)
 
     def test_get_fee_rate_vip_level_not_found(self):
@@ -106,11 +114,12 @@ class TestFeeCalculator:
                 'discounts': {'platform_token_discount': 0.25, 'platform_token': 'TEST'}
             }
         }
-        calculator = FeeCalculator()
+        logger = Mock()
+        calculator = FeeRateResolver(logger=logger)
         calculator.exchange_fees['TEST'] = test_exchange
         
         # Should fallback to level 0 if VIP level not found
-        rate = calculator.get_fee_rate('TEST_000', 'TEST', 'spot', True)
+        rate = calculator.get_fee_rate('TEST', 'spot', True)
         assert rate == 0.001
 
     def test_get_fee_rate_maker(self):
@@ -128,10 +137,11 @@ class TestFeeCalculator:
                 }
             }
         }
-        calculator = FeeCalculator()
+        logger = Mock()
+        calculator = FeeRateResolver(logger=logger)
         calculator.exchange_fees['TEST'] = test_exchange
         
-        rate = calculator.get_fee_rate('TEST_000', 'TEST', 'spot', True)
+        rate = calculator.get_fee_rate('TEST', 'spot', True)
         assert rate == 0.001
 
     def test_get_fee_rate_taker(self):
@@ -149,10 +159,11 @@ class TestFeeCalculator:
                 }
             }
         }
-        calculator = FeeCalculator()
+        logger = Mock()
+        calculator = FeeRateResolver(logger=logger)
         calculator.exchange_fees['TEST'] = test_exchange
         
-        rate = calculator.get_fee_rate('TEST_000', 'TEST', 'spot', False)
+        rate = calculator.get_fee_rate('TEST', 'spot', False)
         assert rate == 0.001
 
     def test_get_fee_rate_with_platform_token_discount(self):
@@ -169,7 +180,8 @@ class TestFeeCalculator:
                 }
             }
         }
-        calculator = FeeCalculator()
+        logger = Mock()
+        calculator = FeeRateResolver(logger=logger)
         calculator.exchange_fees['TEST'] = test_exchange
         
         # Mock config to enable platform token discount
@@ -187,7 +199,7 @@ class TestFeeCalculator:
                 'holding_discount': False
             }
         ):
-            rate = calculator.get_fee_rate('TEST_000', 'TEST', 'spot', True)
+            rate = calculator.get_fee_rate('TEST', 'spot', True)
             # 0.001 * (1 - 0.25) = 0.00075
             assert rate == 0.00075
 
@@ -205,7 +217,8 @@ class TestFeeCalculator:
                 }
             }
         }
-        calculator = FeeCalculator()
+        logger = Mock()
+        calculator = FeeRateResolver(logger=logger)
         calculator.exchange_fees['TEST'] = test_exchange
         
         config = Mock(spec=ConfigAgent)
@@ -222,7 +235,7 @@ class TestFeeCalculator:
                 'holding_discount': True
             }
         ):
-            rate = calculator.get_fee_rate('TEST_000', 'TEST', 'spot', True)
+            rate = calculator.get_fee_rate('TEST', 'spot', True)
             # 0.001 * (1 - 0.1) = 0.0009
             assert rate == 0.0009
 
@@ -240,7 +253,8 @@ class TestFeeCalculator:
                 }
             }
         }
-        calculator = FeeCalculator()
+        logger = Mock()
+        calculator = FeeRateResolver(logger=logger)
         calculator.exchange_fees['TEST'] = test_exchange
         
         config = Mock(spec=ConfigAgent)
@@ -257,75 +271,7 @@ class TestFeeCalculator:
                 'holding_discount': True
             }
         ):
-            rate = calculator.get_fee_rate('TEST_000', 'TEST', 'spot', True)
+            rate = calculator.get_fee_rate('TEST', 'spot', True)
             # 0.001 * (1 - 0.25) * (1 - 0.1) = 0.000675
             assert rate == pytest.approx(0.000675)
-
-    def test_calculate_fee(self):
-        """Test calculate_fee method."""
-        test_exchange = {
-            'spot': {
-                'vip_levels': {
-                    0: {'maker': 0.001, 'taker': 0.001}
-                },
-                'discounts': {
-                    'platform_token_discount': 0.25,
-                    'platform_token': 'TEST',
-                    'holding_discount': {}
-                }
-            }
-        }
-        calculator = FeeCalculator()
-        calculator.exchange_fees['TEST'] = test_exchange
-        
-        fee = calculator.calculate_fee(
-            account_id='TEST_000',
-            exchange_id='TEST',
-            market_type='spot',
-            is_maker=True,
-            trade_amount=10000.0
-        )
-        # 10000 * 0.001 = 10
-        assert fee == 10.0
-
-    def test_calculate_fee_with_discount(self):
-        """Test calculate_fee with discount."""
-        test_exchange = {
-            'spot': {
-                'vip_levels': {
-                    0: {'maker': 0.001, 'taker': 0.001}
-                },
-                'discounts': {
-                    'platform_token_discount': 0.25,
-                    'platform_token': 'TEST',
-                    'holding_discount': {}
-                }
-            }
-        }
-        calculator = FeeCalculator()
-        calculator.exchange_fees['TEST'] = test_exchange
-        
-        config = Mock(spec=ConfigAgent)
-        config.outer = MagicMock()
-        config.outer.sections.return_value = ['TEST_ACCOUNT']
-        calculator.config = config
-        
-        with patch.object(
-            calculator,
-            '_get_account_fee_config',
-            return_value={
-                'vip_level': 0,
-                'use_platform_token_discount': True,
-                'holding_discount': False
-            }
-        ):
-            fee = calculator.calculate_fee(
-                account_id='TEST_000',
-                exchange_id='TEST',
-                market_type='spot',
-                is_maker=True,
-                trade_amount=10000.0
-            )
-            # 10000 * 0.001 * (1 - 0.25) = 7.5
-            assert fee == 7.5
 
