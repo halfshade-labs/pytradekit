@@ -1086,3 +1086,28 @@ class ArbitragePoolsReport:
             else:
                 result[slot] = value
         return result
+
+
+class FeeDiscountType(Enum):
+    """Fee discount types."""
+    platform_token_discount = auto()  # Platform token discount (BNB, HT, OKB, etc.)
+    holding_discount = auto()  # Holding discount
+
+
+class FeeStructureKey(Enum):
+    """Keys used in exchange fee structure dictionary."""
+    vip_levels = auto()
+    discounts = auto()
+    platform_token_discount = auto()
+    platform_token = auto()
+    holding_discount = auto()
+    maker = auto()
+    taker = auto()
+
+
+class FeeConfigAttribute(Enum):
+    """Fee configuration attributes for account settings."""
+    ACCOUNT_ID = auto()
+    VIP_LEVEL = auto()
+    USE_PLATFORM_TOKEN_DISCOUNT = auto()
+    HOLDING_DISCOUNT = auto()
