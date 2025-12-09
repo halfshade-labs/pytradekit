@@ -1,12 +1,11 @@
 """
-Exchange fee data and calculator module.
+Exchange fee data and fee rate resolver module.
 
 This module contains complete fee structures for major exchanges (Binance, Huobi, OKX)
-and provides FeeCalculator class for calculating trading fees based on account configurations.
+and provides FeeRateResolver for retrieving trading fee rates based on account configurations.
 """
 
 from typing import Dict, Optional, Any
-from decimal import Decimal
 from pytradekit.utils.config_agent import ConfigAgent
 from pytradekit.utils.exceptions import DependencyException
 from pytradekit.utils.dynamic_types import ExchangeId, InstCodeType
@@ -146,37 +145,32 @@ EXCHANGE_FEES: Dict[str, Dict[str, Any]] = {
 }
 
 
-class FeeCalculator:
+class FeeRateResolver:
     """
-    Calculate trading fees based on exchange fee structure and account configuration.
-    
-    Supports:
-    - VIP level discounts
-    - Platform token discounts (BNB, HT, OKB, etc.)
-    - Holding discounts
-    - Maker/Taker fee rates
+    Resolve trading fee rates based on exchange fee structure and account configuration.
+    Only returns fee rates (no fee amount calculation).
     """
 
-    def __init__(self, config: Optional[ConfigAgent] = None):
+    def __init__(self, logger, config: Optional[ConfigAgent] = None):
         """
-        Initialize FeeCalculator.
+        Initialize resolver.
 
         Args:
+            logger: logger instance for reporting issues
             config: ConfigAgent instance for reading account fee configurations
         """
+        self.logger = logger
         self.config = config
         self.exchange_fees = EXCHANGE_FEES
 
     def _get_account_fee_config(
         self,
-        account_id: str,
         exchange_id: str
     ) -> Dict[str, Any]:
         """
         Get account-specific fee configuration from config file.
 
         Args:
-            account_id: Account ID
             exchange_id: Exchange ID (BN, HTX, OKX, etc.)
 
         Returns:
@@ -194,6 +188,10 @@ class FeeCalculator:
         }
 
         if self.config is None or self.config.outer is None:
+            if self.logger:
+                self.logger.info(
+                    f"Fee config not provided, using default config for {exchange_id}"
+                )
             return default_config
 
         # Section name format: {EXCHANGE_ID}_ACCOUNT
@@ -202,18 +200,18 @@ class FeeCalculator:
         try:
             # Check if section exists
             if section_name not in self.config.outer.sections():
+                if self.logger:
+                    self.logger.info(
+                        f"Config section {section_name} not found, using default fee config"
+                    )
                 return default_config
 
-            # Get account_id from config
+            # Get account_id from config (used for identification/logging)
             config_account_id = ConfigAgent.get_str(
                 self.config.outer,
                 section_name,
                 FeeConfigAttribute.account_id.name
             )
-
-            # Only return config if account_id matches
-            if config_account_id != account_id:
-                return default_config
 
             # Read configuration
             vip_level = ConfigAgent.get_int(
@@ -232,18 +230,25 @@ class FeeCalculator:
                 FeeConfigAttribute.holding_discount.name
             )
 
-            return {
+            result = {
                 FeeConfigAttribute.vip_level.name: vip_level,
                 FeeConfigAttribute.use_platform_token_discount.name: use_platform_token_discount,
                 FeeConfigAttribute.holding_discount.name: holding_discount
             }
-        except Exception:
-            # Return default config if any error occurs
+            if self.logger:
+                self.logger.debug(
+                    f"Loaded fee config for {exchange_id} account {config_account_id}: {result}"
+                )
+            return result
+        except Exception as exc:
+            if self.logger:
+                self.logger.info(
+                    f"Failed to read fee config for {exchange_id}, using default config: {exc}"
+                )
             return default_config
 
     def get_fee_rate(
         self,
-        account_id: str,
         exchange_id: str,
         market_type: str,
         is_maker: bool
@@ -252,7 +257,6 @@ class FeeCalculator:
         Get fee rate for given account and trading parameters.
 
         Args:
-            account_id: Account ID
             exchange_id: Exchange ID (BN, HTX, OKX, etc.)
             market_type: Market type ('spot' or 'perp')
             is_maker: True for maker order, False for taker order
@@ -279,7 +283,7 @@ class FeeCalculator:
         market_data = exchange_data[market_type]
 
         # Get account configuration
-        account_config = self._get_account_fee_config(account_id, exchange_id)
+        account_config = self._get_account_fee_config(exchange_id)
         vip_level = account_config[FeeConfigAttribute.vip_level.name]
 
         # Get base fee rate from VIP level
