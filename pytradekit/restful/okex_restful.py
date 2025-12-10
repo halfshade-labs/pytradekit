@@ -6,6 +6,7 @@ from urllib.parse import urlencode
 import requests
 from pytradekit.utils.time_handler import get_ok_timestamp
 from pytradekit.utils.dynamic_types import HttpMmthod, OkexAuxiliary, InstCodeType
+from pytradekit.utils.static_types import FeeStructureKey
 
 
 class OkexClient:
@@ -139,3 +140,39 @@ class OkexClient:
         url = OkexAuxiliary.url_trades.value
         datas = self._send_request(url, method=HttpMmthod.GET.name, params=params, use_sign=True)
         return datas
+
+    def get_commission_rate(self, inst_type='SPOT', inst_id=None):
+        """
+        Get commission rate for an instrument.
+        
+        Args:
+            inst_type: Instrument type (e.g., 'SPOT', 'SWAP')
+            inst_id: Instrument ID (e.g., 'BTC-USDT'), optional
+        
+        Returns:
+            dict: {FeeStructureKey.maker.name: float, FeeStructureKey.taker.name: float} or None if failed
+        """
+        try:
+            params = {'instType': inst_type}
+            if inst_id:
+                params['instId'] = inst_id
+            url = OkexAuxiliary.url_commission_rate.value
+            result = self._send_request(url, method=HttpMmthod.GET.name, params=params, use_sign=True)
+            
+            if result and isinstance(result, dict):
+                if result.get('code') == '0' and 'data' in result:
+                    data_list = result['data']
+                    if isinstance(data_list, list) and len(data_list) > 0:
+                        fee_data = data_list[0]
+                        maker_rate = float(fee_data.get('maker', 0))
+                        taker_rate = float(fee_data.get('taker', 0))
+                        return {FeeStructureKey.maker.name: maker_rate, FeeStructureKey.taker.name: taker_rate}
+                    elif isinstance(data_list, dict):
+                        maker_rate = float(data_list.get('maker', 0))
+                        taker_rate = float(data_list.get('taker', 0))
+                        return {FeeStructureKey.maker.name: maker_rate, FeeStructureKey.taker.name: taker_rate}
+            return None
+        except Exception as e:
+            if self.logger:
+                self.logger.info(f"Failed to get commission rate for {inst_type}/{inst_id}: {e}")
+            return None

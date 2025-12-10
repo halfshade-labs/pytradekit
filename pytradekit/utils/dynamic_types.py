@@ -891,6 +891,7 @@ class BinanceAuxiliary(Enum):
     url_swap_margin_type = '/fapi/v1/marginType'
     url_swap_open_interes_hist = '/futures/data/openInterestHist'
     url_alpha_exchange_info = "/bapi/defi/v1/public/wallet-direct/buw/wallet/cex/alpha/all/token/list"
+    url_commission_rate = '/fapi/v1/commissionRate'
     ws_aggtrade = "@aggTrade"
     ws_ticker = "!ticker@arr"
     ws_kline_interval = '@kline_15m'
@@ -939,6 +940,7 @@ class HuobiAuxiliary(Enum):
     url_orders = '/v1/order/history'
     url_trades = '/v1/order/matchresults'
     url_swap_balance = '/linear-swap-api/v1/swap_balance_valuation'
+    url_commission_rate = '/v2/reference/transact-fee-rate/get'
     ws_ping_sleep = 1800
     reconnection_time_sleep = 60 * 60 * 2
 
@@ -959,6 +961,7 @@ class OkexAuxiliary(Enum):
     url_transfer_history = '/api/v5/asset/bills-history'
     url_orders = '/api/v5/trade/orders-history'
     url_trades = '/api/v5/trade/fills-history'
+    url_commission_rate = '/api/v5/account/trade-fee'
     ws_orders = '/ws/v5/private'
     ws_ping_sleep = 1800
     reconnection_time_sleep = 60 * 60 * 2
