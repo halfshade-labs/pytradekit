@@ -49,7 +49,6 @@ class Database(Enum):
     arbitrage_pools_report = auto()
 
 
-
 class OrderAttribute(Enum):
     event_time_ms = auto()
     run_time_ms = auto()
@@ -439,6 +438,7 @@ class OrderBookWsAttribute(Enum):
     asks = auto()
     lastupdateid = auto()
     changed_within_threshold = auto()
+
 
 class OrderBookWs:
     __slots__ = [attr.name for attr in OrderBookWsAttribute]
@@ -1045,7 +1045,6 @@ class MaxInventory:
 
     def to_dict(self):
         return {slot: getattr(self, slot) for slot in self.__slots__}
-        
 
 
 class ArbitragePoolsReportAttribute(Enum):
@@ -1054,18 +1053,20 @@ class ArbitragePoolsReportAttribute(Enum):
     close_time = auto()
     day = auto()
     report = auto()  # list[ArbitragePool]: 套利池列表，每个元素包含 coin、short_leg、long_legs 等信息
+    fee_rate = auto()  # Dict[str, Dict[str, float]]: 所有inst_code的手续费，格式为 {inst_code: {"maker": float, "taker": float}}
     other = auto()
 
 
 class ArbitragePoolsReport:
     __slots__ = [attr.name for attr in ArbitragePoolsReportAttribute]
 
-    def __init__(self, event_time_ms, open_time, close_time, day, report, other=None):
+    def __init__(self, event_time_ms, open_time, close_time, day, report, fee_rate=None, other=None):
         self.event_time_ms = event_time_ms
-        self.open_time = open_time  
+        self.open_time = open_time
         self.close_time = close_time
-        self.day = day  
+        self.day = day
         self.report = report
+        self.fee_rate = fee_rate if fee_rate is not None else {}
         self.other = other if other is not None else {}
 
     def to_dict(self):
@@ -1087,3 +1088,28 @@ class ArbitragePoolsReport:
             else:
                 result[slot] = value
         return result
+
+
+class FeeDiscountType(Enum):
+    """Fee discount types."""
+    platform_token_discount = auto()  # Platform token discount (BNB, HT, OKB, etc.)
+    holding_discount = auto()  # Holding discount
+
+
+class FeeStructureKey(Enum):
+    """Keys used in exchange fee structure dictionary."""
+    vip_levels = auto()
+    discounts = auto()
+    platform_token_discount = auto()
+    platform_token = auto()
+    holding_discount = auto()
+    maker = auto()
+    taker = auto()
+
+
+class FeeConfigAttribute(Enum):
+    """Fee configuration attributes for account settings."""
+    ACCOUNT_ID = auto()
+    VIP_LEVEL = auto()
+    USE_PLATFORM_TOKEN_DISCOUNT = auto()
+    HOLDING_DISCOUNT = auto()
