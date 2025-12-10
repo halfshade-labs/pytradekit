@@ -13,7 +13,12 @@ from pytradekit.utils.static_types import FeeConfigAttribute, FeeStructureKey
 from pytradekit.restful.binance_restful import BinanceClient
 from pytradekit.restful.huobi_restful import HuobiClient
 from pytradekit.restful.okex_restful import OkexClient
-from pytradekit.trading_setup.inst_code_usage import convert_inst_code_to_symbol
+from pytradekit.trading_setup.inst_code_usage import (
+    convert_inst_code_to_symbol,
+    convert_inst_code_to_pair,
+    convert_pair_to_symbol,
+    convert_symbol_to_pair,
+)
 from pytradekit.trading_setup.account_usage import get_account_api
 
 
@@ -412,7 +417,7 @@ class FeeRateResolver:
         
         Args:
             exchange_id: Exchange ID (BN, HTX, OKX, etc.)
-            inst_code: Instrument code (e.g., 'BTCUSDT_BN.PERP')
+            inst_code: Instrument code (e.g., 'BTC-USDT_BN.PERP')
             market_type: Market type ('spot' or 'perp')
         
         Returns:
@@ -422,21 +427,19 @@ class FeeRateResolver:
         client = self._create_rest_client(exchange_id, market_type)
         if client is not None:
             try:
-                symbol = convert_inst_code_to_symbol(inst_code)
-                
                 if exchange_id == ExchangeId.BN.name:
+                    # Binance needs symbol format (BTCUSDT)
+                    symbol = convert_inst_code_to_symbol(inst_code)
                     result = client.get_commission_rate(symbol)
                 elif exchange_id == ExchangeId.HTX.name:
+                    # HTX needs symbol format in lowercase (btcusdt)
+                    symbol = convert_inst_code_to_symbol(inst_code)
                     result = client.get_commission_rate(symbol.lower())
                 elif exchange_id == ExchangeId.OKX.name:
-                    # OKX needs inst_id in format like 'BTC-USDT'
-                    # symbol is already in format like 'BTCUSDT', need to convert to 'BTC-USDT'
-                    from pytradekit.trading_setup.inst_code_usage import convert_symbol_to_base_quote_format
-                    base_quote = convert_symbol_to_base_quote_format(symbol)
-                    inst_id = base_quote  # Already in 'BTC-USDT' format
-                    
+                    # OKX needs pair format (BTC-USDT)
+                    pair = convert_inst_code_to_pair(inst_code)
                     inst_type = InstCodeType.PERP.name if market_type == InstCodeType.PERP.name.lower() else InstCodeType.SPOT.name
-                    result = client.get_commission_rate(inst_type=inst_type, inst_id=inst_id)
+                    result = client.get_commission_rate(inst_type=inst_type, inst_id=pair)
                 else:
                     result = None
                 
