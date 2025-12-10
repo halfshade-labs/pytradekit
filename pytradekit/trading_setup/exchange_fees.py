@@ -10,6 +10,11 @@ from pytradekit.utils.config_agent import ConfigAgent
 from pytradekit.utils.exceptions import DependencyException
 from pytradekit.utils.dynamic_types import ExchangeId, InstCodeType
 from pytradekit.utils.static_types import FeeConfigAttribute, FeeStructureKey
+from pytradekit.restful.binance_restful import BinanceClient
+from pytradekit.restful.huobi_restful import HuobiClient
+from pytradekit.restful.okex_restful import OkexClient
+from pytradekit.trading_setup.inst_code_usage import convert_inst_code_to_symbol
+from pytradekit.trading_setup.account_usage import get_account_api
 
 
 EXCHANGE_FEES: Dict[str, Dict[str, Any]] = {
@@ -182,9 +187,9 @@ class FeeRateResolver:
             }
         """
         default_config = {
-            FeeConfigAttribute.vip_level.name: 0,
-            FeeConfigAttribute.use_platform_token_discount.name: False,
-            FeeConfigAttribute.holding_discount.name: False
+            FeeConfigAttribute.VIP_LEVEL.name: 0,
+            FeeConfigAttribute.USE_PLATFORM_TOKEN_DISCOUNT.name: False,
+            FeeConfigAttribute.HOLDING_DISCOUNT.name: False
         }
 
         if self.config is None or self.config.outer is None:
@@ -210,30 +215,30 @@ class FeeRateResolver:
             config_account_id = ConfigAgent.get_str(
                 self.config.outer,
                 section_name,
-                FeeConfigAttribute.account_id.name
+                FeeConfigAttribute.ACCOUNT_ID.name
             )
 
             # Read configuration
             vip_level = ConfigAgent.get_int(
                 self.config.outer,
                 section_name,
-                FeeConfigAttribute.vip_level.name
+                FeeConfigAttribute.VIP_LEVEL.name
             )
             use_platform_token_discount = ConfigAgent.get_boolean(
                 self.config.outer,
                 section_name,
-                FeeConfigAttribute.use_platform_token_discount.name
+                FeeConfigAttribute.USE_PLATFORM_TOKEN_DISCOUNT.name
             )
             holding_discount = ConfigAgent.get_boolean(
                 self.config.outer,
                 section_name,
-                FeeConfigAttribute.holding_discount.name
+                FeeConfigAttribute.HOLDING_DISCOUNT.name
             )
 
             result = {
-                FeeConfigAttribute.vip_level.name: vip_level,
-                FeeConfigAttribute.use_platform_token_discount.name: use_platform_token_discount,
-                FeeConfigAttribute.holding_discount.name: holding_discount
+                FeeConfigAttribute.VIP_LEVEL.name: vip_level,
+                FeeConfigAttribute.USE_PLATFORM_TOKEN_DISCOUNT.name: use_platform_token_discount,
+                FeeConfigAttribute.HOLDING_DISCOUNT.name: holding_discount
             }
             if self.logger:
                 self.logger.debug(
@@ -284,7 +289,7 @@ class FeeRateResolver:
 
         # Get account configuration
         account_config = self._get_account_fee_config(exchange_id)
-        vip_level = account_config[FeeConfigAttribute.vip_level.name]
+        vip_level = account_config[FeeConfigAttribute.VIP_LEVEL.name]
 
         # Get base fee rate from VIP level
         vip_levels_key = FeeStructureKey.vip_levels.name
@@ -304,7 +309,7 @@ class FeeRateResolver:
 
         # Apply platform token discount
         discounts_key = FeeStructureKey.discounts.name
-        if account_config[FeeConfigAttribute.use_platform_token_discount.name]:
+        if account_config[FeeConfigAttribute.USE_PLATFORM_TOKEN_DISCOUNT.name]:
             platform_token_discount = market_data[discounts_key].get(
                 FeeStructureKey.platform_token_discount.name,
                 0.0
@@ -312,7 +317,7 @@ class FeeRateResolver:
             final_fee_rate = final_fee_rate * (1 - platform_token_discount)
 
         # Apply holding discount (if applicable)
-        if account_config[FeeConfigAttribute.holding_discount.name]:
+        if account_config[FeeConfigAttribute.HOLDING_DISCOUNT.name]:
             holding_discount_data = market_data[discounts_key].get(
                 FeeStructureKey.holding_discount.name,
                 {}
@@ -325,3 +330,133 @@ class FeeRateResolver:
                 final_fee_rate = final_fee_rate * (1 - holding_discount_rate)
 
         return float(final_fee_rate)
+
+    def _create_rest_client(self, exchange_id: str, market_type: str):
+        """
+        Create REST client for the exchange.
+        
+        Args:
+            exchange_id: Exchange ID (BN, HTX, OKX, etc.)
+            market_type: Market type ('spot' or 'perp')
+        
+        Returns:
+            REST client instance or None if failed
+        """
+        if self.config is None:
+            return None
+        
+        try:
+            # Get account_id from config
+            section_name = f"{exchange_id}_ACCOUNT"
+            if self.config.outer is None or section_name not in self.config.outer.sections():
+                return None
+            
+            account_id = ConfigAgent.get_str(
+                self.config.outer,
+                section_name,
+                FeeConfigAttribute.ACCOUNT_ID.name
+            )
+            
+            # Get API credentials
+            try:
+                api_key, api_secret, api_passphrase = get_account_api(self.config, account_id)
+            except Exception as e:
+                if self.logger:
+                    self.logger.debug(f"Failed to get API credentials for {account_id}: {e}")
+                return None
+            
+            # Create client based on exchange
+            if exchange_id == ExchangeId.BN.name:
+                is_perp = (market_type == InstCodeType.PERP.name.lower())
+                return BinanceClient(
+                    logger=self.logger,
+                    key=api_key,
+                    secret=api_secret,
+                    passphrase=api_passphrase,
+                    account_id=account_id,
+                    is_perp=is_perp
+                )
+            elif exchange_id == ExchangeId.HTX.name:
+                is_swap = (market_type == InstCodeType.PERP.name.lower())
+                return HuobiClient(
+                    logger=self.logger,
+                    key=api_key,
+                    secret=api_secret,
+                    account_id=account_id,
+                    is_swap=is_swap
+                )
+            elif exchange_id == ExchangeId.OKX.name:
+                is_swap = (market_type == InstCodeType.PERP.name.lower())
+                return OkexClient(
+                    logger=self.logger,
+                    key=api_key,
+                    secret=api_secret,
+                    passphrase=api_passphrase,
+                    account_id=account_id,
+                    is_swap=is_swap
+                )
+            return None
+        except Exception as e:
+            if self.logger:
+                self.logger.debug(f"Failed to create REST client for {exchange_id}: {e}")
+            return None
+
+    def get_fee_rate_from_api(
+        self,
+        exchange_id: str,
+        inst_code: str,
+        market_type: str
+    ) -> Optional[Dict[str, float]]:
+        """
+        Get fee rate from API, fallback to static data if API fails.
+        
+        Args:
+            exchange_id: Exchange ID (BN, HTX, OKX, etc.)
+            inst_code: Instrument code (e.g., 'BTCUSDT_BN.PERP')
+            market_type: Market type ('spot' or 'perp')
+        
+        Returns:
+            Dict with FeeStructureKey.maker.name and FeeStructureKey.taker.name fee rates, or None if both API and fallback fail
+        """
+        # Try to get from API first
+        client = self._create_rest_client(exchange_id, market_type)
+        if client is not None:
+            try:
+                symbol = convert_inst_code_to_symbol(inst_code)
+                
+                if exchange_id == ExchangeId.BN.name:
+                    result = client.get_commission_rate(symbol)
+                elif exchange_id == ExchangeId.HTX.name:
+                    result = client.get_commission_rate(symbol.lower())
+                elif exchange_id == ExchangeId.OKX.name:
+                    # OKX needs inst_id in format like 'BTC-USDT'
+                    # symbol is already in format like 'BTCUSDT', need to convert to 'BTC-USDT'
+                    from pytradekit.trading_setup.inst_code_usage import convert_symbol_to_base_quote_format
+                    base_quote = convert_symbol_to_base_quote_format(symbol)
+                    inst_id = base_quote  # Already in 'BTC-USDT' format
+                    
+                    inst_type = InstCodeType.PERP.name if market_type == InstCodeType.PERP.name.lower() else InstCodeType.SPOT.name
+                    result = client.get_commission_rate(inst_type=inst_type, inst_id=inst_id)
+                else:
+                    result = None
+                
+                if result and isinstance(result, dict) and FeeStructureKey.maker.name in result and FeeStructureKey.taker.name in result:
+                    if self.logger:
+                        self.logger.debug(f"Got fee rate from API for {inst_code}: {result}")
+                    return result
+            except Exception as e:
+                if self.logger:
+                    self.logger.debug(f"API call failed for {inst_code}, using fallback: {e}")
+        
+        # Fallback to static data
+        try:
+            maker_rate = self.get_fee_rate(exchange_id, market_type, is_maker=True)
+            taker_rate = self.get_fee_rate(exchange_id, market_type, is_maker=False)
+            result = {FeeStructureKey.maker.name: maker_rate, FeeStructureKey.taker.name: taker_rate}
+            if self.logger:
+                self.logger.debug(f"Using static fee rate for {inst_code}: {result}")
+            return result
+        except Exception as e:
+            if self.logger:
+                self.logger.info(f"Failed to get fee rate for {inst_code} from both API and static data: {e}")
+            return None

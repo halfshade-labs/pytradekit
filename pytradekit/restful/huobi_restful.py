@@ -6,6 +6,7 @@ from urllib.parse import urlencode, urlparse
 import requests
 from pytradekit.utils.time_handler import get_now_time, DATETIME_FORMAT_HB
 from pytradekit.utils.dynamic_types import HttpMmthod, HuobiAuxiliary, HuobiRestful
+from pytradekit.utils.static_types import FeeStructureKey
 
 
 class HuobiClient:
@@ -155,3 +156,43 @@ class HuobiClient:
         url = HuobiAuxiliary.url_swap_balance.value
         datas = self._send_request(url, method=HttpMmthod.POST.name, params=params)
         return datas
+
+    def get_commission_rate(self, symbol=None):
+        """
+        Get commission rate for a symbol.
+        
+        Args:
+            symbol: Trading symbol (e.g., 'btcusdt'), optional
+        
+        Returns:
+            dict: {FeeStructureKey.maker.name: float, FeeStructureKey.taker.name: float} or None if failed
+        """
+        try:
+            params = {}
+            if symbol:
+                params['symbol'] = symbol.lower()
+            url = HuobiAuxiliary.url_commission_rate.value
+            result = self._send_request(url, method=HttpMmthod.GET.name, params=params, use_sign=True)
+            
+            if result and isinstance(result, dict):
+                if result.get('code') == 200 and 'data' in result:
+                    data = result['data']
+                    if isinstance(data, list) and len(data) > 0:
+                        fee_data = data[0]
+                    elif isinstance(data, dict):
+                        fee_data = data
+                    else:
+                        return None
+                    
+                    maker_rate = float(fee_data.get('maker-fee-rate', 0))
+                    taker_rate = float(fee_data.get('taker-fee-rate', 0))
+                    return {FeeStructureKey.maker.name: maker_rate, FeeStructureKey.taker.name: taker_rate}
+                elif isinstance(result, dict) and 'maker-fee-rate' in result:
+                    maker_rate = float(result.get('maker-fee-rate', 0))
+                    taker_rate = float(result.get('taker-fee-rate', 0))
+                    return {FeeStructureKey.maker.name: maker_rate, FeeStructureKey.taker.name: taker_rate}
+            return None
+        except Exception as e:
+            if self.logger:
+                self.logger.info(f"Failed to get commission rate for {symbol}: {e}")
+            return None

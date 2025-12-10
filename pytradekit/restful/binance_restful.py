@@ -12,6 +12,7 @@ from pytradekit.utils import time_handler
 from pytradekit.utils.dynamic_types import HttpMmthod, RestfulRequestsAttribute, BinanceAuxiliary, BinanceRestful
 from pytradekit.utils.exceptions import ExchangeException, MinNotionalException, InsufficientBalanceException
 from pytradekit.utils.tools import async_retry_decorator
+from pytradekit.utils.static_types import FeeStructureKey
 
 
 RECVWINDOW = 6000
@@ -563,6 +564,34 @@ class BinanceClient:
                                         params=params)
         balances = self.request(HttpMmthod.GET.name, url, params=params)
         return balances
+
+    def get_commission_rate(self, symbol):
+        """
+        Get commission rate for a symbol.
+        
+        Args:
+            symbol: Trading symbol (e.g., 'BTCUSDT')
+        
+        Returns:
+            dict: {FeeStructureKey.maker.name: float, FeeStructureKey.taker.name: float} or None if failed
+        """
+        try:
+            params = {'symbol': symbol}
+            url, params, _ = self._make_private_url(
+                url_path=BinanceAuxiliary.url_commission_rate.value,
+                params=params
+            )
+            result = self.request(HttpMmthod.GET.name, url, params=params)
+            
+            if result and isinstance(result, dict):
+                maker_rate = float(result.get('makerCommissionRate', 0))
+                taker_rate = float(result.get('takerCommissionRate', 0))
+                return {FeeStructureKey.maker.name: maker_rate, FeeStructureKey.taker.name: taker_rate}
+            return None
+        except Exception as e:
+            if self.logger:
+                self.logger.info(f"Failed to get commission rate for {symbol}: {e}")
+            return None
 
 
 class BinanceSwapClient(BinanceClient):
