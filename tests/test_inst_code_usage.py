@@ -148,8 +148,8 @@ def test_get_pair_key_mm_target_default():
 def sample_inst_code_basic():
     data = {
         InstcodeBasicAttribute.inst_code.name: [
-            'TRXUSDT_BN.SPOT', 'TUSDUSDT_BN.SPOT', 'TRXTUSD_BN.SPOT',
-            'BTCUSDT_BN.SPOT', 'ETHUSDT_BN.SPOT', 'XRPUSDT_BN.SPOT', 'XRPTUSD_BN.SPOT',
+            'TRX-USDT_BN.SPOT', 'TUSD-USDT_BN.SPOT', 'TRX-TUSD_BN.SPOT',
+            'BTC-USDT_BN.SPOT', 'ETH-USDT_BN.SPOT', 'XRP-USDT_BN.SPOT', 'XRP-TUSD_BN.SPOT',
         ],
         InstcodeBasicAttribute.base.name: ['TRX', 'TUSD', 'TRX', 'BTC', 'ETH', 'XRP', 'XRP'],
         InstcodeBasicAttribute.quote.name: ['USDT', 'USDT', 'TUSD', 'USDT', 'USDT', 'USDT', 'TUSD']
@@ -162,28 +162,28 @@ def test_get_related_inst_code_normal(mocker, sample_inst_code_basic):
     # 返回多个做市交易对，以便找到更多相关交易对
     mocker.patch(
         'pytradekit.trading_setup.inst_code_usage.fetch_mm_inst_code',
-        return_value=['TRXTUSD_BN.SPOT', 'TRXUSDT_BN.SPOT', 'TUSDUSDT_BN.SPOT', 'XRPTUSD_BN.SPOT']
+        return_value=['TRX-TUSD_BN.SPOT', 'TRX-USDT_BN.SPOT', 'TUSD-USDT_BN.SPOT', 'XRP-TUSD_BN.SPOT']
     )
     result = get_related_inst_code('BN', sample_inst_code_basic)
 
     # 验证结果包含做市交易对和相关交易对
-    # 做市交易对: TRXTUSD, TRXUSDT, TUSDUSDT, XRPTUSD
+    # 做市交易对: TRX-TUSD, TRX-USDT, TUSD-USDT, XRP-TUSD
     # all_tokens = {TRX, TUSD, USDT, XRP}
     # 相关交易对: base 和 quote 都在 all_tokens 中的交易对
-    # 应该包含: TRXTUSD, TRXUSDT, TUSDUSDT, XRPTUSD, XRPUSDT
+    # 应该包含: TRX-TUSD, TRX-USDT, TUSD-USDT, XRP-TUSD, XRP-USDT
     assert len(result) >= 5  # 至少包含做市交易对和相关交易对
-    assert 'TRXTUSD_BN.SPOT' in result[InstcodeBasicAttribute.inst_code.name].values
-    assert 'TRXUSDT_BN.SPOT' in result[InstcodeBasicAttribute.inst_code.name].values
-    assert 'TUSDUSDT_BN.SPOT' in result[InstcodeBasicAttribute.inst_code.name].values
-    assert 'XRPTUSD_BN.SPOT' in result[InstcodeBasicAttribute.inst_code.name].values
-    assert 'XRPUSDT_BN.SPOT' in result[InstcodeBasicAttribute.inst_code.name].values
+    assert 'TRX-TUSD_BN.SPOT' in result[InstcodeBasicAttribute.inst_code.name].values
+    assert 'TRX-USDT_BN.SPOT' in result[InstcodeBasicAttribute.inst_code.name].values
+    assert 'TUSD-USDT_BN.SPOT' in result[InstcodeBasicAttribute.inst_code.name].values
+    assert 'XRP-TUSD_BN.SPOT' in result[InstcodeBasicAttribute.inst_code.name].values
+    assert 'XRP-USDT_BN.SPOT' in result[InstcodeBasicAttribute.inst_code.name].values
 
 
 def test_get_related_inst_code_empty(mocker, sample_inst_code_basic):
     # 模拟fetch_mm_inst_code返回值
     mocker.patch(
         'pytradekit.trading_setup.inst_code_usage.fetch_mm_inst_code',
-        return_value=['NONEXIST_BN.SPOT']
+        return_value=['NON-EXIST_BN.SPOT']
     )
 
     result = get_related_inst_code('BN', sample_inst_code_basic)
@@ -197,11 +197,11 @@ def test_get_related_inst_code_no_related(mocker, sample_inst_code_basic):
     # 模拟fetch_mm_inst_code返回值
     mocker.patch(
         'pytradekit.trading_setup.inst_code_usage.fetch_mm_inst_code',
-        return_value=['BTCUSDT_BN.SPOT']
+        return_value=['BTC-USDT_BN.SPOT']
     )
 
     result = get_related_inst_code('BN', sample_inst_code_basic)
 
     # 验证只返回做市交易对
     assert len(result) == 1
-    assert 'BTCUSDT_BN.SPOT' in result[InstcodeBasicAttribute.inst_code.name].values
+    assert 'BTC-USDT_BN.SPOT' in result[InstcodeBasicAttribute.inst_code.name].values
