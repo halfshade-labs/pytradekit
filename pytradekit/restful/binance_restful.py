@@ -556,3 +556,4 @@ class BinanceAlphaClient(BinanceClient):
     def __init__(self, logger, key=None, secret=None, passphrase=None, account_id=None):
         super().__init__(logger, key, secret, passphrase, account_id)
         self._url = BinanceAuxiliary.alpha_url.value
+
