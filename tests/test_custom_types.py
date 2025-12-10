@@ -42,7 +42,7 @@ def test_from_string_quote_only():
 
 def test_trading_order_volume_calculation():
     # Create an instance of InstCode as required by TradingOrder
-    inst_code = InstCode(symbol='BNBTUSD', exchange_id='BN', category='SPOT')
+    inst_code = InstCode(pair='BNB-TUSD', exchange_id='BN', category='SPOT')
     a_error = None
 
     # Create the TradingOrder object
@@ -66,7 +66,7 @@ def test_trading_order_volume_calculation():
 
 def test_cancel_order_delay_calculation():
     # Create an instance of CancelOrder with timestamps
-    inst_code = InstCode(symbol='BNBTUSD', exchange_id='BN', category='SPOT')
+    inst_code = InstCode(pair='BNB-TUSD', exchange_id='BN', category='SPOT')
     client_order_id = ClientOrderId(client_order_id='1231234', strategy_id='jwj_kline')
     order = CancelOrder(
         inst_code=inst_code,

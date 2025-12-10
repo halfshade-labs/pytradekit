@@ -18,20 +18,28 @@ from pytradekit.utils.number_tools import get_random_num, handle_pcs_decimal, ge
 
 @dataclass
 class InstCode:
-    symbol: str
+    pair: str  # Changed from symbol to pair (e.g., 'BTC-USDT')
     exchange_id: ExchangeId
     category: str
 
     def __str__(self) -> str:
-        return f"{self.symbol}_{self.exchange_id}.{self.category}"
+        return f"{self.pair}_{self.exchange_id}.{self.category}"
 
     @staticmethod
     def from_string(inst_code: str):
-        pattern = r"([A-Za-z0-9]+)_([A-Za-z0-9]+)\.([A-Za-z0-9]+)"
+        # Support both old format (BTCUSDT_BN.SPOT) and new format (BTC-USDT_BN.SPOT)
+        # Pattern matches: BASE-QUOTE_EXCHANGE.TYPE or BASEQUOTE_EXCHANGE.TYPE
+        pattern = r"([A-Za-z0-9]+(?:-[A-Za-z0-9]+)?)_([A-Za-z0-9]+)\.([A-Za-z0-9]+)"
         match = re.match(pattern, inst_code)
         if match:
-            symbol, exchange_id, category = match.groups()
-            return InstCode(symbol, exchange_id, category)
+            pair_or_symbol, exchange_id, category = match.groups()
+            # If no hyphen, it's old format - convert to new format
+            if '-' not in pair_or_symbol:
+                from pytradekit.trading_setup.inst_code_usage import convert_symbol_to_pair
+                pair = convert_symbol_to_pair(pair_or_symbol)
+            else:
+                pair = pair_or_symbol.upper()
+            return InstCode(pair, exchange_id, category)
         else:
             raise DataTypeException(f"Invalid inst code format: {inst_code}")
 
@@ -39,10 +47,12 @@ class InstCode:
         return f"_{self.exchange_id}.{self.category}"
 
     def get_report_symbol(self) -> str:
+        from pytradekit.trading_setup.inst_code_usage import convert_pair_to_symbol
+        symbol = convert_pair_to_symbol(self.pair)
         if self.category == InstCodeType.SPOT.name:
-            return self.symbol
+            return symbol
         else:
-            return f"{self.symbol}_{self.category}"
+            return f"{symbol}_{self.category}"
 
 
 @dataclass
