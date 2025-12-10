@@ -851,11 +851,11 @@ class AdsAuxiliary(Enum):
 
 class BinanceAuxiliary(Enum):
     url = 'https://api.binance.com'
-    swap_url = 'https://fapi.binance.com'
+    perp_url = 'https://fapi.binance.com'
     alpha_url = 'https://www.binance.com'
     url_ws = 'wss://stream.binance.com:9443/ws'
     url_ws_base = 'wss://stream.binance.com:9443'
-    url_swap_ws = 'wss://fstream.binance.com/ws'
+    url_perp_ws = 'wss://fstream.binance.com/ws'
     user_data_stream = '/api/v3/userDataStream'
     user_swap_data_stream = '/fapi/v1/listenKey'
     url_ticker_24hr = '/api/v3/ticker/24hr'
@@ -891,11 +891,13 @@ class BinanceAuxiliary(Enum):
     url_swap_margin_type = '/fapi/v1/marginType'
     url_swap_open_interes_hist = '/futures/data/openInterestHist'
     url_alpha_exchange_info = "/bapi/defi/v1/public/wallet-direct/buw/wallet/cex/alpha/all/token/list"
+    url_commission_rate = '/fapi/v1/commissionRate'
     ws_aggtrade = "@aggTrade"
     ws_ticker = "!ticker@arr"
     ws_kline_interval = '@kline_15m'
     ws_book_ticker = '@bookTicker'
     ws_orderbook = '@depth'
+    ws_lastprice = '@markPrice@1s'
     ws_ping_sleep = 1800
     ws_reconnect_interval = 60 * 60 * 24
     ws_ping = 'ping'
@@ -923,7 +925,7 @@ class BitfinexAuxiliary(Enum):
 
 class HuobiAuxiliary(Enum):
     url = 'https://api.huobi.pro'
-    url_ws = 'wss://api.huobi.pro/ws/v2'
+    url_ws = 'wss://api.huobi.pro/ws'
     url_exchange = '/v2/settings/common/symbols'
     url_ticker = '/market/tickers'
     swap_url = 'https://api.hbdm.com'
@@ -938,13 +940,14 @@ class HuobiAuxiliary(Enum):
     url_orders = '/v1/order/history'
     url_trades = '/v1/order/matchresults'
     url_swap_balance = '/linear-swap-api/v1/swap_balance_valuation'
+    url_commission_rate = '/v2/reference/transact-fee-rate/get'
     ws_ping_sleep = 1800
     reconnection_time_sleep = 60 * 60 * 2
 
 
 class OkexAuxiliary(Enum):
     url = 'https://www.okx.com'
-    url_ws = 'wss://ws.okx.com:8443/ws/v5/private'
+    url_ws = 'wss://ws.okx.com:8443/ws/v5/public'
     swap_url = 'https://www.okx.com'
     url_swap_position = '/api/v5/account/positions'
     url_swap_interest = '/api/v5/account/interest-accrued'
@@ -958,6 +961,7 @@ class OkexAuxiliary(Enum):
     url_transfer_history = '/api/v5/asset/bills-history'
     url_orders = '/api/v5/trade/orders-history'
     url_trades = '/api/v5/trade/fills-history'
+    url_commission_rate = '/api/v5/account/trade-fee'
     ws_orders = '/ws/v5/private'
     ws_ping_sleep = 1800
     reconnection_time_sleep = 60 * 60 * 2

@@ -40,41 +40,17 @@ line_profiler = optional_import("line_profiler")
 memory_profiler = optional_import("memory_profiler")
 
 
-def convert_pair_to_inst_code(pair: str, exchange_id=ExchangeId.BN.name, types=InstCodeType.SPOT.name) -> str:
-    """
-    trx_usdt --> TRXUSDT_BN.SPOT
-    """
-    parts = pair.split('_')
-    parts = [p.upper() for p in parts]
-    inst_code = f'{parts[0]}-{parts[1]}_{exchange_id}.{types}'
-    return inst_code
-
-
-def convert_coin_to_inst_code(coin: str, exchange_id=ExchangeId.BN.name, types=InstCodeType.SPOT.name) -> str:
-    pair = f'{coin.upper()}-USDT'
-    inst_code = f'{pair}_{exchange_id}.{types}'
-    return inst_code
-
-
-def convert_base_quote_to_inst_code(base: str, quote: str, exchange_id=ExchangeId.BN.name, types=InstCodeType.SPOT.name) -> str:
-    """
-    trxusdt --> TRXUSDT_BN.SPOT
-    """
-    return base.upper() + "-" + quote.upper() + "_" + exchange_id + "." + types
-
-
-def convert_inst_code_to_pair(inst_code: str) -> str:
-    """
-    TRX-USDT_BN.SPOT -> trx-usdt
-    """
-    symbol = inst_code.split('_')[0].upper()
-    return symbol
-
-
-def convert_pair_to_symbol(pair):
-    parts = pair.split('_')
-    print()
-    return parts[0] + parts[1]
+# Import conversion functions from inst_code_usage to avoid duplication
+from pytradekit.trading_setup.inst_code_usage import (
+    convert_pair_to_inst_code,
+    convert_coin_to_inst_code,
+    convert_base_quote_to_inst_code,
+    convert_inst_code_to_pair,
+    convert_pair_to_symbol,
+    convert_symbol_to_pair,
+    convert_symbol_to_inst_code,
+    convert_inst_code_to_symbol,
+)
 
 
 def synchronized(func):
@@ -485,9 +461,9 @@ def get_mongo(config, logger, running_mode):
 def get_redis(logger, config, running_mode):
     def get_redis_url(config, running_mode=RunningMode.testing_flag.name):
         if running_mode == RunningMode.production_flag.name:
-            return encrypt_decrypt(config.private[Env.redis_url.name], 'decrypt')
+            return encrypt_decrypt(config.private[Env.REDIS_URL.name], 'decrypt')
         else:
-            return encrypt_decrypt(config.private[Env.redis_url.name], 'decrypt')
+            return encrypt_decrypt(config.private[Env.REDIS_URL.name], 'decrypt')
 
     redis_url = get_redis_url(config, running_mode=running_mode)
     return RedisOperations(logger, redis_url)
