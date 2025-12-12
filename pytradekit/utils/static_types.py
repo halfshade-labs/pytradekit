@@ -1113,3 +1113,18 @@ class FeeConfigAttribute(Enum):
     VIP_LEVEL = auto()
     USE_PLATFORM_TOKEN_DISCOUNT = auto()
     HOLDING_DISCOUNT = auto()
+
+
+class Portfolio(Enum):
+    coin = auto()
+    short = auto()
+    long = auto()
+
+
+class TickSnapshot(Enum):
+    ts_ms = auto()
+    local_ts = auto()
+    delay_ms = auto()
+    bid = auto()
+    ask = auto()
+    premium = auto()
