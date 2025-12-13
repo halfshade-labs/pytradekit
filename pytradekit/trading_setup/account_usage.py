@@ -1,9 +1,7 @@
-from pytradekit.utils.dynamic_types import AdsAttribute, RunningMode
-from pytradekit.utils.ads_operations import AdsApi
+from pytradekit.utils.dynamic_types import RunningMode
 from pytradekit.utils.tools import encrypt_decrypt
 
 
-from utils.types import Env
 
 class MonitorAccount:
     BN = ['BN_000']
@@ -32,26 +30,6 @@ class ExchangeApi:
         self.passphrase = passphrase
         self.tag = tag
 
-
-def get_api_by_ads(account_code: str, ads_api: AdsApi, logger=None, account_id=None, running_mode=RunningMode.production_flag.name):
-    try:
-        if (running_mode == RunningMode.production_flag.name) and account_code != 'all':
-            ads_res = ads_api.get_keys(account_code)
-            api_key = ads_res[AdsAttribute.access_key.value]
-            api_secret = ads_res[AdsAttribute.secret_key.value]
-            passphrase = ads_res[AdsAttribute.passphrase.value]
-            tag = ads_res[AdsAttribute.tag.value]
-
-            return ExchangeApi(api_key, api_secret, passphrase, tag)
-        else:
-            if logger:
-                logger.info(f"Using empty API credentials for account_code={account_id}")
-            return ExchangeApi(None, None, None, None)
-
-    except KeyError as e:
-        if logger:
-            logger.info(f"KeyError: account_code={account_id} missing in config/private. Error: {e}")
-        return ExchangeApi(None, None, None, None)
 
 def get_account_api(config, account_id):
     api_key = encrypt_decrypt(config.private[account_id + '_key'], 'decrypt')
