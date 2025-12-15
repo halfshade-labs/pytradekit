@@ -281,6 +281,10 @@ class HuobiWebSocket(Enum):
     trade_price = 'tradePrice'
     traded_time_ms = 'tradeTime'
     trade_id = 'tradeId'
+    tick = 'tick'
+    orderbook_bid = 'bid'
+    orderbook_ask = 'ask'
+    orderbook_time = 'quoteTime'
 
 
 class OkexWebSocket(Enum):
@@ -310,6 +314,9 @@ class OkexWebSocket(Enum):
     trade_id = 'tradeId'
     trade_fee = 'fee'
     trade_fee_coin = 'feeCcy'
+    orderbook_bid = 'bidPx'
+    orderbook_ask = 'askPx'
+    orderbook_time = 'ts'
 
 
 class BybitWebSocket(Enum):
@@ -1344,7 +1351,6 @@ class MmTarget(Enum):
     volume_24h = auto()
 
 
-
 class TickerPriceFields(Enum):
     event_time_ms = auto()
 
@@ -1356,4 +1362,3 @@ class TradingProposalType(Enum):
     no_trade = auto()
     trading_proposal = auto()
     wake_up_time = auto()
-
