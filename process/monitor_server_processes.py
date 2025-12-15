@@ -6,7 +6,7 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 from pytradekit.utils.config_agent import ConfigAgent
 from pytradekit.utils.tools import find_project_root
 from pytradekit.utils.dynamic_types import RunningMode
-from pytradekit.slack_app.chat_app import ChatApp
+from pytradekit.lark_app.lark_chat_app import LarkChatApp
 from pytradekit.utils.tools import encrypt_decrypt
 
 CPUMAX = 400
@@ -17,7 +17,7 @@ ALLMEMORYMAX = 50
 
 
 def send_ad(chat_app, df, description, running_mode):
-    title = f'monitor server processes ({running_mode})'  # TODO 没有输入变量running_mode
+    title = f'monitor server processes ({running_mode})'
     report_block = chat_app.get_fully_df_report(df=df, description=description, title=title, is_save_data_flag=False)
     chat_app.send_message(report_block)
 
@@ -90,11 +90,7 @@ def get_process_info(chat_app, running_mode):
 
 
 def run(config, onehour=False, running_mode=None):
-    slack_token = encrypt_decrypt(config.private['trading_system_token'], 'decrypt')
-    channel_id = encrypt_decrypt(config.private['jwj_system_health_webhook'], 'decrypt')
-    chat_app = ChatApp(channel_id=channel_id,
-                       token=slack_token,
-                       logger=logging)
+    chat_app = LarkChatApp(webhook_url='https://open.larksuite.com/open-apis/bot/v2/hook/d38a337c-11c2-4910-8b8b-9aa3518caf25')
     all_memory, cpu_exc, df = get_process_info(chat_app, running_mode)
     if all_memory > ALLMEMORYMAX:
         send_ad(chat_app, df, description=[
