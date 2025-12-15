@@ -16,12 +16,6 @@ class Api(Enum):
     tag = auto()
 
 
-class AdsAttribute(Enum):
-    access_key = 'accessKey'
-    secret_key = 'secretKey'
-    passphrase = 'passphrase'
-    tag = 'tag'
-
 
 class StrategyId:
     ALL = 'all'
@@ -849,11 +843,6 @@ class WebsocketStatus(Enum):
     RECOVERY = auto()
     INIT = auto()
     STANDBY = auto()
-
-
-class AdsAuxiliary(Enum):
-    pro_url = 'http://liquid-account.prd8.apne-general.huobiapps.com'
-    url_key = '/api/account/query'
 
 
 class BinanceAuxiliary(Enum):
