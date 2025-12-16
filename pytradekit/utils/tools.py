@@ -8,6 +8,7 @@ import time
 import subprocess
 import zipfile
 import importlib
+from urllib.parse import quote_plus
 
 from cryptography.fernet import Fernet
 from cryptography.hazmat.backends import default_backend
@@ -448,10 +449,32 @@ def unzip_to_df(zip_file_path: str):
 
 def get_mongo(config, logger, running_mode):
     def get_mongodb_url(config, running_mode=RunningMode.testing_flag.name):
-        if running_mode != RunningMode.development_flag.name:
-            return encrypt_decrypt(config.private[Env.MONGODB_URL.name], 'decrypt')
+        mongodb_url_key = Env.MONGODB_URL.name
+        if mongodb_url_key in config.private and config.private[mongodb_url_key]:
+            return encrypt_decrypt(config.private[mongodb_url_key], 'decrypt')
+        
+        # Build MongoDB URL from environment variables if MONGODB_URL is not set
+        mongo_host = config.private.get(Env.MONGO_HOST.name ) 
+        mongo_port = config.private.get(Env.MONGO_PORT.name)
+        mongo_username = config.private.get(Env.MONGO_USERNAME.name)
+        mongo_password = config.private.get(Env.MONGO_PASSWORD.name)
+        
+        if logger:
+            logger.debug(f"MongoDB config: host={mongo_host}, port={mongo_port}, username={mongo_username}, password={'***' if mongo_password else None}")
+        
+        if mongo_username and mongo_password:
+            username = quote_plus(mongo_username)
+            password = quote_plus(mongo_password)
+            # 添加 authSource=admin 用于 root 用户认证
+            mongodb_url = f"mongodb://{username}:{password}@{mongo_host}:{mongo_port}/?authSource=admin"
+            if logger:
+                logger.debug(f"Built MongoDB URL: mongodb://{username}:***@{mongo_host}:{mongo_port}/?authSource=admin")
+            return mongodb_url
         else:
-            return encrypt_decrypt(config.private[Env.MONGODB_URL.name], 'decrypt')
+            mongodb_url = f"mongodb://{mongo_host}:{mongo_port}/"
+            if logger:
+                logger.debug(f"Built MongoDB URL without auth: {mongodb_url}")
+            return mongodb_url
 
     mongodb_url = get_mongodb_url(config, running_mode=running_mode)
     mongo = MongodbOperations(mongodb_url, logger=logger)
@@ -460,11 +483,26 @@ def get_mongo(config, logger, running_mode):
 
 def get_redis(logger, config, running_mode):
     def get_redis_url(config, running_mode=RunningMode.testing_flag.name):
-        if running_mode == RunningMode.production_flag.name:
-            return encrypt_decrypt(config.private[Env.REDIS_URL.name], 'decrypt')
+        redis_url_key = Env.REDIS_URL.name
+        if redis_url_key in config.private and config.private[redis_url_key]:
+            return encrypt_decrypt(config.private[redis_url_key], 'decrypt')
+        
+        # Build Redis URL from environment variables if REDIS_URL is not set
+        redis_host = config.private.get(Env.REDIS_HOST.name) 
+        redis_port = config.private.get(Env.REDIS_PORT.name)
+        redis_username = config.private.get(Env.REDIS_USERNAME.name)
+        redis_password = config.private.get(Env.REDIS_PASSWORD.name)
+        
+        if redis_username and redis_password:
+            username = quote_plus(redis_username)
+            password = quote_plus(redis_password)
+            return f"redis://{username}:{password}@{redis_host}:{redis_port}/"
+        elif redis_password:
+            password = quote_plus(redis_password)
+            return f"redis://:{password}@{redis_host}:{redis_port}/"
         else:
-            return encrypt_decrypt(config.private[Env.REDIS_URL.name], 'decrypt')
-
+            return f"redis://{redis_host}:{redis_port}/"
+    
     redis_url = get_redis_url(config, running_mode=running_mode)
     return RedisOperations(logger, redis_url)
 
