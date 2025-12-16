@@ -1313,6 +1313,7 @@ class RedisFields(Enum):
     trading_proposal = auto()
     non_compliant_inst_code = auto()
     depth_order_theoretical = auto()
+    portfolios = auto()
 
 
 class DuplicateFields(Enum):

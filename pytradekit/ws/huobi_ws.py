@@ -116,8 +116,7 @@ class HuobiWsManager(WsManager):
                 self._pong(msg['data']['ts'])
                 return
             if 'ch' in msg and 'bbo' in msg['ch']:
-                if self._queue:
-                    self._queue.put_nowait(msg)
+                self._queue.put_nowait(msg)
                 return
         except Exception as e:
             self.logger.exception(e)
