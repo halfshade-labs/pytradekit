@@ -49,6 +49,7 @@ class BinanceWsManager(WsManager):
         self._is_supplement = is_supplement
         self._bn_client = bn_client
         self._mm_symbol_list = mm_symbol_list
+        self.verify_bookticker_duplicate = {}
 
     def _get_api_url(self) -> str:
         return self._api_url
@@ -155,7 +156,6 @@ class BinanceWsManager(WsManager):
         params = []
         for symbol in symbols:
             params.append(f'{symbol.lower()}{BinanceAuxiliary.ws_lastprice.value}')
-        print(params)
         self.start_subscribe(params)
         self._ping(BinanceAuxiliary.ws_ping_sleep.value)
 
@@ -200,6 +200,22 @@ class BinanceWsManager(WsManager):
             if BinanceAuxiliary.ws_ping.value in msg:
                 self._pong()
             else:
+                if BinanceWebSocket.symbol.value not in msg:
+                    return
+                if msg[BinanceWebSocket.symbol.value] not in self.verify_bookticker_duplicate:
+                    self.verify_bookticker_duplicate[msg[BinanceWebSocket.symbol.value]] = msg[
+                                                                                               BinanceWebSocket.orderbook_asks.value] + \
+                                                                                           msg[
+                                                                                               BinanceWebSocket.orderbook_bids.value]
+                else:
+                    if self.verify_bookticker_duplicate[msg[BinanceWebSocket.symbol.value]] == msg[
+                        BinanceWebSocket.orderbook_asks.value] + msg[BinanceWebSocket.orderbook_bids.value]:
+                        return
+                    else:
+                        self.verify_bookticker_duplicate[msg[BinanceWebSocket.symbol.value]] = msg[
+                                                                                                   BinanceWebSocket.orderbook_asks.value] + \
+                                                                                               msg[
+                                                                                                   BinanceWebSocket.orderbook_bids.value]
                 self._queue.put_nowait(msg)
         except Exception as e:
             self.logger.exception(e)
