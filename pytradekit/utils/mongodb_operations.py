@@ -120,8 +120,10 @@ class MongodbOperations:
     @staticmethod
     def _create_client(mongodb_url):
         parsed = urlparse(mongodb_url)
-        username = quote_plus(parsed.username or "")
-        password = quote_plus(parsed.password or "")
+        # urlparse automatically decodes URL-encoded values, so we should NOT re-encode them
+        # The username and password in the URL are already properly encoded by quote_plus in tools.py
+        username = parsed.username or ""
+        password = parsed.password or ""
         netloc = f"{username}:{password}@{parsed.hostname}:{parsed.port}"
         safe_mongodb_url = urlunparse(
             (parsed.scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment))
