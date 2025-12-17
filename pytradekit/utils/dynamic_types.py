@@ -5,8 +5,14 @@ from pytradekit.utils.static_types import TradeAttribute, OrderAttribute
 class Env(Enum):
     MONGODB_URL = auto()
     REDIS_URL = auto()
-    mongodb_url = auto()
-    redis_url = auto()
+    MONGO_HOST = auto()
+    MONGO_PORT = auto()
+    MONGO_USERNAME = auto()
+    MONGO_PASSWORD = auto()
+    REDIS_HOST = auto()
+    REDIS_PORT = auto()
+    REDIS_USERNAME = auto()
+    REDIS_PASSWORD = auto()
 
 
 class Api(Enum):
