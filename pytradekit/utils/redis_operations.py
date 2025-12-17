@@ -271,3 +271,13 @@ class RedisOperations:
         except Exception as e:
             self.logger.exception(f"Failed to set depth_order_theoretical for {key}: {e}")
             raise DependencyException(f"Failed to set depth_order_theoretical for {key}") from e
+
+    def set_portfolios(self, value):
+        key = f"{RedisFields.portfolios.name}"
+        lock = self.get_lock_for_resource(key)
+        try:
+            with lock:
+                self.client.publish(key, json.dumps(value))
+        except Exception as e:
+            self.logger.exception(f"Failed to set portfolios for {key}: {e}")
+            raise DependencyException(f"Failed to set portfolios for {key}") from e
