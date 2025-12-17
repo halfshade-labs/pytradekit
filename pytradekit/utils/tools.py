@@ -449,11 +449,6 @@ def unzip_to_df(zip_file_path: str):
 
 def get_mongo(config, logger, running_mode):
     def get_mongodb_url(config, running_mode=RunningMode.testing_flag.name):
-        mongodb_url_key = Env.MONGODB_URL.name
-        if mongodb_url_key in config.private and config.private[mongodb_url_key]:
-            return encrypt_decrypt(config.private[mongodb_url_key], 'decrypt')
-        
-        # Build MongoDB URL from environment variables if MONGODB_URL is not set
         mongo_host = config.private.get(Env.MONGO_HOST.name ) 
         mongo_port = config.private.get(Env.MONGO_PORT.name)
         mongo_username = config.private.get(Env.MONGO_USERNAME.name)
@@ -483,11 +478,6 @@ def get_mongo(config, logger, running_mode):
 
 def get_redis(logger, config, running_mode):
     def get_redis_url(config, running_mode=RunningMode.testing_flag.name):
-        redis_url_key = Env.REDIS_URL.name
-        if redis_url_key in config.private and config.private[redis_url_key]:
-            return encrypt_decrypt(config.private[redis_url_key], 'decrypt')
-        
-        # Build Redis URL from environment variables if REDIS_URL is not set
         redis_host = config.private.get(Env.REDIS_HOST.name) 
         redis_port = config.private.get(Env.REDIS_PORT.name)
         redis_username = config.private.get(Env.REDIS_USERNAME.name)
