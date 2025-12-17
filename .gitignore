@@ -41,6 +41,7 @@ ipython_config.py
 jwjbasis/.env
 .venv
 .env
+infra/.env
 env/
 venv/
 ENV/

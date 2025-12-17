@@ -50,6 +50,17 @@ class ConfigAgent:
         env_path = os.path.join(self.__project_root, '..', '.env')
         try:
             config = dotenv_values(env_path)
+            
+            # Merge with system environment variables (docker compose sets these)
+            # Merge environment variables into config (env vars take precedence)
+            if config is None:
+                config = {}
+            for key in ['MONGO_HOST', 'MONGO_PORT', 'MONGO_USERNAME', 'MONGO_PASSWORD', 
+                       'REDIS_HOST', 'REDIS_PORT', 'REDIS_USERNAME', 'REDIS_PASSWORD']:
+                env_value = os.environ.get(key)
+                if env_value:
+                    config[key] = env_value
+            
             return config
         except Exception as e:
             raise DependencyException(f"Error loading private config from {env_path}") from e
