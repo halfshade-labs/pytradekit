@@ -46,6 +46,7 @@ class TimeConvert:
     HOUR_TO_MIN = 60
     MIN_TO_S = 60
     S_TO_MS = 1000
+    MINUTE_TO_MS = 60 * 1000
     HOUR_TO_MS = 60 * 60 * 1000
     HOUR_TO_S = 60 * 60
     DAY_TO_S = 60 * 60 * 24

@@ -1300,7 +1300,7 @@ class MongodbOperations:
         if self.logger:
             self.logger.info(f"Inserted arbitrage pools report: {document_id}")
 
-    def read_arbitrage_pools_reports(self, day: str, latest: bool = True):
+    def read_arbitrage_pools_reports(self, day: str = None, latest: bool = True):
         """
         读取套利交易池报告
         
@@ -1317,8 +1317,10 @@ class MongodbOperations:
         )
         
         collection = self.client[collection_path.db_name][collection_path.collection_name]
-        
-        query = {ArbitragePoolsReportAttribute.day.name: day}
+
+        query = {}
+        if day:
+            query[ArbitragePoolsReportAttribute.day.name] = day
         cursor = collection.find(query).sort(ArbitragePoolsReportAttribute.event_time_ms.name, -1)
         
         if latest:
