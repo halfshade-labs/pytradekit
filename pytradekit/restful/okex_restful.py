@@ -174,5 +174,5 @@ class OkexClient:
             return None
         except Exception as e:
             if self.logger:
-                self.logger.info(f"Failed to get commission rate for {inst_type}/{inst_id}: {e}")
+                self.logger.info(f"Failed to get commission rate from OKX for {inst_type}/{inst_id}: {e}")
             return None
