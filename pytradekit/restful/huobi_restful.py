@@ -5,7 +5,7 @@ import base64
 from urllib.parse import urlencode, urlparse
 import requests
 from pytradekit.utils.time_handler import get_now_time, DATETIME_FORMAT_HB
-from pytradekit.utils.dynamic_types import HttpMmthod, HuobiAuxiliary, HuobiRestful
+from pytradekit.utils.dynamic_types import HttpMmthod, HuobiAuxiliary, HuobiRestful, InstCodeType
 from pytradekit.utils.static_types import FeeStructureKey
 
 
@@ -193,6 +193,7 @@ class HuobiClient:
                     return {FeeStructureKey.maker.name: maker_rate, FeeStructureKey.taker.name: taker_rate}
             return None
         except Exception as e:
+            market_type = InstCodeType.PERP.name if hasattr(self, '_url') and 'hbdm' in self._url else InstCodeType.SPOT.name
             if self.logger:
-                self.logger.info(f"Failed to get commission rate from HTX for {symbol}: {e}")
+                self.logger.info(f"Failed to get commission rate from HTX {market_type} for {symbol}: {e}")
             return None
