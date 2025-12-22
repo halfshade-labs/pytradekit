@@ -467,7 +467,7 @@ class FeeRateResolver:
                     return result
             except Exception as e:
                 if self.logger:
-                    self.logger.info(f"Failed to get commission rate from {exchange_id} API for {inst_code}: {e}")
+                    self.logger.info(f"Failed to get commission rate from {exchange_id} {market_type_normalized} API for {inst_code}: {e}")
         
         # Fallback to static data
         try:
