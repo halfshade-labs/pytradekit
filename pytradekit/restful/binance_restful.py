@@ -590,7 +590,7 @@ class BinanceClient:
             return None
         except Exception as e:
             if self.logger:
-                self.logger.info(f"Failed to get commission rate for {symbol}: {e}")
+                self.logger.info(f"Failed to get commission rate from Binance for {symbol}: {e}")
             return None
 
 
