@@ -423,6 +423,18 @@ class FeeRateResolver:
         Returns:
             Dict with FeeStructureKey.maker.name and FeeStructureKey.taker.name fee rates, or None if both API and fallback fail
         """
+        # Normalize market_type to match EXCHANGE_FEES keys (SPOT or PERP)
+        market_type_lower = market_type.lower()
+        if market_type_lower == InstCodeType.PERP.name.lower():
+            market_type_normalized = InstCodeType.PERP.name
+        elif market_type_lower == InstCodeType.SPOT.name.lower():
+            market_type_normalized = InstCodeType.SPOT.name
+        else:
+            if self.logger:
+                self.logger.info(f"Unknown market type: {market_type} for {inst_code}")
+            # Still try to use static data as fallback
+            market_type_normalized = InstCodeType.SPOT.name if InstCodeType.SPOT.name.lower() in market_type_lower else InstCodeType.PERP.name
+        
         # Try to get from API first
         client = self._create_rest_client(exchange_id, market_type)
         if client is not None:
@@ -438,8 +450,14 @@ class FeeRateResolver:
                 elif exchange_id == ExchangeId.OKX.name:
                     # OKX needs pair format (BTC-USDT)
                     pair = convert_inst_code_to_pair(inst_code)
-                    inst_type = InstCodeType.PERP.name if market_type == InstCodeType.PERP.name.lower() else InstCodeType.SPOT.name
+                    inst_type = InstCodeType.PERP.name if market_type_lower == InstCodeType.PERP.name.lower() else InstCodeType.SPOT.name
                     result = client.get_commission_rate(inst_type=inst_type, inst_id=pair)
+                    # OKX API returns fee rates with opposite sign, need to negate
+                    if result and isinstance(result, dict):
+                        if FeeStructureKey.maker.name in result:
+                            result[FeeStructureKey.maker.name] = -result[FeeStructureKey.maker.name]
+                        if FeeStructureKey.taker.name in result:
+                            result[FeeStructureKey.taker.name] = -result[FeeStructureKey.taker.name]
                 else:
                     result = None
                 
@@ -453,8 +471,8 @@ class FeeRateResolver:
         
         # Fallback to static data
         try:
-            maker_rate = self.get_fee_rate(exchange_id, market_type, is_maker=True)
-            taker_rate = self.get_fee_rate(exchange_id, market_type, is_maker=False)
+            maker_rate = self.get_fee_rate(exchange_id, market_type_normalized, is_maker=True)
+            taker_rate = self.get_fee_rate(exchange_id, market_type_normalized, is_maker=False)
             result = {FeeStructureKey.maker.name: maker_rate, FeeStructureKey.taker.name: taker_rate}
             if self.logger:
                 self.logger.debug(f"Using static fee rate for {inst_code}: {result}")
@@ -462,4 +480,28 @@ class FeeRateResolver:
         except Exception as e:
             if self.logger:
                 self.logger.info(f"Failed to get fee rate for {inst_code} from both API and static data: {e}")
+            # Last resort: use VIP level from config file
+            try:
+                account_config = self._get_account_fee_config(exchange_id)
+                vip_level = account_config[FeeConfigAttribute.VIP_LEVEL.name]
+                
+                if exchange_id in self.exchange_fees and market_type_normalized in self.exchange_fees[exchange_id]:
+                    vip_levels = self.exchange_fees[exchange_id][market_type_normalized][FeeStructureKey.vip_levels.name]
+                    # Use the configured VIP level, or fallback to 0 if not found
+                    if vip_level not in vip_levels:
+                        if self.logger:
+                            self.logger.info(f"VIP level {vip_level} not found for {exchange_id} {market_type_normalized}, using VIP 0")
+                        vip_level = 0
+                    
+                    vip_rates = vip_levels[vip_level]
+                    result = {
+                        FeeStructureKey.maker.name: vip_rates[FeeStructureKey.maker.name],
+                        FeeStructureKey.taker.name: vip_rates[FeeStructureKey.taker.name]
+                    }
+                    if self.logger:
+                        self.logger.info(f"Using fee rate from config (VIP {vip_level}) for {inst_code}: {result}")
+                    return result
+            except Exception as e2:
+                if self.logger:
+                    self.logger.info(f"Failed to get fee rate from config for {inst_code}: {e2}")
             return None
