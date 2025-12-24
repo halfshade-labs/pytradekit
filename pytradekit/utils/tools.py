@@ -103,7 +103,7 @@ def retry(try_times=RETRY_TIMES, interval=RETRY_INTERVAL):
 
                     if attempts_left == 0:
                         retry_logs.append(
-                            f'All retry attempts failed. Last error: {str(last_exception)} {AtUser.debug}')
+                            f'All retry attempts failed. Last error: {str(last_exception)}')
                         if logger:
                             logger.info("\n".join(retry_logs))
                         raise ExchangeException('try times exceeded') from last_exception
