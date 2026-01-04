@@ -40,8 +40,8 @@ import pandas as pd
 from apscheduler.schedulers.blocking import BlockingScheduler
 from pytradekit.utils.config_agent import ConfigAgent
 from pytradekit.utils.tools import find_project_root, encrypt_decrypt
-from pytradekit.utils.dynamic_types import SlackUser, RunningMode
-from pytradekit.slack_app.chat_app import ChatApp
+from pytradekit.utils.dynamic_types import RunningMode
+from pytradekit.notifiers.slack_app.chat_app import ChatApp
 
 
 class SystemMonitor:

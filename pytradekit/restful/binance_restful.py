@@ -9,7 +9,7 @@ from cryptography.hazmat.primitives import serialization
 from nacl.signing import SigningKey
 
 from pytradekit.utils import time_handler
-from pytradekit.utils.dynamic_types import HttpMmthod, RestfulRequestsAttribute, BinanceAuxiliary, BinanceRestful
+from pytradekit.utils.dynamic_types import HttpMmthod, RestfulRequestsAttribute, BinanceAuxiliary, BinanceRestful, InstCodeType
 from pytradekit.utils.exceptions import ExchangeException, MinNotionalException, InsufficientBalanceException
 from pytradekit.utils.tools import async_retry_decorator
 from pytradekit.utils.static_types import FeeStructureKey
@@ -576,20 +576,41 @@ class BinanceClient:
         """
         try:
             params = {'symbol': symbol}
-            url, params, _ = self._make_private_url(
-                url_path=BinanceAuxiliary.url_commission_rate.value,
-                params=params
-            )
-            result = self.request(HttpMmthod.GET.name, url, params=params)
-
-            if result and isinstance(result, dict):
-                maker_rate = float(result.get('makerCommissionRate', 0))
-                taker_rate = float(result.get('takerCommissionRate', 0))
-                return {FeeStructureKey.maker.name: maker_rate, FeeStructureKey.taker.name: taker_rate}
+            
+            # Use different API endpoints for spot and futures
+            if hasattr(self, '_url') and 'fapi' in self._url:
+                # Futures API: /fapi/v1/commissionRate
+                url, params, _ = self._make_private_url(
+                    url_path=BinanceAuxiliary.url_commission_rate.value,
+                    params=params
+                )
+                result = self.request(HttpMmthod.GET.name, url, params=params)
+                
+                if result and isinstance(result, dict):
+                    maker_rate = float(result.get('makerCommissionRate', 0))
+                    taker_rate = float(result.get('takerCommissionRate', 0))
+                    return {FeeStructureKey.maker.name: maker_rate, FeeStructureKey.taker.name: taker_rate}
+            else:
+                # Spot API: /api/v3/account/commission
+                url, params, _ = self._make_private_url(
+                    url_path=BinanceAuxiliary.url_spot_commission_rate.value,
+                    params=params
+                )
+                result = self.request(HttpMmthod.GET.name, url, params=params)
+                
+                if result and isinstance(result, dict):
+                    # Spot API returns standardCommission with maker/taker rates
+                    standard_commission = result.get('standardCommission', {})
+                    if standard_commission:
+                        maker_rate = float(standard_commission.get('maker', 0))
+                        taker_rate = float(standard_commission.get('taker', 0))
+                        return {FeeStructureKey.maker.name: maker_rate, FeeStructureKey.taker.name: taker_rate}
+            
             return None
         except Exception as e:
+            market_type = InstCodeType.PERP.name if hasattr(self, '_url') and 'fapi' in self._url else InstCodeType.SPOT.name
             if self.logger:
-                self.logger.info(f"Failed to get commission rate for {symbol}: {e}")
+                self.logger.info(f"Failed to get commission rate from Binance {market_type} for {symbol}: {e}")
             return None
 
 
