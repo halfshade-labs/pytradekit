@@ -22,7 +22,6 @@ class Api(Enum):
     tag = auto()
 
 
-
 class StrategyId:
     ALL = 'all'
     JWJ_KLINE = 'jwj_kline'
@@ -885,7 +884,7 @@ class BinanceAuxiliary(Enum):
     url_swap_ticker_price = '/fapi/v2/ticker/price'
     url_swap_all_order = '/fapi/v1/allOrders'
     url_swap_force_order = '/fapi/v1/forceOrders'
-    url_swap_position_risk = '/fapi/v2/positionRisk'
+    url_swap_position_risk = '/fapi/v3/positionRisk'
     url_swap_income = '/fapi/v1/income'
     url_swap_balance = '/fapi/v2/balance'
     url_swap_account = '/fapi/v2/account'
