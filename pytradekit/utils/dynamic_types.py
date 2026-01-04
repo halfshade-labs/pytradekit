@@ -892,7 +892,8 @@ class BinanceAuxiliary(Enum):
     url_swap_margin_type = '/fapi/v1/marginType'
     url_swap_open_interes_hist = '/futures/data/openInterestHist'
     url_alpha_exchange_info = "/bapi/defi/v1/public/wallet-direct/buw/wallet/cex/alpha/all/token/list"
-    url_commission_rate = '/fapi/v1/commissionRate'
+    url_commission_rate = '/fapi/v1/commissionRate'  # Futures commission rate
+    url_spot_commission_rate = '/api/v3/account/commission'  # Spot commission rate
     ws_aggtrade = "@aggTrade"
     ws_ticker = "!ticker@arr"
     ws_kline_interval = '@kline_15m'

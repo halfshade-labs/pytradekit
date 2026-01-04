@@ -6,7 +6,7 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 from pytradekit.utils.config_agent import ConfigAgent
 from pytradekit.utils.tools import find_project_root
 from pytradekit.utils.dynamic_types import RunningMode
-from pytradekit.lark_app.lark_chat_app import LarkChatApp
+from pytradekit.notifiers.lark_app.lark_chat_app import LarkChatApp
 from pytradekit.utils.tools import encrypt_decrypt
 
 CPUMAX = 400
