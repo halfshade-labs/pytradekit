@@ -14,7 +14,6 @@ from pytradekit.utils.exceptions import ExchangeException, MinNotionalException,
 from pytradekit.utils.tools import async_retry_decorator
 from pytradekit.utils.static_types import FeeStructureKey
 
-
 RECVWINDOW = 6000
 RETRY_TIMES = 10
 RETRY_INTERVAL = 5
@@ -177,19 +176,19 @@ class BinanceClient:
 
     def get_exchange_information(self):
         url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_exchange.value,
-                                        params={}, use_sign=False, timestamp=False)
+                                                params={}, use_sign=False, timestamp=False)
         exch_info = self.request(HttpMmthod.GET.name, url, use_sign=False)
         return exch_info
 
     def get_alpha_exchange_information(self):
         url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_alpha_exchange_info.value,
-                                        params={}, use_sign=False, timestamp=False)
+                                                params={}, use_sign=False, timestamp=False)
         exch_info = self.request(HttpMmthod.GET.name, url, use_sign=False)
         return exch_info
 
     def get_account_information(self):
         url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_balance.value,
-                                        params={})
+                                                params={})
         account = self.request(HttpMmthod.GET.name, url, params=params)
         return account
 
@@ -200,13 +199,13 @@ class BinanceClient:
         if end_time:
             params['endTime'] = end_time
         url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_trade.value,
-                                        params=params)
+                                                params=params)
         trade_list = self.request(HttpMmthod.GET.name, url, params=params)
         return trade_list
 
     def get_account_all_orders(self, symbol):
         url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_all_order.value,
-                                        params={RestfulRequestsAttribute.symbol: symbol})
+                                                params={RestfulRequestsAttribute.symbol: symbol})
 
         all_orders = self.request(HttpMmthod.GET.name, url, params=params)
         return all_orders
@@ -216,7 +215,7 @@ class BinanceClient:
         if symbol:
             params['symbol'] = symbol
         url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_open_order.value,
-                                        params=params)
+                                                params=params)
 
         open_orders = self.request(HttpMmthod.GET.name, url, params=params)
         return open_orders
@@ -263,34 +262,34 @@ class BinanceClient:
     def get_balances(self):
         params = {}
         url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_balance.value,
-                                        params=params)
+                                                params=params)
         balances = self.request(HttpMmthod.GET.name, url, params=params)
         return balances
 
     def get_wallet(self, quoteasset):
         params = {BinanceRestful.balance_wallet_quote_asset.value: quoteasset}
         url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_wallet.value,
-                                        params=params)
+                                                params=params)
         balances = self.request(HttpMmthod.GET.name, url, params=params)
         return balances
 
     def get_deposit_history(self):
         url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_deposit_history.value,
-                                        params={'limit': 10})
+                                                params={'limit': 10})
         datas = self.request(HttpMmthod.GET.name, url, params=params)
         return datas
 
     def get_withdraw_history(self):
         url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_withdraw_history.value,
-                                        params={'limit': 10})
+                                                params={'limit': 10})
         datas = self.request(HttpMmthod.GET.name, url, params=params)
         return datas
 
     def get_transfer_history(self):
         url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_transfer_history.value,
-                                        params={
-                                            'limit': 10
-                                        })
+                                                params={
+                                                    'limit': 10
+                                                })
         try:
             datas = self.request(HttpMmthod.GET.name, url, params=params)
         except:
@@ -299,16 +298,16 @@ class BinanceClient:
 
     def get_transfer_history_sub(self):
         url_in, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_transfer_sub_history.value,
-                                           params={
-                                               'type': 1,
-                                               'limit': 10
-                                           })
+                                                   params={
+                                                       'type': 1,
+                                                       'limit': 10
+                                                   })
         data_in = self.request(HttpMmthod.GET.name, url_in, params=params)
         url_out, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_transfer_sub_history.value,
-                                            params={
-                                                'type': 2,
-                                                'limit': 10
-                                            })
+                                                    params={
+                                                        'type': 2,
+                                                        'limit': 10
+                                                    })
         data_out = self.request(HttpMmthod.GET.name, url_out, params=params)
         datas = data_in + data_out
         return datas
@@ -324,7 +323,7 @@ class BinanceClient:
         if limit:
             params['limit'] = limit
         url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_swap_funding_rate.value,
-                                        params=params, use_sign=False)
+                                                params=params, use_sign=False)
         datas = self.request(HttpMmthod.GET.name, url, use_sign=False)
         return datas
 
@@ -333,14 +332,14 @@ class BinanceClient:
         if symbol:
             params['symbol'] = symbol
         url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_swap_last_funding_rate.value,
-                                        params=params, use_sign=False)
+                                                params=params, use_sign=False)
         datas = self.request(HttpMmthod.GET.name, url, use_sign=False)
         return datas
 
     def get_swap_last_funding_rate_info(self):
         params = {}
         url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_swap_last_funding_rate_info.value,
-                                        params=params, use_sign=False)
+                                                params=params, use_sign=False)
         datas = self.request(HttpMmthod.GET.name, url, use_sign=False)
         return datas
 
@@ -349,7 +348,7 @@ class BinanceClient:
         if symbol:
             params['symbol'] = symbol
         url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_swap_ticker_price.value,
-                                        params=params, use_sign=False)
+                                                params=params, use_sign=False)
         datas = self.request(HttpMmthod.GET.name, url, use_sign=False)
         return datas
 
@@ -365,7 +364,7 @@ class BinanceClient:
             params['endTime'] = end_time
 
         url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_swap_open_interes_hist.value,
-                                        params=params)
+                                                params=params)
         datas = self.request(HttpMmthod.GET.name, url, params=params)
         return datas
 
@@ -380,7 +379,7 @@ class BinanceClient:
             params['endTime'] = end_time
 
         url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_swap_all_order.value,
-                                        params=params)
+                                                params=params)
         datas = self.request(HttpMmthod.GET.name, url, params=params)
         return datas
 
@@ -395,7 +394,7 @@ class BinanceClient:
             params['endTime'] = end_time
 
         url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_swap_force_order.value,
-                                        params=params)
+                                                params=params)
         datas = self.request(HttpMmthod.GET.name, url, params=params)
         return datas
 
@@ -404,7 +403,7 @@ class BinanceClient:
         if symbol:
             params['symbol'] = symbol
         url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_swap_position_risk.value,
-                                        params=params)
+                                                params=params)
         datas = self.request(HttpMmthod.GET.name, url, params=params)
         return datas
 
@@ -418,35 +417,35 @@ class BinanceClient:
             params['endTime'] = end_time
         params['incomeType'] = income_type
         url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_swap_income.value,
-                                        params=params)
+                                                params=params)
         datas = self.request(HttpMmthod.GET.name, url, params=params)
         return datas
 
     def get_swap_balance(self):
         params = {}
         url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_swap_balance.value,
-                                        params=params)
+                                                params=params)
         datas = self.request(HttpMmthod.GET.name, url, params=params)
         return datas
 
     def get_swap_account(self):
         params = {}
         url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_swap_account.value,
-                                        params=params)
+                                                params=params)
         datas = self.request(HttpMmthod.GET.name, url, params=params)
         return datas
 
     def get_swap_multi_margin(self):
         params = {}
         url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_swap_multi_margin.value,
-                                        params=params)
+                                                params=params)
         datas = self.request(HttpMmthod.GET.name, url, params=params)
         return datas
 
     def update_swap_margin_type(self, symbol, margin_type):
         params = {'symbol': symbol, 'marginType': margin_type}
         url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_swap_margin_type.value,
-                                        params=params)
+                                                params=params)
         datas = self.request(HttpMmthod.GET.name, url, params=params)
         return datas
 
@@ -455,7 +454,7 @@ class BinanceClient:
                   'quantity': volume, 'newClientOrderId': client_order_id, 'selfTradePreventionMode': 'EXPIRE_MAKER'}
 
         url, params, timestamp = self._make_private_url(url_path=BinanceAuxiliary.url_order.value,
-                                                params=params)
+                                                        params=params)
         datas, err = await self.async_request(HttpMmthod.POST.name, url, http_client=http_client, params=params)
         return datas, err, timestamp
 
@@ -464,7 +463,7 @@ class BinanceClient:
                   'quantity': volume, 'newClientOrderId': client_order_id, 'selfTradePreventionMode': 'EXPIRE_MAKER'}
 
         url, params, timestamp = self._make_private_url(url_path=BinanceAuxiliary.url_order.value,
-                                                params=params)
+                                                        params=params)
         datas, err = await self.async_request(HttpMmthod.POST.name, url, http_client=http_client, params=params)
         return datas, err, timestamp
 
@@ -473,7 +472,7 @@ class BinanceClient:
                   'quantity': volume, 'newClientOrderId': client_order_id, 'selfTradePreventionMode': 'EXPIRE_TAKER'}
 
         url, params, timestamp = self._make_private_url(url_path=BinanceAuxiliary.url_order.value,
-                                                params=params)
+                                                        params=params)
         datas, err = await self.async_request(HttpMmthod.POST.name, url, http_client=http_client, params=params)
         return datas, err, timestamp
 
@@ -489,7 +488,7 @@ class BinanceClient:
             if end_time:
                 params['endTime'] = end_time
         url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_trade.value,
-                                        params=params)
+                                                params=params)
         datas = self.request(HttpMmthod.GET.name, url, params=params)
         return datas
 
@@ -504,7 +503,7 @@ class BinanceClient:
                 params['endTime'] = end_time
 
         url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_all_order.value,
-                                        params=params)
+                                                params=params)
         datas = self.request(HttpMmthod.GET.name, url, params=params)
         return datas
 
@@ -515,7 +514,7 @@ class BinanceClient:
         if client_order_id:
             params['origClientOrderId'] = client_order_id
         url, params, timestamp = self._make_private_url(url_path=BinanceAuxiliary.url_order.value,
-                                                params=params)
+                                                        params=params)
         datas, err = await self.async_request(HttpMmthod.DELETE.name, url, http_client, params=params)
         return datas, err, timestamp
 
@@ -524,14 +523,14 @@ class BinanceClient:
                   'quantity': volume, 'newClientOrderId': client_order_id, 'selfTradePreventionMode': 'EXPIRE_MAKER'}
 
         url, params, timestamp = self._make_private_url(url_path=BinanceAuxiliary.url_order.value,
-                                                params=params)
+                                                        params=params)
         datas = self.request(HttpMmthod.POST.name, url, params=params)
         return datas, timestamp
 
     def cancel_symbol_all_order(self, symbol):
         params = {'symbol': symbol}
         url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_cancel_all_order.value,
-                                        params=params)
+                                                params=params)
         datas = self.request(HttpMmthod.DELETE.name, url)
         return datas
 
@@ -540,28 +539,28 @@ class BinanceClient:
                   'quantity': volume, 'newClientOrderId': client_order_id, 'selfTradePreventionMode': 'EXPIRE_TAKER'}
 
         url, params, timestamp = self._make_private_url(url_path=BinanceAuxiliary.url_order.value,
-                                                params=params)
+                                                        params=params)
         datas = self.request(HttpMmthod.POST.name, url, params=params)
         return datas, timestamp
 
     def get_funding_balance(self):
         params = {}
         url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_funding_balance.value,
-                                        params=params)
+                                                params=params)
         balances = self.request(HttpMmthod.POST.name, url, params=params)
         return balances
 
     def get_alpha_balance(self):
         params = {}
         url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_alpha_balance.value,
-                                        params=params)
+                                                params=params)
         balances = self.request(HttpMmthod.GET.name, url, params=params)
         return balances
 
     def get_alpha_coin(self):
         params = {}
         url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_alpha_coin.value,
-                                        params=params)
+                                                params=params)
         balances = self.request(HttpMmthod.GET.name, url, params=params)
         return balances
 
@@ -625,4 +624,3 @@ class BinanceAlphaClient(BinanceClient):
     def __init__(self, logger, key=None, secret=None, passphrase=None, account_id=None):
         super().__init__(logger, key, secret, passphrase, account_id)
         self._url = BinanceAuxiliary.alpha_url.value
-
