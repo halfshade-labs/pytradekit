@@ -150,7 +150,7 @@ class BinanceWsManager(WsManager):
         for symbol in symbols:
             params.append(f'{symbol.lower()}{BinanceAuxiliary.ws_book_ticker.value}')
         self.start_subscribe(params)
-        self._ping(BinanceAuxiliary.ws_ping_sleep.value)
+        self._ping(BinanceAuxiliary.ws_ping_sleep.value, is_listen_key=False)
 
     def start_swap_lastprice_stream(self, symbols):
         params = []
