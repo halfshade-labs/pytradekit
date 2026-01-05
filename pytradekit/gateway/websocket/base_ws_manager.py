@@ -130,15 +130,16 @@ class BaseWebsocketManager:
                 try:
                     f(ws, *args, **kwargs)
                 except Exception as e:
-                    raise ExchangeException(f'Error running websocket callback: {f.__name__}') from e
+                    self.logger.debug(f"error in websocket callback {f.__name__}: {e}")
+                    self.reconnect()
 
         return wrapped_f
 
     def _run_websocket(self, ws):
         try:
-            ws.run_forever(ping_interval=self._ping_interval)  # , ping_payload='Hello Server!')
+            ws.run_forever(ping_interval=self._ping_interval)
         except Exception as e:
-            raise ExchangeException('Unexpected error while running websocket') from e
+            self.logger.debug(f"websocket run_forever error: {e}")
         finally:
             self.reconnect()
 
