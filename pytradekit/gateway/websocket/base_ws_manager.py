@@ -26,13 +26,13 @@ class BaseWebsocketManager:
     def _on_message(self, ws, message, *args, **kwargs):
         raise NotImplementedError()
 
-    def _on_open(self):
+    def _on_open(self, ws, *args, **kwargs):
         pass
 
-    def _on_close(self):
+    def _on_close(self, ws, *args, **kwargs):
         self.reconnect()
 
-    def _on_error(self, ws, error):
+    def _on_error(self, ws, error, *args, **kwargs):
         self.logger.debug(f"ws :{ws} connection error: {error}")
         self.reconnect()
 
@@ -128,7 +128,6 @@ class BaseWebsocketManager:
         def wrapped_f(ws, *args, **kwargs):
             if ws is self.ws:
                 try:
-                    print("_wrap_callback: ", f, ws, args, kwargs)
                     f(ws, *args, **kwargs)
                 except Exception as e:
                     self.logger.debug(f"error in websocket callback {f.__name__}: {e}")

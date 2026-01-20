@@ -214,13 +214,13 @@ class BinanceWsManager(WsManager):
         return True
 
     def verify_spot_order_trade(self, msg):
-        if msg[BinanceWebSocket.event_type.value] in msg and msg[
+        if BinanceWebSocket.event_type.value in msg and msg[BinanceWebSocket.event_type.value] in msg and msg[
             BinanceWebSocket.event_type.value] == BinanceWebSocket.execution_report.value:
             return True
         return False
 
     def verify_perp_order_trade(self, msg):
-        if msg[BinanceWebSocket.event_type.value] in msg and msg[
+        if BinanceWebSocket.event_type.value in msg and msg[BinanceWebSocket.event_type.value] in msg and msg[
             BinanceWebSocket.event_type.value] == BinanceWebSocket.perp_order_trade.value:
             return True
         return False
