@@ -333,7 +333,7 @@ class BinanceClient:
             params['symbol'] = symbol
         url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_swap_last_funding_rate.value,
                                                 params=params, use_sign=False)
-        datas = self.request(HttpMmthod.GET.name, url, use_sign=False)
+        datas = self.request(HttpMmthod.GET.name, url, params=params, use_sign=False)
         return datas
 
     def get_swap_last_funding_rate_info(self):
