@@ -26,8 +26,7 @@ class BaseWebsocketManager:
     def _on_message(self, ws, message, *args, **kwargs):
         raise NotImplementedError()
 
-    def _on_open(self, **kwargs):
-        print(f'_on_open: {kwargs}')
+    def _on_open(self):
         pass
 
     def _on_close(self):
@@ -129,6 +128,7 @@ class BaseWebsocketManager:
         def wrapped_f(ws, *args, **kwargs):
             if ws is self.ws:
                 try:
+                    print("_wrap_callback: ", f, ws, args, kwargs)
                     f(ws, *args, **kwargs)
                 except Exception as e:
                     self.logger.debug(f"error in websocket callback {f.__name__}: {e}")
