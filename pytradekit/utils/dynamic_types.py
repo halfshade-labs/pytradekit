@@ -131,6 +131,7 @@ class BinanceWebSocket(Enum):
     account_name = 'account_name'
     account_balance = 'outboundAccountPosition'
     balance_update = 'balanceUpdate'
+    perp_order_trade = 'ORDER_TRADE_UPDATE'
     symbol = "s"
     order_volume = 'q'
     order_price = 'p'
@@ -176,6 +177,17 @@ class BinanceWebSocket(Enum):
     balance_ws_coin = 'a'
     balance_ws_updata = 'd'
     order_limit_maker = 'LIMIT_MAKER'
+    funding_rate_info_symbol = 'symbol'
+    funding_interval_hours = 'fundingIntervalHours'
+    perp_order_data = 'o'
+    perp_order_create_time = 'T'
+    perp_order_update_time = 'E'
+    perp_order_status = 'X'
+    perp_order_fee = 'n'
+    perp_order_fee_coin = 'N'
+    perp_order_avg_price = 'ap'
+    perp_order_income = 'income'
+    perp_liquidation = 'LIQUIDATION'
 
 
 class BinanceRestful(Enum):
@@ -269,6 +281,7 @@ class HuobiWebSocket(Enum):
     order_volume = 'orderSize'
     order_price = 'orderPrice'
     order_time_ms = 'orderCreateTime'
+    order_side = 'orderSide'
     order_id = 'orderId'
     order_status = 'orderStatus'
     cumulative_volume = 'execAmt'
@@ -279,6 +292,8 @@ class HuobiWebSocket(Enum):
     trade_volume = 'tradeVolume'
     trade_price = 'tradePrice'
     traded_time_ms = 'tradeTime'
+    trade_fee = 'transactFee'
+    trade_fee_coin = 'feeCurrency'
     trade_id = 'tradeId'
     tick = 'tick'
     orderbook_bid = 'bid'
@@ -287,6 +302,7 @@ class HuobiWebSocket(Enum):
 
 
 class OkexWebSocket(Enum):
+    data = 'data'
     symbol = 'instId'
     run_time_ms = 'run_time_ms'
     account_id = 'account_id'
@@ -1320,6 +1336,7 @@ class RedisFields(Enum):
     non_compliant_inst_code = auto()
     depth_order_theoretical = auto()
     portfolios = auto()
+    premium = auto()
 
 
 class DuplicateFields(Enum):
@@ -1358,3 +1375,9 @@ class TradingProposalType(Enum):
     no_trade = auto()
     trading_proposal = auto()
     wake_up_time = auto()
+
+class PremiumStatus(Enum):
+    open = auto()
+    open_pending = auto()
+    close = auto()
+    close_pending = auto()
