@@ -198,7 +198,7 @@ class BinanceWsManager(WsManager):
                 self.start_end_time_dict['start_time'] = times
 
     def verify_spot_bookticker_duplicate(self, msg):
-        if BinanceWebSocket.symbol.value not in msg:
+        if BinanceWebSocket.order_book_update_id.value not in msg:
             return False
         if msg[BinanceWebSocket.symbol.value] not in self.verify_bookticker_duplicate:
             self.verify_bookticker_duplicate[msg[BinanceWebSocket.symbol.value]] = msg[
@@ -217,13 +217,13 @@ class BinanceWsManager(WsManager):
         return True
 
     def verify_spot_order_trade(self, msg):
-        if BinanceWebSocket.event_type.value in msg and msg[BinanceWebSocket.event_type.value] in msg and msg[
+        if BinanceWebSocket.event_type.value in msg and msg[
             BinanceWebSocket.event_type.value] == BinanceWebSocket.execution_report.value:
             return True
         return False
 
     def verify_perp_order_trade(self, msg):
-        if BinanceWebSocket.event_type.value in msg and msg[BinanceWebSocket.event_type.value] in msg and msg[
+        if BinanceWebSocket.event_type.value in msg and msg[
             BinanceWebSocket.event_type.value] == BinanceWebSocket.perp_order_trade.value:
             return True
         return False
@@ -235,16 +235,15 @@ class BinanceWsManager(WsManager):
             if BinanceAuxiliary.ws_ping.value in msg:
                 self._pong()
             else:
-                # if self.verify_spot_order_trade(msg):
-                #     self._queue.put_nowait(msg)
-                #     return
-                # if self.verify_perp_order_trade(msg):
-                #     self._queue.put_nowait(msg)
-                #     return
-                # if self.verify_spot_bookticker_duplicate(msg):
-                #     self._queue.put_nowait(msg)
-                #     return
-                self._queue.put_nowait(msg)
+                if self.verify_perp_order_trade(msg):
+                    self._queue.put_nowait(msg)
+                    return
+                if self.verify_spot_order_trade(msg):
+                    self._queue.put_nowait(msg)
+                    return
+                if self.verify_spot_bookticker_duplicate(msg):
+                    self._queue.put_nowait(msg)
+                    return
         except Exception as e:
             self.logger.exception(e)
             self.logger.debug(f"binance message error {msg}")
