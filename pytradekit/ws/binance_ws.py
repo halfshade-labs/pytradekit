@@ -235,15 +235,16 @@ class BinanceWsManager(WsManager):
             if BinanceAuxiliary.ws_ping.value in msg:
                 self._pong()
             else:
-                if self.verify_spot_bookticker_duplicate(msg):
-                    self._queue.put_nowait(msg)
-                    return
-                if self.verify_spot_order_trade(msg):
-                    self._queue.put_nowait(msg)
-                    return
-                if self.verify_perp_order_trade(msg):
-                    self._queue.put_nowait(msg)
-                    return
+                # if self.verify_spot_order_trade(msg):
+                #     self._queue.put_nowait(msg)
+                #     return
+                # if self.verify_perp_order_trade(msg):
+                #     self._queue.put_nowait(msg)
+                #     return
+                # if self.verify_spot_bookticker_duplicate(msg):
+                #     self._queue.put_nowait(msg)
+                #     return
+                self._queue.put_nowait(msg)
         except Exception as e:
             self.logger.exception(e)
             self.logger.debug(f"binance message error {msg}")
