@@ -30,7 +30,10 @@ class BinanceWsManager(WsManager):
         self.config = config
         self.running_mode = running_mode
         self._api_url = api_url
-        self._url = url
+        if is_swap:
+            self._url = BinanceAuxiliary.url_perp_ws.value
+        else:
+            self._url = url
         self._api_key = api_key
         self._api_secret = api_secret
         self._queue = queue
@@ -103,7 +106,7 @@ class BinanceWsManager(WsManager):
             params = [self._listen_key['SPOT']]
             if self._send_params:
                 params += self._send_params
-            self.logger.debug(f"subscribe: {params}, url: {self._url}")
+            self.logger.debug(f"subscribe: {params}, url: {self._url}, listen key url:{self._listen_key_url}")
             self.start_subscribe(params)
             self._ping(BinanceAuxiliary.ws_ping_sleep.value,
                        reconnection_time=BinanceAuxiliary.reconnection_time_sleep.value)
