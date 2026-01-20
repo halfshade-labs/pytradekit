@@ -103,7 +103,7 @@ class BinanceWsManager(WsManager):
             params = [self._listen_key['SPOT']]
             if self._send_params:
                 params += self._send_params
-            self.logger.debug(f"subscribe: {params}")
+            self.logger.debug(f"subscribe: {params}, url: {self._url}")
             self.start_subscribe(params)
             self._ping(BinanceAuxiliary.ws_ping_sleep.value,
                        reconnection_time=BinanceAuxiliary.reconnection_time_sleep.value)
