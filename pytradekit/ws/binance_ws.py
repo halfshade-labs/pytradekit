@@ -231,6 +231,7 @@ class BinanceWsManager(WsManager):
             if BinanceAuxiliary.ws_ping.value in msg:
                 self._pong()
             else:
+                print(msg)
                 if self.verify_spot_bookticker_duplicate(msg):
                     self._queue.put_nowait(msg)
                     return
