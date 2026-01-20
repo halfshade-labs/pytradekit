@@ -26,7 +26,8 @@ class BaseWebsocketManager:
     def _on_message(self, ws, message, *args, **kwargs):
         raise NotImplementedError()
 
-    def _on_open(self):
+    def _on_open(self, **kwargs):
+        print(f'_on_open: {kwargs}')
         pass
 
     def _on_close(self):
