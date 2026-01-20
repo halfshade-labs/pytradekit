@@ -194,29 +194,52 @@ class BinanceWsManager(WsManager):
             elif connect_status is False:
                 self.start_end_time_dict['start_time'] = times
 
+    def verify_spot_bookticker_duplicate(self, msg):
+        if BinanceWebSocket.symbol.value not in msg:
+            return False
+        if msg[BinanceWebSocket.symbol.value] not in self.verify_bookticker_duplicate:
+            self.verify_bookticker_duplicate[msg[BinanceWebSocket.symbol.value]] = msg[
+                                                                                       BinanceWebSocket.orderbook_asks.value] + \
+                                                                                   msg[
+                                                                                       BinanceWebSocket.orderbook_bids.value]
+        else:
+            if self.verify_bookticker_duplicate[msg[BinanceWebSocket.symbol.value]] == msg[
+                BinanceWebSocket.orderbook_asks.value] + msg[BinanceWebSocket.orderbook_bids.value]:
+                return False
+            else:
+                self.verify_bookticker_duplicate[msg[BinanceWebSocket.symbol.value]] = msg[
+                                                                                           BinanceWebSocket.orderbook_asks.value] + \
+                                                                                       msg[
+                                                                                           BinanceWebSocket.orderbook_bids.value]
+        return True
+
+    def verify_spot_order_trade(self, msg):
+        if msg[BinanceWebSocket.event_type.value] in msg and msg[
+            BinanceWebSocket.event_type.value] == BinanceWebSocket.execution_report.value:
+            return True
+        return False
+
+    def verify_perp_order_trade(self, msg):
+        if msg[BinanceWebSocket.event_type.value] in msg and msg[
+            BinanceWebSocket.event_type.value] == BinanceWebSocket.perp_order_trade.value:
+            return True
+        return False
+
     def _on_message(self, _ws, message):
         msg = json.loads(message)
         try:
             if BinanceAuxiliary.ws_ping.value in msg:
                 self._pong()
             else:
-                if BinanceWebSocket.symbol.value not in msg:
+                if self.verify_spot_bookticker_duplicate(msg):
+                    self._queue.put_nowait(msg)
                     return
-                if msg[BinanceWebSocket.symbol.value] not in self.verify_bookticker_duplicate:
-                    self.verify_bookticker_duplicate[msg[BinanceWebSocket.symbol.value]] = msg[
-                                                                                               BinanceWebSocket.orderbook_asks.value] + \
-                                                                                           msg[
-                                                                                               BinanceWebSocket.orderbook_bids.value]
-                else:
-                    if self.verify_bookticker_duplicate[msg[BinanceWebSocket.symbol.value]] == msg[
-                        BinanceWebSocket.orderbook_asks.value] + msg[BinanceWebSocket.orderbook_bids.value]:
-                        return
-                    else:
-                        self.verify_bookticker_duplicate[msg[BinanceWebSocket.symbol.value]] = msg[
-                                                                                                   BinanceWebSocket.orderbook_asks.value] + \
-                                                                                               msg[
-                                                                                                   BinanceWebSocket.orderbook_bids.value]
-                self._queue.put_nowait(msg)
+                if self.verify_spot_order_trade(msg):
+                    self._queue.put_nowait(msg)
+                    return
+                if self.verify_perp_order_trade(msg):
+                    self._queue.put_nowait(msg)
+                    return
         except Exception as e:
             self.logger.exception(e)
             self.logger.debug(f"binance message error {msg}")

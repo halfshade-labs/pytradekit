@@ -118,6 +118,9 @@ class HuobiWsManager(WsManager):
             if 'ch' in msg and 'bbo' in msg['ch']:
                 self._queue.put_nowait(msg)
                 return
+            if 'ch' in msg and 'orders' in msg['ch']:
+                self._queue.put_nowait(msg)
+                return
         except Exception as e:
             self.logger.exception(e)
             self.logger.debug(f"huobi message error {message}")

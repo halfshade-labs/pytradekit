@@ -8,6 +8,7 @@ from pytradekit.utils.exceptions import DependencyException
 TICKER_PRICE_EXPIRE_TIME = TimeConvert.MIN_TO_S * 10
 ORDER_TICKER_EXPIRE_TIME = TimeConvert.MIN_TO_S * 30
 ORDERS_EXPIRE_TIME = TimeConvert.MIN_TO_S * 60
+PREMIUM_EXPIRE_TIME = TimeConvert.MIN_TO_S * 60 * 24 * 30
 TIMEOUT_SECOND = 5
 
 
@@ -277,7 +278,29 @@ class RedisOperations:
         lock = self.get_lock_for_resource(key)
         try:
             with lock:
+                self.client.set(key, json.dumps(value))
                 self.client.publish(key, json.dumps(value))
         except Exception as e:
             self.logger.exception(f"Failed to set portfolios for {key}: {e}")
             raise DependencyException(f"Failed to set portfolios for {key}") from e
+
+    def set_target_premium(self, client_order_id, premium):
+        key = f"{RedisFields.premium.name}:{client_order_id}"
+        lock = self.get_lock_for_resource(key)
+        try:
+            with lock:
+                self.client.set(key, str(premium))
+                self.client.expire(key, PREMIUM_EXPIRE_TIME)
+        except Exception as e:
+            self.logger.exception(f"Failed to set target premium for {client_order_id}: {e}")
+            raise DependencyException(f"Failed to set target premium for {client_order_id}") from e
+
+    def get_target_premium(self, order_id):
+        key = f"{RedisFields.premium.name}:{order_id}"
+        lock = self.get_lock_for_resource(key)
+        try:
+            with lock:
+                return float(self.client.get(key))
+        except Exception as e:
+            self.logger.exception(f"Failed to get target premium for {order_id}: {e}")
+            raise DependencyException(f"Failed to get target premium for {order_id}") from e
