@@ -61,7 +61,7 @@ class OkexWsManager(WsManager):
             except Exception as e:
                 self.logger.debug(f"okex heartbeat error: {e}, triggering reconnect")
                 self.reconnect()
-                break
+                continue
 
     def _login(self):
         nonce = str(get_timestamp_s())
