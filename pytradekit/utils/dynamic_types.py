@@ -949,7 +949,7 @@ class BitfinexAuxiliary(Enum):
 
 class HuobiAuxiliary(Enum):
     url = 'https://api.huobi.pro'
-    url_ws = 'wss://api.huobi.pro/ws'
+    url_ws = 'wss://api.huobi.pro/ws/v2'
     url_exchange = '/v2/settings/common/symbols'
     url_ticker = '/market/tickers'
     swap_url = 'https://api.hbdm.com'
@@ -971,7 +971,7 @@ class HuobiAuxiliary(Enum):
 
 class OkexAuxiliary(Enum):
     url = 'https://www.okx.com'
-    url_ws = 'wss://ws.okx.com:8443/ws/v5/public'
+    url_ws = 'wss://ws.okx.com:8443/ws/v5/private'
     swap_url = 'https://www.okx.com'
     url_swap_position = '/api/v5/account/positions'
     url_swap_interest = '/api/v5/account/interest-accrued'
