@@ -145,6 +145,7 @@ class BinanceWebSocket(Enum):
     trade_price = "L"
     trade_volume = "l"
     traded_time_ms = "T"
+    trade_filled = "FILLED"
     trade_id = "t"
     fee = "n"
     working_time = "W"
@@ -172,6 +173,7 @@ class BinanceWebSocket(Enum):
     orderbook_bids = 'b'
     orderbook_asks = 'a'
     BUY = 'BUY'
+    order_sell = 'SELL'
     lastUpdateId = 'lastUpdateId'
     balance_ws_time = 'E'
     balance_ws_coin = 'a'
@@ -272,6 +274,7 @@ class BitfinexWebSocket(Enum):
 class HuobiWebSocket(Enum):
     order_type = 'type'
     order_buy = 'buy'
+    order_sell = 'sell'
     order_client_order_id = 'clientOrderId'
     order_type_limit = 'limit'
     account_id = 'account_id'
@@ -299,6 +302,7 @@ class HuobiWebSocket(Enum):
     orderbook_bid = 'bid'
     orderbook_ask = 'ask'
     orderbook_time = 'quoteTime'
+    trade_filled = 'filled'
 
 
 class OkexWebSocket(Enum):
@@ -310,6 +314,7 @@ class OkexWebSocket(Enum):
     strategy_id = 'strategy_id'
     order_side = 'side'
     order_buy = 'buy'
+    order_sell = 'sell'
     order_type = 'ordType'
     order_limit = 'limit'
     order_price = 'px'
@@ -326,6 +331,7 @@ class OkexWebSocket(Enum):
     trade_volume = 'fillSz'
     trade_price = 'fillPx'
     traded_time_ms = 'fillTime'
+    trade_filled = 'filled'
     trade_id = 'tradeId'
     trade_fee = 'fee'
     trade_fee_coin = 'feeCcy'
