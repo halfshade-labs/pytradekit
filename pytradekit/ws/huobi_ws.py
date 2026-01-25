@@ -106,11 +106,10 @@ class HuobiWsManager(WsManager):
 
     def _on_message(self, _ws, message):
         try:
-            print(message)
-            print(f"huobi ws:{message}")
             if isinstance(message, bytes):
                 message = gzip.decompress(message).decode('utf-8')
             msg = json.loads(message)
+            print(f"huobi ws:{msg}")
             if 'ping' in msg:
                 self.send(json.dumps({'pong': msg['ping']}))
                 return
