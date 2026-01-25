@@ -230,8 +230,8 @@ class BinanceWsManager(WsManager):
 
     def _on_message(self, _ws, message):
         msg = json.loads(message)
-        print(msg, "===============")
         try:
+            print(f"binance : {msg}")
             if BinanceAuxiliary.ws_ping.value in msg:
                 self._pong()
             else:

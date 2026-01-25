@@ -104,6 +104,7 @@ class OkexWsManager(WsManager):
 
     def _on_message(self, _ws, message):
         try:
+            print(f"okex: {message}")
             if message == 'pong':
                 return
             msg = json.loads(message)

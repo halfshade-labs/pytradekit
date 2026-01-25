@@ -106,6 +106,8 @@ class HuobiWsManager(WsManager):
 
     def _on_message(self, _ws, message):
         try:
+            print(message)
+            print(f"huobi ws:{message}")
             if isinstance(message, bytes):
                 message = gzip.decompress(message).decode('utf-8')
             msg = json.loads(message)
@@ -118,7 +120,7 @@ class HuobiWsManager(WsManager):
             if 'ch' in msg and 'bbo' in msg['ch']:
                 self._queue.put_nowait(msg)
                 return
-            if 'ch' in msg and 'orders' in msg['ch']:
+            if 'ch' in msg and 'trade' in msg['ch']:
                 self._queue.put_nowait(msg)
                 return
         except Exception as e:
