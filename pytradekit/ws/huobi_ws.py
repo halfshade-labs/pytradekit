@@ -100,6 +100,7 @@ class HuobiWsManager(WsManager):
 
     def start_subscribe(self, params):
         try:
+            print(f"huobi send msg: {params}")
             self.send_json(params)
         except Exception as e:
             self.logger.exception(e)
