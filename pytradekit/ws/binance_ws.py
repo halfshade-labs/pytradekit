@@ -198,7 +198,7 @@ class BinanceWsManager(WsManager):
                 self.start_end_time_dict['start_time'] = times
 
     def verify_spot_bookticker_duplicate(self, msg):
-        if BinanceWebSocket.order_book_update_id.value not in msg:
+        if BinanceWebSocket.order_book_update_id.value not in msg or BinanceWebSocket.symbol.value not in msg or BinanceWebSocket.orderbook_asks.value not in msg or BinanceWebSocket.orderbook_bids.value not in msg:
             return False
         if msg[BinanceWebSocket.symbol.value] not in self.verify_bookticker_duplicate:
             self.verify_bookticker_duplicate[msg[BinanceWebSocket.symbol.value]] = msg[
