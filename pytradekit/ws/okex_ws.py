@@ -104,23 +104,22 @@ class OkexWsManager(WsManager):
 
     def _on_message(self, _ws, message):
         try:
-            pass
-            # print(f"okex: {message}")
-            # if message == 'pong':
-            #     return
-            # msg = json.loads(message)
-            # if 'event' in msg and msg['event'] == 'login':
-            #     if msg['code'] == '0':
-            #         self._send_order()
-            # elif "code" in msg and msg['code'] == '60011':
-            #     self._login()
-            #
-            # #添加 Ticker 数据处理逻辑
-            # if 'arg' in msg and msg['arg']['channel'] == 'tickers' and "data" in msg:
-            #     if self._queue:
-            #         # OKX 数据通常是列表，取出来放入队列
-            #         for item in msg['data']:
-            #             self._queue.put_nowait(item)
+            if message == 'pong':
+                return
+            msg = json.loads(message)
+            print(f"okex msg: {msg}")
+            if 'event' in msg and msg['event'] == 'login':
+                if msg['code'] == '0':
+                    self._send_order()
+            elif "code" in msg and msg['code'] == '60011':
+                self._login()
+
+            #添加 Ticker 数据处理逻辑
+            if 'arg' in msg and msg['arg']['channel'] == 'tickers' and "data" in msg:
+                if self._queue:
+                    # OKX 数据通常是列表，取出来放入队列
+                    for item in msg['data']:
+                        self._queue.put_nowait(item)
 
         except Exception as e:
             self.logger.exception(e)
