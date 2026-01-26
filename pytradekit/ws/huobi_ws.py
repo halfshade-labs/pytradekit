@@ -63,6 +63,12 @@ class HuobiWsManager(WsManager):
             self._subs.append(_rqs_orders)
         self.send_json(_rqs_orders)
 
+    def _send_trade(self):
+        _rqs_orders = {"action": "sub","ch": "trade.clearing#*#0"}
+        if not self._subs:
+            self._subs.append(_rqs_orders)
+        self.send_json(_rqs_orders)
+
     def _ping(self, n_seconds, reconnection_time=None) -> None:
         now_times = get_timestamp_s()
         while True:
@@ -100,7 +106,7 @@ class HuobiWsManager(WsManager):
 
     def start_subscribe(self, params):
         try:
-            print(f"huobi send msg: {params}")
+            print(f"huobi send msg: {params}， url: {self._url}")
             self.send_json(params)
         except Exception as e:
             self.logger.exception(e)
@@ -115,6 +121,7 @@ class HuobiWsManager(WsManager):
                 self.send(json.dumps({'pong': msg['ping']}))
                 return
             if 'action' in msg and msg['action'] == 'ping':
+                self._send_trade()
                 self._pong(msg['data']['ts'])
                 return
             if 'ch' in msg and 'bbo' in msg['ch']:
