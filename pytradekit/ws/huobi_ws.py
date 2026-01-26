@@ -128,7 +128,7 @@ class HuobiWsManager(WsManager):
                 self._queue.put_nowait(msg)
                 return
             if 'ch' in msg and 'trade' in msg['ch'] and msg['data']:
-                self._queue.put_nowait(msg)
+                self._queue.put_nowait(msg['data'])
                 return
         except Exception as e:
             self.logger.exception(e)
