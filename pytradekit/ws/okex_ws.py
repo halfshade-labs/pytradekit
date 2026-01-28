@@ -127,7 +127,7 @@ class OkexWsManager(WsManager):
                 if self._queue:
                     # OKX 数据通常是列表，取出来放入队列
                     for item in msg['data']:
-                        if "filled" in msg['state']:
+                        if "filled" in item['state']:
                             self._queue.put_nowait(item)
 
         except Exception as e:
