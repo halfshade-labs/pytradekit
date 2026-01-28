@@ -122,6 +122,12 @@ class OkexWsManager(WsManager):
                     for item in msg['data']:
                         self._queue.put_nowait(item)
 
+            if 'arg' in msg and msg['arg']['channel'] == 'orders' and "data" in msg:
+                if self._queue:
+                    # OKX 数据通常是列表，取出来放入队列
+                    for item in msg['data']:
+                        self._queue.put_nowait(item)
+
         except Exception as e:
             self.logger.exception(e)
             self.logger.debug(message)
