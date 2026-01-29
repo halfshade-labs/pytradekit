@@ -26,13 +26,13 @@ class BaseWebsocketManager:
     def _on_message(self, ws, message, *args, **kwargs):
         raise NotImplementedError()
 
-    def _on_open(self):
+    def _on_open(self, ws, *args, **kwargs):
         pass
 
-    def _on_close(self):
+    def _on_close(self, ws, *args, **kwargs):
         self.reconnect()
 
-    def _on_error(self, ws, error):
+    def _on_error(self, ws, error, *args, **kwargs):
         self.logger.debug(f"ws :{ws} connection error: {error}")
         self.reconnect()
 

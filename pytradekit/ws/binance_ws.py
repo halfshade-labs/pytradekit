@@ -30,7 +30,10 @@ class BinanceWsManager(WsManager):
         self.config = config
         self.running_mode = running_mode
         self._api_url = api_url
-        self._url = url
+        if is_swap:
+            self._url = BinanceAuxiliary.url_perp_ws.value
+        else:
+            self._url = url
         self._api_key = api_key
         self._api_secret = api_secret
         self._queue = queue
@@ -103,7 +106,7 @@ class BinanceWsManager(WsManager):
             params = [self._listen_key['SPOT']]
             if self._send_params:
                 params += self._send_params
-            self.logger.debug(f"subscribe: {params}")
+            self.logger.debug(f"subscribe: {params}, url: {self._url}, listen key url:{self._listen_key_url}")
             self.start_subscribe(params)
             self._ping(BinanceAuxiliary.ws_ping_sleep.value,
                        reconnection_time=BinanceAuxiliary.reconnection_time_sleep.value)
@@ -195,7 +198,7 @@ class BinanceWsManager(WsManager):
                 self.start_end_time_dict['start_time'] = times
 
     def verify_spot_bookticker_duplicate(self, msg):
-        if BinanceWebSocket.symbol.value not in msg:
+        if BinanceWebSocket.order_book_update_id.value not in msg or BinanceWebSocket.symbol.value not in msg or BinanceWebSocket.orderbook_asks.value not in msg or BinanceWebSocket.orderbook_bids.value not in msg:
             return False
         if msg[BinanceWebSocket.symbol.value] not in self.verify_bookticker_duplicate:
             self.verify_bookticker_duplicate[msg[BinanceWebSocket.symbol.value]] = msg[
@@ -214,13 +217,13 @@ class BinanceWsManager(WsManager):
         return True
 
     def verify_spot_order_trade(self, msg):
-        if msg[BinanceWebSocket.event_type.value] in msg and msg[
+        if BinanceWebSocket.event_type.value in msg and msg[
             BinanceWebSocket.event_type.value] == BinanceWebSocket.execution_report.value:
             return True
         return False
 
     def verify_perp_order_trade(self, msg):
-        if msg[BinanceWebSocket.event_type.value] in msg and msg[
+        if BinanceWebSocket.event_type.value in msg and msg[
             BinanceWebSocket.event_type.value] == BinanceWebSocket.perp_order_trade.value:
             return True
         return False
@@ -228,16 +231,17 @@ class BinanceWsManager(WsManager):
     def _on_message(self, _ws, message):
         msg = json.loads(message)
         try:
+            print(f"binance : {msg}")
             if BinanceAuxiliary.ws_ping.value in msg:
                 self._pong()
             else:
-                if self.verify_spot_bookticker_duplicate(msg):
+                if self.verify_perp_order_trade(msg):
                     self._queue.put_nowait(msg)
                     return
                 if self.verify_spot_order_trade(msg):
                     self._queue.put_nowait(msg)
                     return
-                if self.verify_perp_order_trade(msg):
+                if self.verify_spot_bookticker_duplicate(msg):
                     self._queue.put_nowait(msg)
                     return
         except Exception as e:
