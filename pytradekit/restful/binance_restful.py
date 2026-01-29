@@ -619,6 +619,107 @@ class BinanceSwapClient(BinanceClient):
         super().__init__(logger, key, secret, passphrase, account_id)
         self._url = BinanceAuxiliary.perp_url.value
 
+    def set_leverage(self, symbol, leverage):
+        """
+        设置合约杠杆倍数
+        API: POST /fapi/v1/leverage
+        
+        Args:
+            symbol: 交易对，如 'BTCUSDT'
+            leverage: 杠杆倍数，1-125
+            
+        Returns:
+            响应数据
+        """
+        params = {'symbol': symbol, 'leverage': leverage}
+        url, params, _ = self._make_private_url(
+            url_path=BinanceAuxiliary.url_swap_leverage.value,
+            params=params
+        )
+        result = self.request(HttpMmthod.POST.name, url, params=params)
+        return result
+
+    def set_margin_type(self, symbol, margin_type='ISOLATED'):
+        """
+        设置合约保证金模式
+        API: POST /fapi/v1/marginType
+        
+        Args:
+            symbol: 交易对，如 'BTCUSDT'
+            margin_type: 'ISOLATED' 或 'CROSSED'，默认 'ISOLATED'
+            
+        Returns:
+            响应数据
+        """
+        params = {'symbol': symbol, 'marginType': margin_type}
+        url, params, _ = self._make_private_url(
+            url_path=BinanceAuxiliary.url_swap_margin_type.value,
+            params=params
+        )
+        result = self.request(HttpMmthod.POST.name, url, params=params)
+        return result
+
+    async def place_perp_maker_order(self, symbol, client_order_id, side, volume, price, http_client=None):
+        """
+        合约maker限价单（Post-only）
+        API: POST /fapi/v1/order
+        
+        Args:
+            symbol: 交易对，如 'BTCUSDT'
+            client_order_id: 客户端订单ID
+            side: 'BUY' 或 'SELL'
+            volume: 数量（币）
+            price: 限价价格
+            http_client: HTTP客户端（可选）
+            
+        Returns:
+            (data, error, timestamp)
+        """
+        params = {
+            'symbol': symbol,
+            'side': side,
+            'type': 'LIMIT',
+            'price': price,
+            'quantity': volume,
+            'timeInForce': 'GTX',  # Post-only (Maker only)
+            'newClientOrderId': client_order_id
+        }
+        url, params, timestamp = self._make_private_url(
+            url_path=BinanceAuxiliary.url_swap_order.value,
+            params=params
+        )
+        datas, err = await self.async_request(HttpMmthod.POST.name, url, http_client=http_client, params=params)
+        return datas, err, timestamp
+
+    async def place_perp_market_order(self, symbol, client_order_id, side, volume, http_client=None):
+        """
+        合约市价单（用于紧急平仓或快速开仓）
+        API: POST /fapi/v1/order
+        
+        Args:
+            symbol: 交易对，如 'BTCUSDT'
+            client_order_id: 客户端订单ID
+            side: 'BUY' 或 'SELL'
+            volume: 数量（币）
+            http_client: HTTP客户端（可选）
+            
+        Returns:
+            (data, error, timestamp)
+        """
+        params = {
+            'symbol': symbol,
+            'side': side,
+            'type': 'MARKET',
+            'quantity': volume,
+            'newClientOrderId': client_order_id
+        }
+        url, params, timestamp = self._make_private_url(
+            url_path=BinanceAuxiliary.url_swap_order.value,
+            params=params
+        )
+        datas, err = await self.async_request(HttpMmthod.POST.name, url, http_client=http_client, params=params)
+        return datas, err, timestamp
+
 
 class BinanceAlphaClient(BinanceClient):
     def __init__(self, logger, key=None, secret=None, passphrase=None, account_id=None):

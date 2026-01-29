@@ -176,3 +176,59 @@ class OkexClient:
             if self.logger:
                 self.logger.info(f"Failed to get commission rate from OKX for {inst_type}/{inst_id}: {e}")
             return None
+
+    def place_spot_market_order(self, inst_id, side, size, client_order_id=None):
+        """
+        现货市价单
+        
+        Args:
+            inst_id: 交易对，如 'BTC-USDT'
+            side: 'buy' 或 'sell'
+            size: 数量（币）
+            client_order_id: 客户端订单ID（可选）
+            
+        Returns:
+            API响应结果
+        """
+        params = {
+            'instId': inst_id,
+            'tdMode': 'cash',  # 现货模式
+            'side': side,
+            'ordType': 'market',
+            'sz': str(size)
+        }
+        if client_order_id:
+            params['clOrdId'] = client_order_id
+        
+        url = OkexAuxiliary.url_spot_order.value
+        result = self._send_request(url, method=HttpMmthod.POST.name, params=params, use_sign=True)
+        return result
+
+    def place_spot_limit_order(self, inst_id, side, size, price, client_order_id=None):
+        """
+        现货限价单
+        
+        Args:
+            inst_id: 交易对，如 'BTC-USDT'
+            side: 'buy' 或 'sell'
+            size: 数量（币）
+            price: 限价价格
+            client_order_id: 客户端订单ID（可选）
+            
+        Returns:
+            API响应结果
+        """
+        params = {
+            'instId': inst_id,
+            'tdMode': 'cash',
+            'side': side,
+            'ordType': 'limit',
+            'sz': str(size),
+            'px': str(price)
+        }
+        if client_order_id:
+            params['clOrdId'] = client_order_id
+        
+        url = OkexAuxiliary.url_spot_order.value
+        result = self._send_request(url, method=HttpMmthod.POST.name, params=params, use_sign=True)
+        return result
