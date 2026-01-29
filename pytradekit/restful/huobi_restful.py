@@ -197,3 +197,70 @@ class HuobiClient:
             if self.logger:
                 self.logger.info(f"Failed to get commission rate from HTX {market_type} for {symbol}: {e}")
             return None
+
+    def place_spot_market_order(self, symbol, side, amount, client_order_id=None):
+        """
+        现货市价单
+        
+        Args:
+            symbol: 交易对，如 'btcusdt' (小写)
+            side: 'buy' 或 'sell'
+            amount: 数量，buy时为USDT金额，sell时为币数量
+            client_order_id: 客户端订单ID（可选）
+            
+        Returns:
+            API响应结果
+        """
+        # 获取account_id
+        if not self.account_id:
+            accounts = self.get_accounts()
+            if HuobiRestful.balance_data.value in accounts and len(accounts[HuobiRestful.balance_data.value]) > 0:
+                self.account_id = accounts[HuobiRestful.balance_data.value][0][HuobiRestful.account_id.value]
+        
+        order_type = 'buy-market' if side == 'buy' else 'sell-market'
+        params = {
+            'account-id': str(self.account_id),
+            'symbol': symbol.lower(),
+            'type': order_type,
+            'amount': str(amount)
+        }
+        if client_order_id:
+            params['client-order-id'] = client_order_id
+        
+        url = HuobiAuxiliary.url_spot_order.value
+        result = self._send_request(url, method=HttpMmthod.POST.name, params=params, use_sign=True)
+        return result
+
+    def place_spot_limit_order(self, symbol, side, amount, price, client_order_id=None):
+        """
+        现货限价单
+        
+        Args:
+            symbol: 交易对，如 'btcusdt' (小写)
+            side: 'buy' 或 'sell'
+            amount: 数量（币）
+            price: 限价价格
+            client_order_id: 客户端订单ID（可选）
+            
+        Returns:
+            API响应结果
+        """
+        if not self.account_id:
+            accounts = self.get_accounts()
+            if HuobiRestful.balance_data.value in accounts and len(accounts[HuobiRestful.balance_data.value]) > 0:
+                self.account_id = accounts[HuobiRestful.balance_data.value][0][HuobiRestful.account_id.value]
+        
+        order_type = 'buy-limit' if side == 'buy' else 'sell-limit'
+        params = {
+            'account-id': str(self.account_id),
+            'symbol': symbol.lower(),
+            'type': order_type,
+            'amount': str(amount),
+            'price': str(price)
+        }
+        if client_order_id:
+            params['client-order-id'] = client_order_id
+        
+        url = HuobiAuxiliary.url_spot_order.value
+        result = self._send_request(url, method=HttpMmthod.POST.name, params=params, use_sign=True)
+        return result
