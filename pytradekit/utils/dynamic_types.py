@@ -912,6 +912,8 @@ class BinanceAuxiliary(Enum):
     url_swap_account = '/fapi/v2/account'
     url_swap_multi_margin = '/fapi/v1/multiAssetsMargin'
     url_swap_margin_type = '/fapi/v1/marginType'
+    url_swap_leverage = '/fapi/v1/leverage'  # 合约杠杆设置API
+    url_swap_order = '/fapi/v1/order'  # 合约下单API
     url_swap_open_interes_hist = '/futures/data/openInterestHist'
     url_alpha_exchange_info = "/bapi/defi/v1/public/wallet-direct/buw/wallet/cex/alpha/all/token/list"
     url_commission_rate = '/fapi/v1/commissionRate'  # Futures commission rate
@@ -963,6 +965,7 @@ class HuobiAuxiliary(Enum):
     url_transfer = '/v1/account/history'
     url_orders = '/v1/order/history'
     url_trades = '/v1/order/matchresults'
+    url_spot_order = '/v1/order/orders/place'  # 现货下单API
     url_swap_balance = '/linear-swap-api/v1/swap_balance_valuation'
     url_commission_rate = '/v2/reference/transact-fee-rate/get'
     ws_ping_sleep = 1800
@@ -985,6 +988,7 @@ class OkexAuxiliary(Enum):
     url_transfer_history = '/api/v5/asset/bills-history'
     url_orders = '/api/v5/trade/orders-history'
     url_trades = '/api/v5/trade/fills-history'
+    url_spot_order = '/api/v5/trade/order'  # 现货下单API（包括市价单和限价单）
     url_commission_rate = '/api/v5/account/trade-fee'
     ws_orders = '/ws/v5/private'
     ws_ping_sleep = 1800
