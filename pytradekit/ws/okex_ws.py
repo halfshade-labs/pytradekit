@@ -98,6 +98,7 @@ class OkexWsManager(WsManager):
 
     def start_subscribe(self, login_params):
         try:
+            print(f"okex send msg: {login_params}")
             self.send_json(login_params)
         except Exception as e:
             self.logger.exception(e)
@@ -107,6 +108,7 @@ class OkexWsManager(WsManager):
             if message == 'pong':
                 return
             msg = json.loads(message)
+            print(f"okex msg: {msg}")
             if 'event' in msg and msg['event'] == 'login':
                 if msg['code'] == '0':
                     self._send_order()
@@ -119,6 +121,14 @@ class OkexWsManager(WsManager):
                     # OKX 数据通常是列表，取出来放入队列
                     for item in msg['data']:
                         self._queue.put_nowait(item)
+
+            #添加 trade
+            if 'arg' in msg and msg['arg']['channel'] == 'orders' and "data" in msg:
+                if self._queue:
+                    # OKX 数据通常是列表，取出来放入队列
+                    for item in msg['data']:
+                        if "filled" == item['state']:
+                            self._queue.put_nowait(item)
 
         except Exception as e:
             self.logger.exception(e)
