@@ -67,11 +67,15 @@ class SingleLevelFilter(logging.Filter):
 
 
 class LoggerConfig:
-    def __init__(self, log_name, report_webhook, watch_webhook, channel=WebhookChannel.LARK):
+    def __init__(self, log_name, report_webhook, watch_webhook, channel=WebhookChannel.LARK, include_branch=True):
         self.backup_count = 10
         self.max_bytes = 2_000_000
         self.mode = 'a'
-        self.log_name = f'{log_name}@{get_git_branch()}'
+        # Include branch name in log file by default, but allow disabling for production
+        if include_branch:
+            self.log_name = f'{log_name}@{get_git_branch()}'
+        else:
+            self.log_name = log_name
         self.log_path = './logs/'
         self.log_suffix = '.log'
         self.log_format = '[%(filename)s:%(lineno)d] %(asctime)s %(levelname)8s: %(message)s'

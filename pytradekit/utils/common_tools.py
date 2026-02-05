@@ -14,13 +14,16 @@ def setup_config_logger_mode(file_path, mode_config_field: ConfigField, developm
     if running_mode == RunningMode.development_flag.name:
         channel_webhook = encrypt_decrypt(config.private[development_webhook_key],
                                           'decrypt')
+        include_branch = True  # Include branch in development for debugging
     else:
         channel_webhook = encrypt_decrypt(config.private[normal_webhook_key],
                                           'decrypt')
+        include_branch = False  # Don't include branch in production for consistency
 
     logger_config = LoggerConfig(
         find_run_file_name(file_path),
         channel_webhook,
-        channel_webhook)
+        channel_webhook,
+        include_branch=include_branch)
     logger = get_logger(logger_config)
     return config, logger, running_mode
