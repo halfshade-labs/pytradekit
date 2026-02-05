@@ -15,7 +15,7 @@ def setup_config_logger_mode(file_path, mode_config_field: ConfigField, developm
         channel_webhook = encrypt_decrypt(config.private[development_webhook_key],
                                           'decrypt')
     else:
-        channel_webhook = encrypt_decrypt(config.private[development_webhook_key],
+        channel_webhook = encrypt_decrypt(config.private[normal_webhook_key],
                                           'decrypt')
 
     logger_config = LoggerConfig(
