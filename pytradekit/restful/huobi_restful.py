@@ -21,6 +21,14 @@ class HuobiClient:
         else:
             self._url = HuobiAuxiliary.url.value
 
+    def init_account_id(self, type="spot"):
+        data = self.get_accounts()
+        print(data)
+        print("===============")
+        for account in data[HuobiRestful.balance_data.value]:
+            if account[HuobiRestful.account_type.value] == type:
+                self.account_id = account[HuobiRestful.account_id.value]
+
     def _send_request(self, api, method=HttpMmthod.GET.name, params=None, use_sign=True):
         def create_sign(Params):
             host_url = urlparse(self._url).netloc

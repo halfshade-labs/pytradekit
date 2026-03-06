@@ -449,6 +449,7 @@ class HuobiRestful(Enum):
     trade_order_id = 'order-id'
     trade_fee_coin = 'fee-currency'
     trade_fee = 'filled-fees'
+    account_type = 'type'
 
 
 class MexcRestful(Enum):
