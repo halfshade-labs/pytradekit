@@ -23,8 +23,6 @@ class HuobiClient:
 
     def init_account_id(self, type="spot"):
         data = self.get_accounts()
-        print(data)
-        print("===============")
         for account in data[HuobiRestful.balance_data.value]:
             if account[HuobiRestful.account_type.value] == type:
                 self.account_id = account[HuobiRestful.account_id.value]
