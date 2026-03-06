@@ -232,8 +232,6 @@ class HuobiClient:
         }
         if client_order_id:
             params['client-order-id'] = client_order_id
-        print(params)
-        print("----------")
         url = HuobiAuxiliary.url_spot_order.value
         result = self._send_request(url, method=HttpMmthod.POST.name, params=params, use_sign=True)
         return result
