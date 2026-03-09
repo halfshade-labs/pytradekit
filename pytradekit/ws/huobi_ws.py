@@ -115,8 +115,8 @@ class HuobiWsManager(WsManager):
             if isinstance(message, bytes):
                 message = gzip.decompress(message).decode('utf-8')
             msg = json.loads(message)
-            print(msg)
-            print("----------")
+            self.logger.debug(f"huobi message error {msg}")
+            self.logger.debug("----------")
             if 'ping' in msg:
                 self.send(json.dumps({'pong': msg['ping']}))
                 return
