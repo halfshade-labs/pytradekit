@@ -115,6 +115,8 @@ class HuobiWsManager(WsManager):
             if isinstance(message, bytes):
                 message = gzip.decompress(message).decode('utf-8')
             msg = json.loads(message)
+            print(msg)
+            print("----------")
             if 'ping' in msg:
                 self.send(json.dumps({'pong': msg['ping']}))
                 return
@@ -125,7 +127,6 @@ class HuobiWsManager(WsManager):
             if 'ch' in msg and 'bbo' in msg['ch']:
                 self._queue.put_nowait(msg)
                 return
-            print(msg)
             if 'ch' in msg and 'trade' in msg['ch'] and msg['data']:
                 self._queue.put_nowait(msg['data'])
                 return
