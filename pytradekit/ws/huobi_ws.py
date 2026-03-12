@@ -80,15 +80,19 @@ class HuobiWsManager(WsManager):
         self.subscribe()
 
     def start_bookticker_stream(self, symbol_list):
-        for index, symbol in enumerate(symbol_list):
+        """
+        Start Huobi(HTX) spot BBO websocket stream for given symbols.
+
+        - 构建 self._subs 订阅列表
+        - 直接调用 self.subscribe() 完成登录 + 订阅
+        """
+        # 构建订阅 topic 列表，例如 market.btcusdt.bbo
+        for symbol in symbol_list:
             topic = f"market.{symbol.lower()}.bbo"
-            params = {'sub': topic}
+            params = {"sub": topic}
             if params not in self._subs:
                 self._subs.append(params)
-        req = {'ch': 'sub', 'params': self._subs}
-        self.start_subscribe(req)
-        self._ping(HuobiAuxiliary.ws_ping_sleep.value,
-                   reconnection_time=HuobiAuxiliary.reconnection_time_sleep.value)
+        self.subscribe()
 
     def subscribe(self):
         try:
