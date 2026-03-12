@@ -84,23 +84,23 @@ class HuobiWsManager(WsManager):
         Start Huobi(HTX) spot BBO websocket stream for given symbols.
 
         公共行情：
-        - 把每个 symbol 转成 v2 订阅报文 {"action": "sub", "ch": "market.xxxusdt.bbo"}
+        - 使用老版公共 WS 协议：{"sub": "market.xxxusdt.bbo", "id": n}
         - 逐条发送订阅
-        - 进入 _ping 循环，保持进程存活，并按原有逻辑定期重订阅
+        - 进入 _ping 循环保持进程存活，定期重订阅
         """
-        # 使用 v2 标准订阅格式缓存
         self._subs = []
-        for symbol in symbol_list:
+
+        # 构建订阅请求，使用 {"sub": "...", "id": ...} 格式
+        for idx, symbol in enumerate(symbol_list, start=1):
             ch = f"market.{symbol.lower()}.bbo"
-            req = {"action": "sub", "ch": ch}
-            if req not in self._subs:
-                self._subs.append(req)
+            req = {"sub": ch, "id": idx}
+            self._subs.append(req)
 
         # 首次逐条发送订阅
         for req in self._subs:
             self.start_subscribe(req)
 
-        # 保持连接 & 定期重订阅
+        # 保持连接 & 定期重订阅（到 reconnection_time 后会调用 subscribe）
         self._ping(
             HuobiAuxiliary.ws_ping_sleep.value,
             reconnection_time=HuobiAuxiliary.reconnection_time_sleep.value,
@@ -108,17 +108,17 @@ class HuobiWsManager(WsManager):
 
     def subscribe(self):
         """
-        统一的订阅入口：
-        - 公共行情(is_public=True)：不登录，按 v2 标准格式逐条发送订阅
-        - 私有频道(is_public=False)：先登录，再进入 ping 循环，由 _on_message 中的逻辑发送订单/成交订阅
+        统一订阅入口：
+        - 公共行情(is_public=True)：使用 {"sub": "market.xxxusdt.bbo", "id": n}，不登录
+        - 私有频道(is_public=False)：保持原来的登录 + ping 逻辑
         """
         try:
             if self.is_public:
-                # 公共行情：逐条发送 {"action": "sub", "ch": "..."} 订阅
+                # 公共行情：逐条重发订阅
                 for req in self._subs:
                     self.start_subscribe(req)
 
-                # 继续保持 ping 循环，方便断线重连后再次订阅
+                # 继续进入 ping 循环，方便断线重连后再次订阅
                 self._ping(
                     HuobiAuxiliary.ws_ping_sleep.value,
                     reconnection_time=HuobiAuxiliary.reconnection_time_sleep.value,
