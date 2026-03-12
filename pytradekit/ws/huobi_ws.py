@@ -16,8 +16,9 @@ class HuobiWsManager(WsManager):
 
     def __init__(self, logger, queue=None, api_key=None, api_secret=None, strategy_id=None, portfolio_id=None,
                  account_id=None, url=HuobiAuxiliary.url_ws.value, api_url=HuobiAuxiliary.url.value,
-                 is_reconnecting_queue=None, start_end_time_dict=None):
+                 is_reconnecting_queue=None, start_end_time_dict=None, is_public=True):
         super().__init__(api_key, logger, is_reconnecting_queue, start_end_time_dict)
+        self.is_public = is_public
         self._api_url = api_url
         self._url = url
         self._api_key = api_key
@@ -123,7 +124,8 @@ class HuobiWsManager(WsManager):
                 self.send(json.dumps({'pong': msg['ping']}))
                 return
             if 'action' in msg and msg['action'] == 'ping':
-                self._send_trade()
+                if not self.is_public:
+                    self._send_trade()
                 self._pong(msg['data']['ts'])
                 return
             if 'ch' in msg and 'bbo' in msg['ch']:
