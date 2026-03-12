@@ -13,9 +13,11 @@ class OkexWsManager(WsManager):
 
     def __init__(self, logger, queue=None, api_key=None, api_secret=None, passphrase=None, strategy_id=None,
                  portfolio_id=None,
-                 account_id=None, url=OkexAuxiliary.url_ws.value, api_url=OkexAuxiliary.url.value,
-                 is_reconnecting_queue=None, start_end_time_dict=None):
+                 account_id=None, url=OkexAuxiliary.url_ws_public.value, api_url=OkexAuxiliary.url.value,
+                 is_reconnecting_queue=None, start_end_time_dict=None, is_public=True):
         super().__init__(api_key, logger, is_reconnecting_queue, start_end_time_dict)
+        if not is_public:
+            url = OkexAuxiliary.url_ws_private.value
         self._api_url = api_url
         self._url = url
         self._api_key = api_key
@@ -98,8 +100,6 @@ class OkexWsManager(WsManager):
 
     def start_subscribe(self, login_params):
         try:
-            self.logger.debug(f"{self._url}, {self._api_url}")
-            self.logger.debug("0")
             self.send_json(login_params)
         except Exception as e:
             self.logger.exception(e)
