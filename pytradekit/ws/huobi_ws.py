@@ -83,8 +83,10 @@ class HuobiWsManager(WsManager):
         """
         Start Huobi(HTX) spot BBO websocket stream for given symbols.
 
-        - 构建 self._subs 订阅列表
-        - 通过 _ping -> subscribe 的机制维持长连与定期重订阅
+        公共行情：
+        - 不需要登录，不调用 subscribe()
+        - 直接发送订阅 {"sub": self._subs}
+        - 通过 _ping(n_seconds) 阻塞住进程，保持长连
         """
         # 重置订阅列表
         self._subs = []
@@ -96,12 +98,13 @@ class HuobiWsManager(WsManager):
             if params not in self._subs:
                 self._subs.append(params)
 
-        # 不再发送老的 {'ch': 'sub', 'params': ...}（会导致 invalid command）
-        # 这里直接进入 _ping 循环，由 _ping 达到重连时间后调用 subscribe()
-        self._ping(
-            HuobiAuxiliary.ws_ping_sleep.value,
-            reconnection_time=HuobiAuxiliary.reconnection_time_sleep.value,
-        )
+        # 直接发送订阅（注意这里不要再用老的 {'ch': 'sub', 'params': ...} 结构）
+        req = {"sub": self._subs}
+        self.start_subscribe(req)
+
+        # 阻塞住当前进程，处理 ws 心跳等（不传 reconnection_time，永不触发 subscribe()）
+        self._ping(HuobiAuxiliary.ws_ping_sleep.value)
+        # 注意：_ping 内部 while True + sleep，会一直阻塞，不会退出
 
     def subscribe(self):
         try:
