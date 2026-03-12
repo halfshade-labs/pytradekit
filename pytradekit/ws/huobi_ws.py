@@ -16,9 +16,8 @@ class HuobiWsManager(WsManager):
 
     def __init__(self, logger, queue=None, api_key=None, api_secret=None, strategy_id=None, portfolio_id=None,
                  account_id=None, url=HuobiAuxiliary.url_ws.value, api_url=HuobiAuxiliary.url.value,
-                 is_reconnecting_queue=None, start_end_time_dict=None, is_public=True):
+                 is_reconnecting_queue=None, start_end_time_dict=None):
         super().__init__(api_key, logger, is_reconnecting_queue, start_end_time_dict)
-        self.is_public = is_public
         self._api_url = api_url
         self._url = url
         self._api_key = api_key
@@ -80,15 +79,19 @@ class HuobiWsManager(WsManager):
         self.subscribe()
 
     def start_bookticker_stream(self, symbol_list):
-        for index, symbol in enumerate(symbol_list):
+        for symbol in symbol_list:
             topic = f"market.{symbol.lower()}.bbo"
-            params = {'sub': topic}
+            params = {"action": "sub", "ch": topic}
             if params not in self._subs:
                 self._subs.append(params)
-        req = {'ch': 'sub', 'params': self._subs}
-        self.start_subscribe(req)
-        self._ping(HuobiAuxiliary.ws_ping_sleep.value,
-                   reconnection_time=HuobiAuxiliary.reconnection_time_sleep.value)
+
+        for sub_req in self._subs:
+            self.start_subscribe(sub_req)
+
+        self._ping(
+            HuobiAuxiliary.ws_ping_sleep.value,
+            reconnection_time=HuobiAuxiliary.reconnection_time_sleep.value,
+        )
 
     def subscribe(self):
         try:
@@ -124,8 +127,7 @@ class HuobiWsManager(WsManager):
                 self.send(json.dumps({'pong': msg['ping']}))
                 return
             if 'action' in msg and msg['action'] == 'ping':
-                if not self.is_public:
-                    self._send_trade()
+                self._send_trade()
                 self._pong(msg['data']['ts'])
                 return
             if 'ch' in msg and 'bbo' in msg['ch']:
