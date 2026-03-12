@@ -433,7 +433,7 @@ def encrypt_decrypt(data: str, operation: str, key: str = 'trading_system') -> s
         return f.decrypt(data.encode()).decode()
     else:
         raise ValueError("Operation must be 'encrypt' or 'decrypt'.")
-print(encrypt_decrypt(os.environ["LARK_WEBHOOK_URL"], "encrypt"))
+
 def unzip_to_df(zip_file_path: str):
     try:
         with zipfile.ZipFile(zip_file_path, 'r') as zipf:
