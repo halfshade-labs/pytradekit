@@ -83,29 +83,44 @@ class HuobiWsManager(WsManager):
         """
         Start Huobi(HTX) spot BBO websocket stream for given symbols.
 
-        公共行情频道，不需要登录鉴权：
-        - 构建 self._subs 列表
-        - 直接调用 self.subscribe() 发送订阅
+        - 构建 self._subs 订阅列表
+        - 通过 _ping -> subscribe 的机制维持长连与定期重订阅
         """
+        # 重置订阅列表
         self._subs = []
 
+        # 构建订阅 topic 列表，例如 market.btcusdt.bbo
         for symbol in symbol_list:
             topic = f"market.{symbol.lower()}.bbo"
             params = {"sub": topic}
             if params not in self._subs:
                 self._subs.append(params)
 
-        # 对于公共行情，直接订阅即可
-        self.subscribe()
+        # 不再发送老的 {'ch': 'sub', 'params': ...}（会导致 invalid command）
+        # 这里直接进入 _ping 循环，由 _ping 达到重连时间后调用 subscribe()
+        self._ping(
+            HuobiAuxiliary.ws_ping_sleep.value,
+            reconnection_time=HuobiAuxiliary.reconnection_time_sleep.value,
+        )
 
     def subscribe(self):
         try:
             if self.is_public:
-                self.send_json({"sub": self._subs})
+                # 公共行情：不需要登录，直接按 {"sub": self._subs} 结构订阅
+                req = {"sub": self._subs}
+                self.start_subscribe(req)
+                # 继续进入 ping 循环，后续到达 reconnection_time 时会再次调用 subscribe()
+                self._ping(
+                    HuobiAuxiliary.ws_ping_sleep.value,
+                    reconnection_time=HuobiAuxiliary.reconnection_time_sleep.value,
+                )
             else:
+                # 私有频道（订单、成交）仍然保持原有登录 + ping 逻辑
                 self._login()
-                self._ping(HuobiAuxiliary.ws_ping_sleep.value,
-                           reconnection_time=HuobiAuxiliary.reconnection_time_sleep.value)
+                self._ping(
+                    HuobiAuxiliary.ws_ping_sleep.value,
+                    reconnection_time=HuobiAuxiliary.reconnection_time_sleep.value,
+                )
         except Exception as e:
             self.logger.exception(e)
 
