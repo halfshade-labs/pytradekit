@@ -84,41 +84,47 @@ class HuobiWsManager(WsManager):
         Start Huobi(HTX) spot BBO websocket stream for given symbols.
 
         公共行情：
-        - 不需要登录，不调用 subscribe()
-        - 直接发送订阅 {"sub": self._subs}
-        - 通过 _ping(n_seconds) 阻塞住进程，保持长连
+        - 把每个 symbol 转成 v2 订阅报文 {"action": "sub", "ch": "market.xxxusdt.bbo"}
+        - 逐条发送订阅
+        - 进入 _ping 循环，保持进程存活，并按原有逻辑定期重订阅
         """
-        # 重置订阅列表
+        # 使用 v2 标准订阅格式缓存
         self._subs = []
-
-        # 构建订阅 topic 列表，例如 market.btcusdt.bbo
         for symbol in symbol_list:
-            topic = f"market.{symbol.lower()}.bbo"
-            params = {"sub": topic}
-            if params not in self._subs:
-                self._subs.append(params)
+            ch = f"market.{symbol.lower()}.bbo"
+            req = {"action": "sub", "ch": ch}
+            if req not in self._subs:
+                self._subs.append(req)
 
-        # 直接发送订阅（注意这里不要再用老的 {'ch': 'sub', 'params': ...} 结构）
-        req = {"sub": self._subs}
-        self.start_subscribe(req)
+        # 首次逐条发送订阅
+        for req in self._subs:
+            self.start_subscribe(req)
 
-        # 阻塞住当前进程，处理 ws 心跳等（不传 reconnection_time，永不触发 subscribe()）
-        self._ping(HuobiAuxiliary.ws_ping_sleep.value)
-        # 注意：_ping 内部 while True + sleep，会一直阻塞，不会退出
+        # 保持连接 & 定期重订阅
+        self._ping(
+            HuobiAuxiliary.ws_ping_sleep.value,
+            reconnection_time=HuobiAuxiliary.reconnection_time_sleep.value,
+        )
 
     def subscribe(self):
+        """
+        统一的订阅入口：
+        - 公共行情(is_public=True)：不登录，按 v2 标准格式逐条发送订阅
+        - 私有频道(is_public=False)：先登录，再进入 ping 循环，由 _on_message 中的逻辑发送订单/成交订阅
+        """
         try:
             if self.is_public:
-                # 公共行情：不需要登录，直接按 {"sub": self._subs} 结构订阅
-                req = {"sub": self._subs}
-                self.start_subscribe(req)
-                # 继续进入 ping 循环，后续到达 reconnection_time 时会再次调用 subscribe()
+                # 公共行情：逐条发送 {"action": "sub", "ch": "..."} 订阅
+                for req in self._subs:
+                    self.start_subscribe(req)
+
+                # 继续保持 ping 循环，方便断线重连后再次订阅
                 self._ping(
                     HuobiAuxiliary.ws_ping_sleep.value,
                     reconnection_time=HuobiAuxiliary.reconnection_time_sleep.value,
                 )
             else:
-                # 私有频道（订单、成交）仍然保持原有登录 + ping 逻辑
+                # 私有频道：保持原来的登录 + ping 逻辑
                 self._login()
                 self._ping(
                     HuobiAuxiliary.ws_ping_sleep.value,
@@ -151,10 +157,12 @@ class HuobiWsManager(WsManager):
                 self.send(json.dumps({'pong': msg['ping']}))
                 return
             if 'action' in msg and msg['action'] == 'ping':
+                # v2 心跳：
+                # - 公共行情：已经在 start_bookticker_stream/subscribe 里发过订阅，这里只需要回 pong
+                # - 私有频道：继续保持原有 _send_trade 逻辑
                 if not self.is_public:
                     self._send_trade()
-                else:
-                    self.send({"sub": self._subs})
+                # 公共和私有都要回 pong
                 self._pong(msg['data']['ts'])
                 return
             if 'ch' in msg and 'bbo' in msg['ch']:
