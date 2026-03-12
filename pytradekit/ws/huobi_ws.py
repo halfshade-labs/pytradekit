@@ -106,6 +106,8 @@ class HuobiWsManager(WsManager):
 
     def start_subscribe(self, params):
         try:
+            self.logger.debug(params)
+            self.logger.debug("htx ================")
             self.send_json(params)
         except Exception as e:
             self.logger.exception(e)
