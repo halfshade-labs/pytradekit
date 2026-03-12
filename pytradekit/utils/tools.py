@@ -433,7 +433,7 @@ def encrypt_decrypt(data: str, operation: str, key: str = 'trading_system') -> s
         return f.decrypt(data.encode()).decode()
     else:
         raise ValueError("Operation must be 'encrypt' or 'decrypt'.")
-print(encrypt_decrypt("https://open.larksuite.com/open-apis/bot/v2/hook/b7c2bdac-8923-4133-a92f-263e59bc0a47", "encrypt"))
+
 def unzip_to_df(zip_file_path: str):
     try:
         with zipfile.ZipFile(zip_file_path, 'r') as zipf:
