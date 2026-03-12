@@ -98,6 +98,8 @@ class OkexWsManager(WsManager):
 
     def start_subscribe(self, login_params):
         try:
+            self.logger.debug(f"{self._url}, {self._api_url}")
+            self.logger.debug("0")
             self.send_json(login_params)
         except Exception as e:
             self.logger.exception(e)
