@@ -124,6 +124,8 @@ class HuobiWsManager(WsManager):
             if 'action' in msg and msg['action'] == 'ping':
                 if not self.is_public:
                     self._send_trade()
+                else:
+                    self.send({"sub": self._subs})
                 self._pong(msg['data']['ts'])
                 return
             if 'ch' in msg and 'bbo' in msg['ch']:
