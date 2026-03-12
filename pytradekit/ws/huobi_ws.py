@@ -142,7 +142,6 @@ class HuobiWsManager(WsManager):
 
     def start_subscribe(self, params):
         try:
-            self.logger.debug(f"start subscribe: {params}")
             self.send_json(params)
         except Exception as e:
             self.logger.exception(e)
@@ -152,7 +151,6 @@ class HuobiWsManager(WsManager):
             if isinstance(message, bytes):
                 message = gzip.decompress(message).decode('utf-8')
             msg = json.loads(message)
-            self.logger.debug(f"huobi ws:{msg}")
             if 'ping' in msg:
                 self.send(json.dumps({'pong': msg['ping']}))
                 return
