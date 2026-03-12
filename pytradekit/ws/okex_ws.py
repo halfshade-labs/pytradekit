@@ -109,8 +109,6 @@ class OkexWsManager(WsManager):
             if message == 'pong':
                 return
             msg = json.loads(message)
-            self.logger.debug(msg)
-            self.logger.debug("okx ====================")
             if 'event' in msg and msg['event'] == 'login':
                 if msg['code'] == '0':
                     self._send_order()
