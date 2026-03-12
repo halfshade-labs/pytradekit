@@ -79,15 +79,19 @@ class HuobiWsManager(WsManager):
         self.subscribe()
 
     def start_bookticker_stream(self, symbol_list):
+        # 使用 v2 的 MBP 频道，例如 1 档：market.$symbol.mbp.1
+        self._subs = []
         for symbol in symbol_list:
-            topic = f"market.{symbol.lower()}.bbo"
+            topic = f"market.{symbol.lower()}.mbp.1"
             params = {"action": "sub", "ch": topic}
             if params not in self._subs:
                 self._subs.append(params)
 
+        # 逐条发送 v2 订阅
         for sub_req in self._subs:
             self.start_subscribe(sub_req)
 
+        # 之后维持心跳 / 重连
         self._ping(
             HuobiAuxiliary.ws_ping_sleep.value,
             reconnection_time=HuobiAuxiliary.reconnection_time_sleep.value,
@@ -123,6 +127,8 @@ class HuobiWsManager(WsManager):
             msg = json.loads(message)
             self.logger.debug(msg)
             self.logger.debug("htx ---------------")
+
+            # ping / pong 保留
             if 'ping' in msg:
                 self.send(json.dumps({'pong': msg['ping']}))
                 return
@@ -130,12 +136,18 @@ class HuobiWsManager(WsManager):
                 self._send_trade()
                 self._pong(msg['data']['ts'])
                 return
-            if 'ch' in msg and 'bbo' in msg['ch']:
+
+            # v2 MBP 行情推送：ch 里包含 mbp.1
+            if 'ch' in msg and 'mbp.1' in msg['ch'] and 'data' in msg:
+                # 直接把 msg 送进队列，后面在 handler_htx_bookticker_spot 里解析
                 self._queue.put_nowait(msg)
                 return
+
+            # 其他 trade 消息保留（如果你有用）
             if 'ch' in msg and 'trade' in msg['ch'] and 'data' in msg and msg['data']:
                 self._queue.put_nowait(msg['data'])
                 return
+
         except Exception as e:
             self.logger.exception(e)
             self.logger.debug(f"huobi message error {message}")
