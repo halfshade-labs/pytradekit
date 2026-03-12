@@ -79,23 +79,15 @@ class HuobiWsManager(WsManager):
         self.subscribe()
 
     def start_bookticker_stream(self, symbol_list):
-        # 使用 v2 的 MBP 频道，例如 1 档：market.$symbol.mbp.1
-        self._subs = []
-        for symbol in symbol_list:
-            topic = f"market.{symbol.lower()}.mbp.1"
-            params = {"action": "sub", "ch": topic}
+        for index, symbol in enumerate(symbol_list):
+            topic = f"market.{symbol.lower()}.bbo"
+            params = {'sub': topic}
             if params not in self._subs:
                 self._subs.append(params)
-
-        # 逐条发送 v2 订阅
-        for sub_req in self._subs:
-            self.start_subscribe(sub_req)
-
-        # 之后维持心跳 / 重连
-        self._ping(
-            HuobiAuxiliary.ws_ping_sleep.value,
-            reconnection_time=HuobiAuxiliary.reconnection_time_sleep.value,
-        )
+        req = {'ch': 'sub', 'params': self._subs}
+        self.start_subscribe(req)
+        self._ping(HuobiAuxiliary.ws_ping_sleep.value,
+                   reconnection_time=HuobiAuxiliary.reconnection_time_sleep.value)
 
     def subscribe(self):
         try:
@@ -114,8 +106,7 @@ class HuobiWsManager(WsManager):
 
     def start_subscribe(self, params):
         try:
-            self.logger.debug(params)
-            self.logger.debug("htx ================")
+            self.logger.debug(f"start subscribe: {params}")
             self.send_json(params)
         except Exception as e:
             self.logger.exception(e)
@@ -125,10 +116,7 @@ class HuobiWsManager(WsManager):
             if isinstance(message, bytes):
                 message = gzip.decompress(message).decode('utf-8')
             msg = json.loads(message)
-            self.logger.debug(msg)
-            self.logger.debug("htx ---------------")
-
-            # ping / pong 保留
+            self.logger.debug(f"huobi ws:{msg}")
             if 'ping' in msg:
                 self.send(json.dumps({'pong': msg['ping']}))
                 return
@@ -136,18 +124,12 @@ class HuobiWsManager(WsManager):
                 self._send_trade()
                 self._pong(msg['data']['ts'])
                 return
-
-            # v2 MBP 行情推送：ch 里包含 mbp.1
-            if 'ch' in msg and 'mbp.1' in msg['ch'] and 'data' in msg:
-                # 直接把 msg 送进队列，后面在 handler_htx_bookticker_spot 里解析
+            if 'ch' in msg and 'bbo' in msg['ch']:
                 self._queue.put_nowait(msg)
                 return
-
-            # 其他 trade 消息保留（如果你有用）
-            if 'ch' in msg and 'trade' in msg['ch'] and 'data' in msg and msg['data']:
+            if 'ch' in msg and 'trade' in msg['ch'] and msg['data']:
                 self._queue.put_nowait(msg['data'])
                 return
-
         except Exception as e:
             self.logger.exception(e)
             self.logger.debug(f"huobi message error {message}")
