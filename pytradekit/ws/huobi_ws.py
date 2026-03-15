@@ -70,14 +70,18 @@ class HuobiWsManager(WsManager):
             self._subs.append(_rqs_orders)
         self.send_json(_rqs_orders)
 
-    def _ping(self, n_seconds, reconnection_time=None) -> None:
+    def _wait_reconnection_time(self, n_seconds, reconnection_time) -> None:
+        """Sleep in n_seconds intervals until reconnection_time expires."""
         now_times = get_timestamp_s()
         while True:
-            if reconnection_time:
-                if int(get_timestamp_s() - now_times) >= reconnection_time:
-                    break
             time.sleep(n_seconds)
-        self.subscribe()
+            if int(get_timestamp_s() - now_times) >= reconnection_time:
+                return
+
+    def _send_all_subscriptions(self) -> None:
+        """Send all cached subscription requests."""
+        for req in self._subs:
+            self.start_subscribe(req)
 
     def start_bookticker_stream(self, symbol_list):
         """
@@ -86,25 +90,23 @@ class HuobiWsManager(WsManager):
         公共行情：
         - 使用老版公共 WS 协议：{"sub": "market.xxxusdt.bbo", "id": n}
         - 逐条发送订阅
-        - 进入 _ping 循环保持进程存活，定期重订阅
+        - 定期重订阅保持连接活跃
         """
         self._subs = []
 
-        # 构建订阅请求，使用 {"sub": "...", "id": ...} 格式
         for idx, symbol in enumerate(symbol_list, start=1):
             ch = f"market.{symbol.lower()}.bbo"
             req = {"sub": ch, "id": idx}
             self._subs.append(req)
 
-        # 首次逐条发送订阅
-        for req in self._subs:
-            self.start_subscribe(req)
+        self._send_all_subscriptions()
 
-        # 保持连接 & 定期重订阅（到 reconnection_time 后会调用 subscribe）
-        self._ping(
-            HuobiAuxiliary.ws_ping_sleep.value,
-            reconnection_time=HuobiAuxiliary.reconnection_time_sleep.value,
-        )
+        while True:
+            self._wait_reconnection_time(
+                HuobiAuxiliary.ws_ping_sleep.value,
+                HuobiAuxiliary.reconnection_time_sleep.value,
+            )
+            self._send_all_subscriptions()
 
     def subscribe(self):
         """
@@ -114,22 +116,19 @@ class HuobiWsManager(WsManager):
         """
         try:
             if self.is_public:
-                # 公共行情：逐条重发订阅
-                for req in self._subs:
-                    self.start_subscribe(req)
-
-                # 继续进入 ping 循环，方便断线重连后再次订阅
-                self._ping(
-                    HuobiAuxiliary.ws_ping_sleep.value,
-                    reconnection_time=HuobiAuxiliary.reconnection_time_sleep.value,
-                )
+                self._send_all_subscriptions()
             else:
-                # 私有频道：保持原来的登录 + ping 逻辑
                 self._login()
-                self._ping(
+
+            while True:
+                self._wait_reconnection_time(
                     HuobiAuxiliary.ws_ping_sleep.value,
-                    reconnection_time=HuobiAuxiliary.reconnection_time_sleep.value,
+                    HuobiAuxiliary.reconnection_time_sleep.value,
                 )
+                if self.is_public:
+                    self._send_all_subscriptions()
+                else:
+                    self._login()
         except Exception as e:
             self.logger.exception(e)
 
