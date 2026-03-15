@@ -19,6 +19,7 @@ class BaseWebsocketManager:
         self.status = WebsocketStatus.INIT.name
         self.logger = logger
         self.start_end_time_dict = start_end_time_dict
+        self._semaphore = Semaphore()
 
     def _get_url(self):
         raise NotImplementedError()
@@ -46,10 +47,11 @@ class BaseWebsocketManager:
     def send(self, message, opcode=ABNF.OPCODE_TEXT):
         if self.status == WebsocketStatus.INIT.name:
             self.connect()
+        if not self.ws:
+            raise ExchangeException("websocket is not connected")
         self.ws.send(message, opcode=opcode)
 
     def send_json(self, message):
-        self._semaphore = Semaphore()
         self.send(json.dumps(message))
 
     def reconnect(self) -> None:
@@ -86,6 +88,7 @@ class BaseWebsocketManager:
                     self.status = WebsocketStatus.RECOVERY.name
                     self._needRecovery.clear()
                     self._recovery()
+                    break
 
             time.sleep(0.01)
 
@@ -141,7 +144,8 @@ class BaseWebsocketManager:
         except Exception as e:
             self.logger.debug(f"websocket run_forever error: {e}")
         finally:
-            self.reconnect()
+            if ws is self.ws:
+                self.reconnect()
 
     def _recovery(self):
         try:

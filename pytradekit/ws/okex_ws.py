@@ -3,7 +3,7 @@ import json
 import hmac
 import base64
 
-from pytradekit.utils.dynamic_types import OkexAuxiliary, OkexWebSocket
+from pytradekit.utils.dynamic_types import OkexAuxiliary, OkexWebSocket, WebsocketStatus
 from pytradekit.gateway.websocket.ws_manager import WsManager
 from pytradekit.utils.time_handler import get_timestamp_s, get_millisecond_str, get_datetime
 
@@ -58,11 +58,14 @@ class OkexWsManager(WsManager):
     def _ping(self, n_seconds, reconnection_time=None) -> None:
         while True:
             time.sleep(n_seconds)
+            if self.status in (WebsocketStatus.RECOVERY.name, WebsocketStatus.INIT.name):
+                continue
             try:
                 self.send("ping")
             except Exception as e:
-                self.logger.debug(f"okex heartbeat error: {e}, triggering reconnect")
-                self.reconnect()
+                self.logger.debug(f"okex heartbeat error: {e}")
+                if self.status == WebsocketStatus.ACTIVE.name:
+                    self.reconnect()
                 continue
 
     def _login(self):
