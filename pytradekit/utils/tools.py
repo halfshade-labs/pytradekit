@@ -434,7 +434,6 @@ def encrypt_decrypt(data: str, operation: str, key: str = 'trading_system') -> s
     else:
         raise ValueError("Operation must be 'encrypt' or 'decrypt'.")
 
-
 def unzip_to_df(zip_file_path: str):
     try:
         with zipfile.ZipFile(zip_file_path, 'r') as zipf:

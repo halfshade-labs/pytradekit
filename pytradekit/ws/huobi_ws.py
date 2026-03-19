@@ -16,8 +16,9 @@ class HuobiWsManager(WsManager):
 
     def __init__(self, logger, queue=None, api_key=None, api_secret=None, strategy_id=None, portfolio_id=None,
                  account_id=None, url=HuobiAuxiliary.url_ws.value, api_url=HuobiAuxiliary.url.value,
-                 is_reconnecting_queue=None, start_end_time_dict=None):
+                 is_reconnecting_queue=None, start_end_time_dict=None, is_public=True):
         super().__init__(api_key, logger, is_reconnecting_queue, start_end_time_dict)
+        self.is_public = is_public
         self._api_url = api_url
         self._url = url
         self._api_key = api_key
@@ -69,31 +70,65 @@ class HuobiWsManager(WsManager):
             self._subs.append(_rqs_orders)
         self.send_json(_rqs_orders)
 
-    def _ping(self, n_seconds, reconnection_time=None) -> None:
+    def _wait_reconnection_time(self, n_seconds, reconnection_time) -> None:
+        """Sleep in n_seconds intervals until reconnection_time expires."""
         now_times = get_timestamp_s()
         while True:
-            if reconnection_time:
-                if int(get_timestamp_s() - now_times) >= reconnection_time:
-                    break
             time.sleep(n_seconds)
-        self.subscribe()
+            if int(get_timestamp_s() - now_times) >= reconnection_time:
+                return
+
+    def _send_all_subscriptions(self) -> None:
+        """Send all cached subscription requests."""
+        for req in self._subs:
+            self.start_subscribe(req)
 
     def start_bookticker_stream(self, symbol_list):
-        for index, symbol in enumerate(symbol_list):
-            topic = f"market.{symbol.lower()}.bbo"
-            params = {'sub': topic}
-            if params not in self._subs:
-                self._subs.append(params)
-        req = {'ch': 'sub', 'params': self._subs}
-        self.start_subscribe(req)
-        self._ping(HuobiAuxiliary.ws_ping_sleep.value,
-                   reconnection_time=HuobiAuxiliary.reconnection_time_sleep.value)
+        """
+        Start Huobi(HTX) spot BBO websocket stream for given symbols.
+
+        公共行情：
+        - 使用老版公共 WS 协议：{"sub": "market.xxxusdt.bbo", "id": n}
+        - 逐条发送订阅
+        - 定期重订阅保持连接活跃
+        """
+        self._subs = []
+
+        for idx, symbol in enumerate(symbol_list, start=1):
+            ch = f"market.{symbol.lower()}.bbo"
+            req = {"sub": ch, "id": idx}
+            self._subs.append(req)
+
+        self._send_all_subscriptions()
+
+        while True:
+            self._wait_reconnection_time(
+                HuobiAuxiliary.ws_ping_sleep.value,
+                HuobiAuxiliary.reconnection_time_sleep.value,
+            )
+            self._send_all_subscriptions()
 
     def subscribe(self):
+        """
+        统一订阅入口：
+        - 公共行情(is_public=True)：使用 {"sub": "market.xxxusdt.bbo", "id": n}，不登录
+        - 私有频道(is_public=False)：保持原来的登录 + ping 逻辑
+        """
         try:
-            self._login()
-            self._ping(HuobiAuxiliary.ws_ping_sleep.value,
-                       reconnection_time=HuobiAuxiliary.reconnection_time_sleep.value)
+            if self.is_public:
+                self._send_all_subscriptions()
+            else:
+                self._login()
+
+            while True:
+                self._wait_reconnection_time(
+                    HuobiAuxiliary.ws_ping_sleep.value,
+                    HuobiAuxiliary.reconnection_time_sleep.value,
+                )
+                if self.is_public:
+                    self._send_all_subscriptions()
+                else:
+                    self._login()
         except Exception as e:
             self.logger.exception(e)
 
@@ -106,7 +141,6 @@ class HuobiWsManager(WsManager):
 
     def start_subscribe(self, params):
         try:
-            print(f"huobi send msg: {params}， url: {self._url}")
             self.send_json(params)
         except Exception as e:
             self.logger.exception(e)
@@ -116,12 +150,16 @@ class HuobiWsManager(WsManager):
             if isinstance(message, bytes):
                 message = gzip.decompress(message).decode('utf-8')
             msg = json.loads(message)
-            print(f"huobi ws:{msg}")
             if 'ping' in msg:
                 self.send(json.dumps({'pong': msg['ping']}))
                 return
             if 'action' in msg and msg['action'] == 'ping':
-                self._send_trade()
+                # v2 心跳：
+                # - 公共行情：已经在 start_bookticker_stream/subscribe 里发过订阅，这里只需要回 pong
+                # - 私有频道：继续保持原有 _send_trade 逻辑
+                if not self.is_public:
+                    self._send_trade()
+                # 公共和私有都要回 pong
                 self._pong(msg['data']['ts'])
                 return
             if 'ch' in msg and 'bbo' in msg['ch']:
