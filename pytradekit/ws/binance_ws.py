@@ -231,7 +231,11 @@ class BinanceWsManager(WsManager):
     def _on_message(self, _ws, message):
         msg = json.loads(message)
         try:
-            if BinanceAuxiliary.ws_ping.value in msg:
+            # Ticker data from !ticker@arr is a list
+            if isinstance(msg, list) and self._ticker_queue:
+                self._ticker_queue.put_nowait(msg)
+                return
+            if isinstance(msg, dict) and BinanceAuxiliary.ws_ping.value in msg:
                 self._pong()
             else:
                 if self.verify_perp_order_trade(msg):
