@@ -1128,3 +1128,8 @@ class TickSnapshot(Enum):
     bid = auto()
     ask = auto()
     premium = auto()
+
+
+# Aliases for backward compatibility with liquidity_monitor
+SwapPosition = PerpPosition
+SwapIncome = PerpIncome
