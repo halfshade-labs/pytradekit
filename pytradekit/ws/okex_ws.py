@@ -3,7 +3,7 @@ import json
 import hmac
 import base64
 
-from pytradekit.utils.dynamic_types import OkexAuxiliary, OkexWebSocket
+from pytradekit.utils.dynamic_types import OkexAuxiliary, OkexWebSocket, WebsocketStatus
 from pytradekit.gateway.websocket.ws_manager import WsManager
 from pytradekit.utils.time_handler import get_timestamp_s, get_millisecond_str, get_datetime
 
@@ -13,9 +13,11 @@ class OkexWsManager(WsManager):
 
     def __init__(self, logger, queue=None, api_key=None, api_secret=None, passphrase=None, strategy_id=None,
                  portfolio_id=None,
-                 account_id=None, url=OkexAuxiliary.url_ws.value, api_url=OkexAuxiliary.url.value,
-                 is_reconnecting_queue=None, start_end_time_dict=None):
+                 account_id=None, url=OkexAuxiliary.url_ws_public.value, api_url=OkexAuxiliary.url.value,
+                 is_reconnecting_queue=None, start_end_time_dict=None, is_public=True):
         super().__init__(api_key, logger, is_reconnecting_queue, start_end_time_dict)
+        if not is_public:
+            url = OkexAuxiliary.url_ws_private.value
         self._api_url = api_url
         self._url = url
         self._api_key = api_key
@@ -56,11 +58,14 @@ class OkexWsManager(WsManager):
     def _ping(self, n_seconds, reconnection_time=None) -> None:
         while True:
             time.sleep(n_seconds)
+            if self.status in (WebsocketStatus.RECOVERY.name, WebsocketStatus.INIT.name):
+                continue
             try:
                 self.send("ping")
             except Exception as e:
-                self.logger.debug(f"okex heartbeat error: {e}, triggering reconnect")
-                self.reconnect()
+                self.logger.debug(f"okex heartbeat error: {e}")
+                if self.status == WebsocketStatus.ACTIVE.name:
+                    self.reconnect()
                 continue
 
     def _login(self):
@@ -98,7 +103,6 @@ class OkexWsManager(WsManager):
 
     def start_subscribe(self, login_params):
         try:
-            print(f"okex send msg: {login_params}")
             self.send_json(login_params)
         except Exception as e:
             self.logger.exception(e)
@@ -108,7 +112,6 @@ class OkexWsManager(WsManager):
             if message == 'pong':
                 return
             msg = json.loads(message)
-            print(f"okex msg: {msg}")
             if 'event' in msg and msg['event'] == 'login':
                 if msg['code'] == '0':
                     self._send_order()
