@@ -231,7 +231,6 @@ class BinanceWsManager(WsManager):
     def _on_message(self, _ws, message):
         msg = json.loads(message)
         try:
-            print(f"binance : {msg}")
             # Ticker data from !ticker@arr is a list
             if isinstance(msg, list) and self._ticker_queue:
                 self._ticker_queue.put_nowait(msg)
