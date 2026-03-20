@@ -53,6 +53,8 @@ class BinanceWsManager(WsManager):
         self._bn_client = bn_client
         self._mm_symbol_list = mm_symbol_list
         self.verify_bookticker_duplicate = {}
+        self._last_forward_time = {}
+        self._min_forward_interval_ms = 100
 
     def _get_api_url(self) -> str:
         return self._api_url
@@ -245,6 +247,12 @@ class BinanceWsManager(WsManager):
                     self._queue.put_nowait(msg)
                     return
                 if self.verify_spot_bookticker_duplicate(msg):
+                    symbol = msg.get('s', '')
+                    now_ms = get_timestamp_ms()
+                    last_ms = self._last_forward_time.get(symbol, 0)
+                    if now_ms - last_ms < self._min_forward_interval_ms:
+                        return  # throttle
+                    self._last_forward_time[symbol] = now_ms
                     self._queue.put_nowait(msg)
                     return
         except Exception as e:

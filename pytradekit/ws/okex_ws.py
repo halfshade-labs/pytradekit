@@ -5,7 +5,7 @@ import base64
 
 from pytradekit.utils.dynamic_types import OkexAuxiliary, OkexWebSocket, WebsocketStatus
 from pytradekit.gateway.websocket.ws_manager import WsManager
-from pytradekit.utils.time_handler import get_timestamp_s, get_millisecond_str, get_datetime
+from pytradekit.utils.time_handler import get_timestamp_s, get_timestamp_ms, get_millisecond_str, get_datetime
 
 
 class OkexWsManager(WsManager):
@@ -29,6 +29,8 @@ class OkexWsManager(WsManager):
         self._account_id = account_id
         self._ws_connected = False
         self.logger = logger
+        self._last_forward_time = {}
+        self._min_forward_interval_ms = 100
 
     def get_signature(self, params):
         mac = hmac.new(bytes(self._api_secret, encoding='utf8'), bytes(params, encoding='utf-8'), digestmod='sha256')
@@ -123,6 +125,12 @@ class OkexWsManager(WsManager):
                 if self._queue:
                     # OKX 数据通常是列表，取出来放入队列
                     for item in msg['data']:
+                        inst_id = item.get('instId', '')
+                        now_ms = get_timestamp_ms()
+                        last_ms = self._last_forward_time.get(inst_id, 0)
+                        if now_ms - last_ms < self._min_forward_interval_ms:
+                            continue  # throttle
+                        self._last_forward_time[inst_id] = now_ms
                         self._queue.put_nowait(item)
 
             #添加 trade

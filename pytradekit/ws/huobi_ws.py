@@ -8,7 +8,7 @@ import gzip
 
 from pytradekit.utils.dynamic_types import HuobiAuxiliary, HuobiWebSocket
 from pytradekit.gateway.websocket.ws_manager import WsManager
-from pytradekit.utils.time_handler import get_htx_timestamp, get_timestamp_s, get_millisecond_str, get_datetime
+from pytradekit.utils.time_handler import get_htx_timestamp, get_timestamp_s, get_timestamp_ms, get_millisecond_str, get_datetime
 
 
 class HuobiWsManager(WsManager):
@@ -29,11 +29,18 @@ class HuobiWsManager(WsManager):
         self._account_id = account_id
         self._ws_connected = False
         self.logger = logger
+        self._last_forward_time = {}
+        self._min_forward_interval_ms = 100
+        # HTX uses application-level ping/pong (JSON {"ping":...}/{"pong":...}),
+        # NOT WebSocket protocol-level PING frames.  Setting _ping_interval = 0
+        # disables websocket-client's built-in PING which HTX does not answer,
+        # causing "Connection to remote host was lost" disconnects every ~60s.
+        self._ping_interval = 0
 
     def get_signature(self, params):
         sorted_params = sorted(params.items(), key=lambda d: d[0], reverse=False)
         paramurl = urllib.parse.urlencode(sorted_params)
-        payload = ["GET", 'api.huobi.pro', "/ws/v2", paramurl]
+        payload = ["GET", 'api.htx.com', "/ws/v2", paramurl]
         signatureraw = "\n".join(payload)
         digest = hmac.new(self._api_secret.encode(encoding='UTF8'), signatureraw.encode(encoding='UTF8'),
                           digestmod=hashlib.sha256).digest()
@@ -163,6 +170,12 @@ class HuobiWsManager(WsManager):
                 self._pong(msg['data']['ts'])
                 return
             if 'ch' in msg and 'bbo' in msg['ch']:
+                symbol = msg.get('ch', '')
+                now_ms = get_timestamp_ms()
+                last_ms = self._last_forward_time.get(symbol, 0)
+                if now_ms - last_ms < self._min_forward_interval_ms:
+                    return  # throttle
+                self._last_forward_time[symbol] = now_ms
                 self._queue.put_nowait(msg)
                 return
             if 'ch' in msg and 'trade' in msg['ch'] and msg['data']:

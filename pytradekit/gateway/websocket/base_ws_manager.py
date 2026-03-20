@@ -79,6 +79,7 @@ class BaseWebsocketManager:
     def _monitor(self):
         ctr = 0
         while self.status != WebsocketStatus.STOP.name:
+            time.sleep(0.01)  # 始终 sleep，避免紧循环
             ctr += 1
             if ctr >= 5:
                 ctr = 0
@@ -89,8 +90,6 @@ class BaseWebsocketManager:
                     self._needRecovery.clear()
                     self._recovery()
                     break
-
-            time.sleep(0.01)
 
     def _connect(self):
         assert not self.ws, "ws should be closed before attempting to connect"
