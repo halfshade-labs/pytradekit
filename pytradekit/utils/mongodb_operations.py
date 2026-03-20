@@ -373,7 +373,7 @@ class MongodbOperations:
 
     def insert_swap_position_risk(self, data):
         collection_path = CollectionPath(db_name=Database.raw_accounts.name,
-                                         collection_name=Database.swap_position.name)
+                                         collection_name=Database.perp_position.name)
         self.insert_data(data, collection_path)
 
     def insert_swap_income(self, data):
@@ -702,7 +702,7 @@ class MongodbOperations:
                 "$gte": time_span.start,
                 "$lte": time_span.end
             }
-        res = self.client[Database.raw_accounts.name][Database.swap_position.name].find(params).sort(
+        res = self.client[Database.raw_accounts.name][Database.perp_position.name].find(params).sort(
             PerpPositionAttribute.event_time_ms.name,
             -1).limit(limit)
         res = list(res)
