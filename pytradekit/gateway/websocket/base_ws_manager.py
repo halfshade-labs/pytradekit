@@ -1,5 +1,4 @@
 import json
-import time
 
 from threading import Thread, Event, Semaphore
 from websocket import WebSocketApp
@@ -8,6 +7,7 @@ from websocket._abnf import ABNF
 from pytradekit.utils.tools import synchronized
 from pytradekit.utils.dynamic_types import WebsocketStatus
 from pytradekit.utils.exceptions import ExchangeException
+from pytradekit.utils.time_handler import sleep_min_time
 
 
 class BaseWebsocketManager:
@@ -79,6 +79,7 @@ class BaseWebsocketManager:
     def _monitor(self):
         ctr = 0
         while self.status != WebsocketStatus.STOP.name:
+            sleep_min_time(0.01)
             ctr += 1
             if ctr >= 5:
                 ctr = 0
@@ -89,8 +90,6 @@ class BaseWebsocketManager:
                     self._needRecovery.clear()
                     self._recovery()
                     break
-
-            time.sleep(0.01)
 
     def _connect(self):
         assert not self.ws, "ws should be closed before attempting to connect"
@@ -124,7 +123,7 @@ class BaseWebsocketManager:
                 self.ws = None
                 return
             ctr += 1
-            time.sleep(0.01)
+            sleep_min_time(0.01)
         self.status = WebsocketStatus.ACTIVE.name
 
     def _wrap_callback(self, f):
