@@ -60,65 +60,94 @@ class BinanceWsManager(WsManager):
     def _get_url(self) -> str:
         return self._url
 
+    def _is_spot(self):
+        return '/fapi/' not in self._listen_key_url
+
+    def _ws_api_listen_key(self, method):
+        """Use Binance WebSocket API to manage spot listen keys.
+        Binance has deprecated the REST endpoint for spot userDataStream.
+        """
+        import websocket as _ws_mod
+        ws_api_url = 'wss://ws-api.binance.com:443/ws-api/v3'
+        request_id = str(int(time.time() * 1000))
+        params = {'apiKey': self._api_key}
+        if method in ('userDataStream.ping', 'userDataStream.stop'):
+            listen_key = self._listen_key.get('SPOT')
+            if listen_key:
+                params['listenKey'] = listen_key
+        msg = json.dumps({'id': request_id, 'method': method, 'params': params})
+
+        ws = _ws_mod.create_connection(ws_api_url, timeout=10)
+        try:
+            ws.send(msg)
+            raw = ws.recv()
+            resp = json.loads(raw)
+            if resp.get('status') != 200:
+                raise RuntimeError(f"WebSocket API {method} failed: {resp}")
+            return resp.get('result', {})
+        finally:
+            ws.close()
+
     def post_listen_key(self, api):
-        # Try multiple API endpoints with retry in case of transient errors (e.g. 410 Gone)
-        urls = [self._listen_key_url]
-        # Add fallback endpoints for spot (non-perp)
-        if '/fapi/' not in self._listen_key_url:
-            suffix = BinanceAuxiliary.user_data_stream.value
-            for alt_base in [BinanceAuxiliary.url.value,
-                             'https://api1.binance.com', 'https://api2.binance.com',
-                             'https://api3.binance.com', 'https://api4.binance.com']:
-                alt_url = alt_base + suffix
-                if alt_url != self._listen_key_url:
-                    urls.append(alt_url)
-
-        max_retries = 3
-        last_error = None
-        for attempt in range(max_retries):
-            for url in urls:
+        if self._is_spot():
+            # Use WebSocket API for spot (REST endpoint deprecated, returns 410)
+            max_retries = 3
+            last_error = None
+            for attempt in range(max_retries):
                 try:
-                    resp = requests.post(url=url, headers={'X-MBX-APIKEY': self._api_key}, timeout=10)
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        self._listen_key[api] = data['listenKey']
-                        if url != self._listen_key_url:
-                            self.logger.info(f"listen key obtained from fallback URL: {url}")
-                            self._listen_key_url = url  # update for future renewals
-                        return
-                    else:
-                        last_error = f"HTTP {resp.status_code} from {url}: {resp.text[:200]}"
-                        self.logger.warning(f"post_listen_key failed: {last_error}")
+                    result = self._ws_api_listen_key('userDataStream.start')
+                    self._listen_key[api] = result['listenKey']
+                    self.logger.debug(f"spot listen key obtained via WebSocket API")
+                    return
                 except Exception as e:
-                    last_error = f"{url}: {e}"
-                    self.logger.warning(f"post_listen_key error: {last_error}")
-
-            if attempt < max_retries - 1:
-                wait_sec = 2 ** attempt
-                self.logger.info(f"post_listen_key: all endpoints failed on attempt {attempt + 1}, retrying in {wait_sec}s...")
-                time.sleep(wait_sec)
-
-        raise RuntimeError(f"Failed to obtain listen key from all endpoints after {max_retries} attempts. Last error: {last_error}")
+                    last_error = str(e)
+                    self.logger.warning(f"post_listen_key ws-api attempt {attempt + 1} failed: {e}")
+                    if attempt < max_retries - 1:
+                        time.sleep(2 ** attempt)
+            raise RuntimeError(f"Failed to obtain spot listen key via WebSocket API after {max_retries} attempts. Last error: {last_error}")
+        else:
+            # Perp still uses REST endpoint
+            try:
+                resp = requests.post(url=self._listen_key_url, headers={'X-MBX-APIKEY': self._api_key}, timeout=10)
+                if resp.status_code == 200:
+                    self._listen_key[api] = resp.json()['listenKey']
+                    return
+                raise RuntimeError(f"HTTP {resp.status_code} from {self._listen_key_url}: {resp.text[:200]}")
+            except requests.RequestException as e:
+                raise RuntimeError(f"post_listen_key perp error: {e}") from e
 
     def put_listen_key(self):
-        try:
-            resp = requests.put(url=self._listen_key_url, headers={'X-MBX-APIKEY': self._api_key}, timeout=10)
-            if resp.status_code == 200:
-                return
-            self.logger.warning(f"put_listen_key failed: HTTP {resp.status_code} from {self._listen_key_url}: {resp.text[:200]}")
-            if resp.status_code in (410, 404, 400):
-                self.logger.info("put_listen_key: listenKey expired or endpoint gone, re-creating...")
+        if self._is_spot():
+            try:
+                self._ws_api_listen_key('userDataStream.ping')
+            except Exception as e:
+                self.logger.warning(f"put_listen_key ws-api failed, re-creating: {e}")
                 self.post_listen_key('SPOT')
-        except Exception as e:
-            self.logger.warning(f"put_listen_key error: {e}")
+        else:
+            try:
+                resp = requests.put(url=self._listen_key_url, headers={'X-MBX-APIKEY': self._api_key}, timeout=10)
+                if resp.status_code == 200:
+                    return
+                self.logger.warning(f"put_listen_key failed: HTTP {resp.status_code} from {self._listen_key_url}: {resp.text[:200]}")
+                if resp.status_code in (410, 404, 400):
+                    self.logger.info("put_listen_key: listenKey expired or endpoint gone, re-creating...")
+                    self.post_listen_key('SPOT')
+            except Exception as e:
+                self.logger.warning(f"put_listen_key error: {e}")
 
     def delete_listen_key(self):
-        try:
-            resp = requests.delete(url=self._listen_key_url, headers={'X-MBX-APIKEY': self._api_key}, timeout=10)
-            if resp.status_code != 200:
-                self.logger.warning(f"delete_listen_key failed: HTTP {resp.status_code} {resp.text[:200]}")
-        except Exception as e:
-            self.logger.warning(f"delete_listen_key error: {e}")
+        if self._is_spot():
+            try:
+                self._ws_api_listen_key('userDataStream.stop')
+            except Exception as e:
+                self.logger.warning(f"delete_listen_key ws-api error: {e}")
+        else:
+            try:
+                resp = requests.delete(url=self._listen_key_url, headers={'X-MBX-APIKEY': self._api_key}, timeout=10)
+                if resp.status_code != 200:
+                    self.logger.warning(f"delete_listen_key failed: HTTP {resp.status_code} {resp.text[:200]}")
+            except Exception as e:
+                self.logger.warning(f"delete_listen_key error: {e}")
 
     def _pong(self) -> None:
         self.send(json.dumps({"pong": get_timestamp_ms()}))
