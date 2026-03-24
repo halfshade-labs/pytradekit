@@ -20,6 +20,8 @@ class HuobiWsManager(WsManager):
         super().__init__(api_key, logger, is_reconnecting_queue, start_end_time_dict)
         self.is_public = is_public
         self._api_url = api_url
+        if not is_public:
+            url = HuobiAuxiliary.url_ws_private.value
         self._url = url
         self._api_key = api_key
         self._api_secret = api_secret
@@ -168,6 +170,20 @@ class HuobiWsManager(WsManager):
             if 'ch' in msg and 'trade' in msg['ch'] and msg['data']:
                 self._queue.put_nowait(msg['data'])
                 return
+            # Log unhandled messages for debugging (auth responses, errors, etc.)
+            if 'action' in msg and msg['action'] == 'req' and msg.get('ch') == 'auth':
+                code = msg.get('code')
+                if code == 200:
+                    self.logger.info(f"huobi ws auth success")
+                else:
+                    self.logger.error(f"huobi ws auth failed: code={code}, msg={msg.get('message', '')}")
+            elif 'action' in msg and msg['action'] == 'sub':
+                code = msg.get('code')
+                ch = msg.get('ch', '')
+                if code == 200:
+                    self.logger.info(f"huobi ws subscribed: {ch}")
+                else:
+                    self.logger.error(f"huobi ws subscribe failed: ch={ch}, code={code}, msg={msg.get('message', '')}")
         except Exception as e:
             self.logger.exception(e)
             self.logger.debug(f"huobi message error {message}")

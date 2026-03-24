@@ -61,14 +61,55 @@ class BinanceWsManager(WsManager):
         return self._url
 
     def post_listen_key(self, api):
-        self._listen_key[api] = requests.post(url=self._listen_key_url, headers={'X-MBX-APIKEY': self._api_key}).json()[
-            'listenKey']
+        # Try multiple API endpoints in case primary is blocked (e.g. 410 Gone)
+        urls = [self._listen_key_url]
+        # Add fallback endpoints for spot (non-perp)
+        if '/fapi/' not in self._listen_key_url:
+            base_suffixes = [
+                BinanceAuxiliary.user_data_stream.value,
+            ]
+            for alt_base in ['https://api1.binance.com', 'https://api2.binance.com',
+                             'https://api3.binance.com', 'https://api4.binance.com']:
+                for suffix in base_suffixes:
+                    alt_url = alt_base + suffix
+                    if alt_url != self._listen_key_url:
+                        urls.append(alt_url)
+
+        last_error = None
+        for url in urls:
+            try:
+                resp = requests.post(url=url, headers={'X-MBX-APIKEY': self._api_key}, timeout=10)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    self._listen_key[api] = data['listenKey']
+                    if url != self._listen_key_url:
+                        self.logger.info(f"listen key obtained from fallback URL: {url}")
+                        self._listen_key_url = url  # update for future renewals
+                    return
+                else:
+                    last_error = f"HTTP {resp.status_code} from {url}: {resp.text[:200]}"
+                    self.logger.warning(f"post_listen_key failed: {last_error}")
+            except Exception as e:
+                last_error = f"{url}: {e}"
+                self.logger.warning(f"post_listen_key error: {last_error}")
+
+        raise RuntimeError(f"Failed to obtain listen key from all endpoints. Last error: {last_error}")
 
     def put_listen_key(self):
-        requests.put(url=self._listen_key_url, headers={'X-MBX-APIKEY': self._api_key}).json()
+        try:
+            resp = requests.put(url=self._listen_key_url, headers={'X-MBX-APIKEY': self._api_key}, timeout=10)
+            if resp.status_code != 200:
+                self.logger.warning(f"put_listen_key failed: HTTP {resp.status_code} {resp.text[:200]}")
+        except Exception as e:
+            self.logger.warning(f"put_listen_key error: {e}")
 
     def delete_listen_key(self):
-        requests.delete(url=self._listen_key_url, headers={'X-MBX-APIKEY': self._api_key}).json()
+        try:
+            resp = requests.delete(url=self._listen_key_url, headers={'X-MBX-APIKEY': self._api_key}, timeout=10)
+            if resp.status_code != 200:
+                self.logger.warning(f"delete_listen_key failed: HTTP {resp.status_code} {resp.text[:200]}")
+        except Exception as e:
+            self.logger.warning(f"delete_listen_key error: {e}")
 
     def _pong(self) -> None:
         self.send(json.dumps({"pong": get_timestamp_ms()}))

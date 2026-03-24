@@ -953,6 +953,7 @@ class BitfinexAuxiliary(Enum):
 class HuobiAuxiliary(Enum):
     url = 'https://api.huobi.pro'
     url_ws = 'wss://api.huobi.pro/ws'
+    url_ws_private = 'wss://api.huobi.pro/ws/v2'
     url_exchange = '/v2/settings/common/symbols'
     url_ticker = '/market/tickers'
     swap_url = 'https://api.hbdm.com'
