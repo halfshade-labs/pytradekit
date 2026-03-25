@@ -47,6 +47,10 @@ class Database(Enum):
     max_inventory = auto()
     cross_exchange_arbitrage = auto()
     arbitrage_pools_report = auto()
+    arbitrage = auto()
+    trade_records = auto()
+    premium_snapshots = auto()
+    funding_rate_history = auto()
 
 
 class OrderAttribute(Enum):
@@ -1128,6 +1132,127 @@ class TickSnapshot(Enum):
     bid = auto()
     ask = auto()
     premium = auto()
+
+
+# ====== Arbitrage Position Data Storage ======
+
+class TradeRecordAttribute(Enum):
+    trade_id = auto()
+    strategy_type = auto()
+    strategy_id = auto()
+    coin = auto()
+    status = auto()
+    created_time_ms = auto()
+    updated_time_ms = auto()
+    closed_time_ms = auto()
+    liq_hedge_checked = auto()
+    legs = auto()
+    hedge_status = auto()
+    pnl_summary = auto()
+
+
+class LegAttribute(Enum):
+    inst_code = auto()
+    inst_type = auto()
+    exchange_id = auto()
+    account_id = auto()
+    side = auto()
+    position_size = auto()
+    margin_volume = auto()
+    fee = auto()
+    fee_coin = auto()
+    entry_price = auto()
+    mark_price = auto()
+    liq_price = auto()
+    close_price = auto()
+    realized_pnl = auto()
+    unrealized_pnl = auto()
+    funding_fee_collected = auto()
+    funding_rate_current = auto()
+    funding_rate_annualized = auto()
+    premium = auto()
+    delivery_time_ms = auto()
+    days_to_expiry = auto()
+    roll_plan = auto()
+    updated_time_ms = auto()
+
+
+class HedgeStatusAttribute(Enum):
+    size_volume = auto()
+    size_volume_diff = auto()
+    size_match = auto()
+    usdt_diff = auto()
+    direction_mismatch = auto()
+    target_premium = auto()
+    open_premium = auto()
+    close_premium = auto()
+
+
+class PnlSummaryAttribute(Enum):
+    total_realized = auto()
+    funding_collected = auto()
+    premium_pnl = auto()
+    trading_fee = auto()
+    net_pnl = auto()
+    holding_hours = auto()
+    roi = auto()
+    apy = auto()
+
+
+class PremiumSnapshotAttribute(Enum):
+    time_ms = auto()
+    coin = auto()
+    perp_exchange = auto()
+    spot_exchange = auto()
+    perp_price = auto()
+    spot_price = auto()
+    premium_pct = auto()
+    premium_usdt = auto()
+
+
+class PremiumSnapshot:
+    __slots__ = [attr.name for attr in PremiumSnapshotAttribute]
+
+    def __init__(self, time_ms, coin, perp_exchange, spot_exchange, perp_price, spot_price,
+                 premium_pct, premium_usdt):
+        self.time_ms = time_ms
+        self.coin = coin
+        self.perp_exchange = perp_exchange
+        self.spot_exchange = spot_exchange
+        self.perp_price = perp_price
+        self.spot_price = spot_price
+        self.premium_pct = premium_pct
+        self.premium_usdt = premium_usdt
+
+    def to_dict(self):
+        return {slot: getattr(self, slot) for slot in self.__slots__}
+
+
+class FundingRateHistoryAttribute(Enum):
+    time_ms = auto()
+    exchange_id = auto()
+    inst_code = auto()
+    funding_rate = auto()
+    funding_rate_annualized = auto()
+    mark_price = auto()
+    next_funding_time_ms = auto()
+
+
+class FundingRateHistory:
+    __slots__ = [attr.name for attr in FundingRateHistoryAttribute]
+
+    def __init__(self, time_ms, exchange_id, inst_code, funding_rate, funding_rate_annualized,
+                 mark_price, next_funding_time_ms):
+        self.time_ms = time_ms
+        self.exchange_id = exchange_id
+        self.inst_code = inst_code
+        self.funding_rate = funding_rate
+        self.funding_rate_annualized = funding_rate_annualized
+        self.mark_price = mark_price
+        self.next_funding_time_ms = next_funding_time_ms
+
+    def to_dict(self):
+        return {slot: getattr(self, slot) for slot in self.__slots__}
 
 
 # Aliases for backward compatibility with liquidity_monitor

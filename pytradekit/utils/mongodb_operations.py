@@ -22,7 +22,8 @@ from pytradekit.utils.static_types import Database, OrderAttribute, TradeAttribu
     LastAggtradeAttribute, InstcodeBasicAttribute, \
     OrderBookAttribute, OrderDepthRatioAttribute, RankAttribute, BalanceAttribute, DepositWithdrawAttribute, \
     InventoryAttribute, DepthAttribute, PnlAttribute, VolumeFeeAttribute, BudgetAttribute, UserLoanAttribute, \
-    MaxInventoryAttribute, ArbitragePoolsReportAttribute, PerpPositionAttribute, PerpIncomeAttribute
+    MaxInventoryAttribute, ArbitragePoolsReportAttribute, PerpPositionAttribute, PerpIncomeAttribute, \
+    TradeRecordAttribute, PremiumSnapshotAttribute, FundingRateHistoryAttribute
 from pytradekit.utils.dynamic_types import DepositWithdrawAuxiliary, DuplicateFields, ExchangeId
 from pytradekit.utils.custom_types import InstCode
 from pytradekit.utils.exceptions import NoDataException
@@ -1335,3 +1336,91 @@ class MongodbOperations:
         if latest and results:
             return results[0]
         return results
+
+    # ====== Trade Records ======
+
+    def insert_trade_record(self, data):
+        collection_path = CollectionPath(db_name=Database.arbitrage.name,
+                                         collection_name=Database.trade_records.name)
+        if isinstance(data, dict) and TradeRecordAttribute.trade_id.name in data:
+            data["_id"] = data[TradeRecordAttribute.trade_id.name]
+        self.insert_data(data, collection_path)
+
+    def update_trade_record(self, trade_id, update_data):
+        params = {TradeRecordAttribute.trade_id.name: trade_id}
+        update = {'$set': update_data}
+        self.client[Database.arbitrage.name][Database.trade_records.name].update_one(params, update)
+
+    def read_trade_records(self, status=None, strategy_type=None, strategy_id=None, coin=None,
+                           time_span=None, limit=0):
+        params = {}
+        if status:
+            params[TradeRecordAttribute.status.name] = status
+        if strategy_type:
+            params[TradeRecordAttribute.strategy_type.name] = strategy_type
+        if strategy_id:
+            params[TradeRecordAttribute.strategy_id.name] = strategy_id
+        if coin:
+            params[TradeRecordAttribute.coin.name] = coin
+        if time_span:
+            params[TradeRecordAttribute.created_time_ms.name] = {
+                "$gte": time_span.start,
+                "$lte": time_span.end
+            }
+        cursor = self.client[Database.arbitrage.name][Database.trade_records.name].find(params).sort(
+            TradeRecordAttribute.created_time_ms.name, -1)
+        if limit:
+            cursor = cursor.limit(limit)
+        res = list(cursor)
+        return res
+
+    def read_trade_record_by_id(self, trade_id):
+        params = {TradeRecordAttribute.trade_id.name: trade_id}
+        res = self.client[Database.arbitrage.name][Database.trade_records.name].find_one(params)
+        return res
+
+    # ====== Premium Snapshots ======
+
+    def insert_premium_snapshot(self, data):
+        collection_path = CollectionPath(db_name=Database.arbitrage.name,
+                                         collection_name=Database.premium_snapshots.name)
+        self.insert_data(data, collection_path)
+
+    def read_premium_snapshots(self, coin=None, time_span=None, limit=0):
+        params = {}
+        if coin:
+            params[PremiumSnapshotAttribute.coin.name] = coin
+        if time_span:
+            params[PremiumSnapshotAttribute.time_ms.name] = {
+                "$gte": time_span.start,
+                "$lte": time_span.end
+            }
+        cursor = self.client[Database.arbitrage.name][Database.premium_snapshots.name].find(params).sort(
+            PremiumSnapshotAttribute.time_ms.name, -1)
+        if limit:
+            cursor = cursor.limit(limit)
+        return list(cursor)
+
+    # ====== Funding Rate History ======
+
+    def insert_funding_rate_history(self, data):
+        collection_path = CollectionPath(db_name=Database.arbitrage.name,
+                                         collection_name=Database.funding_rate_history.name)
+        self.insert_data(data, collection_path)
+
+    def read_funding_rate_history(self, inst_code=None, exchange_id=None, time_span=None, limit=0):
+        params = {}
+        if inst_code:
+            params[FundingRateHistoryAttribute.inst_code.name] = inst_code
+        if exchange_id:
+            params[FundingRateHistoryAttribute.exchange_id.name] = exchange_id
+        if time_span:
+            params[FundingRateHistoryAttribute.time_ms.name] = {
+                "$gte": time_span.start,
+                "$lte": time_span.end
+            }
+        cursor = self.client[Database.arbitrage.name][Database.funding_rate_history.name].find(params).sort(
+            FundingRateHistoryAttribute.time_ms.name, -1)
+        if limit:
+            cursor = cursor.limit(limit)
+        return list(cursor)
