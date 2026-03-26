@@ -150,11 +150,11 @@ class TestPremiumSnapshotCRUD:
 class TestFundingRateHistoryCRUD:
     def test_insert_funding_rate_history(self, mocker):
         mongo, client = _make_mongo(mocker)
-        data = [{"time_ms": 1000, "inst_code": "BTC-USDT_BN.PERP"}]
+        data = [{"time_ms": 1000, "exchange_id": "BN", "inst_code": "BTC-USDT_BN.PERP"}]
         mongo.insert_funding_rate_history(data)
 
         collection = client["arbitrage"]["funding_rate_history"]
-        collection.insert_many.assert_called_once()
+        collection.bulk_write.assert_called_once()
 
     def test_read_funding_rate_history_with_inst_code(self, mocker):
         mongo, client = _make_mongo(mocker)
