@@ -75,8 +75,48 @@ class MongodbOperations:
             MongodbOperations._client = self._create_client(mongodb_url)
         self.client = MongodbOperations._client
         self.logger = logger
+        self._ensure_indexes()
+
+    def _ensure_indexes(self):
+        """Create compound indexes for arbitrage and account collections (idempotent)."""
+        try:
+            from pymongo import DESCENDING
+            # funding_rate_history: unique on (exchange_id, inst_code, time_ms) for upsert dedup
+            self.client[Database.arbitrage.name][Database.funding_rate_history.name].create_index(
+                [
+                    (FundingRateHistoryAttribute.exchange_id.name, 1),
+                    (FundingRateHistoryAttribute.inst_code.name, 1),
+                    (FundingRateHistoryAttribute.time_ms.name, DESCENDING),
+                ],
+                unique=True,
+                name="idx_exchange_inst_time",
+                background=True,
+            )
+            # premium_snapshots: query by coin + time range
+            self.client[Database.arbitrage.name][Database.premium_snapshots.name].create_index(
+                [
+                    (PremiumSnapshotAttribute.coin.name, 1),
+                    (PremiumSnapshotAttribute.time_ms.name, DESCENDING),
+                ],
+                name="idx_coin_time",
+                background=True,
+            )
+            # swap_income: query by account_id + inst_code + time range
+            self.client[Database.raw_accounts.name][Database.swap_income.name].create_index(
+                [
+                    (PerpIncomeAttribute.account_id.name, 1),
+                    (PerpIncomeAttribute.inst_code.name, 1),
+                    (PerpIncomeAttribute.time_ms.name, 1),
+                ],
+                name="idx_account_inst_time",
+                background=True,
+            )
+        except Exception as e:
+            if self.logger:
+                self.logger.debug(f"Index creation skipped or failed: {e}")
 
     def get_correct_dict(self, a_dict) -> dict:
+        from decimal import Decimal as _Decimal
         new_dict = {}
         for key1, val1 in a_dict.items():
             if isinstance(val1, dict):
@@ -86,6 +126,8 @@ class MongodbOperations:
             if isinstance(val1, np.int64):
                 val1 = int(val1)
             if isinstance(val1, np.float64):
+                val1 = float(val1)
+            if isinstance(val1, _Decimal):
                 val1 = float(val1)
             if isinstance(val1, pd.Timedelta):
                 val1 = str(val1)
@@ -711,12 +753,14 @@ class MongodbOperations:
             raise NoDataException(f'No swap position found for inst_code {inst_code}')
         return res
 
-    def read_swap_income(self, account_id, inst_code):
+    def read_swap_income(self, account_id, inst_code, since_ms=None):
         params = {}
         if account_id:
             params[PerpIncomeAttribute.account_id.name] = account_id
         if inst_code:
             params[PerpIncomeAttribute.inst_code.name] = inst_code
+        if since_ms is not None:
+            params[PerpIncomeAttribute.time_ms.name] = {"$gte": since_ms}
         res = self.client[Database.raw_accounts.name][Database.swap_income.name].find(params)
         res = list(res)
         if len(res) == 0:
@@ -1404,9 +1448,21 @@ class MongodbOperations:
     # ====== Funding Rate History ======
 
     def insert_funding_rate_history(self, data):
-        collection_path = CollectionPath(db_name=Database.arbitrage.name,
-                                         collection_name=Database.funding_rate_history.name)
-        self.insert_data(data, collection_path)
+        collection = self.client[Database.arbitrage.name][Database.funding_rate_history.name]
+        if not isinstance(data, list):
+            data = [data]
+        from pymongo import ReplaceOne
+        ops = []
+        for item in data:
+            d = self.get_correct_dict(item)
+            filt = {
+                FundingRateHistoryAttribute.exchange_id.name: d.get(FundingRateHistoryAttribute.exchange_id.name),
+                FundingRateHistoryAttribute.inst_code.name: d.get(FundingRateHistoryAttribute.inst_code.name),
+                FundingRateHistoryAttribute.time_ms.name: d.get(FundingRateHistoryAttribute.time_ms.name),
+            }
+            ops.append(ReplaceOne(filt, d, upsert=True))
+        if ops:
+            collection.bulk_write(ops, ordered=False)
 
     def read_funding_rate_history(self, inst_code=None, exchange_id=None, time_span=None, limit=0):
         params = {}
