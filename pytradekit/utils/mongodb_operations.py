@@ -7,13 +7,14 @@
 """
 import json
 import re
+from decimal import Decimal
 from urllib.parse import urlparse, quote_plus, urlunparse
 import functools
 
 import pandas as pd
 from pandas import DataFrame
 import numpy as np
-from pymongo import MongoClient
+from pymongo import MongoClient, DESCENDING, ReplaceOne
 from pymongo.errors import ConnectionFailure, NetworkTimeout, OperationFailure, ServerSelectionTimeoutError
 
 from pytradekit.utils.time_handler import DATETIME_FORMAT_DAY, get_yesterday_datetime, \
@@ -44,6 +45,7 @@ class CollectionPath:
 
 class MongodbOperations:
     _client = None
+    _indexes_ensured = False
 
     @staticmethod
     def handle_mongodb_errors(default_return=None):
@@ -75,48 +77,44 @@ class MongodbOperations:
             MongodbOperations._client = self._create_client(mongodb_url)
         self.client = MongodbOperations._client
         self.logger = logger
-        self._ensure_indexes()
+        if not MongodbOperations._indexes_ensured:
+            self._ensure_indexes()
+            MongodbOperations._indexes_ensured = True
 
     def _ensure_indexes(self):
         """Create compound indexes for arbitrage and account collections (idempotent)."""
-        try:
-            from pymongo import DESCENDING
-            # funding_rate_history: unique on (exchange_id, inst_code, time_ms) for upsert dedup
-            self.client[Database.arbitrage.name][Database.funding_rate_history.name].create_index(
-                [
-                    (FundingRateHistoryAttribute.exchange_id.name, 1),
-                    (FundingRateHistoryAttribute.inst_code.name, 1),
-                    (FundingRateHistoryAttribute.time_ms.name, DESCENDING),
-                ],
-                unique=True,
-                name="idx_exchange_inst_time",
-                background=True,
-            )
-            # premium_snapshots: query by coin + time range
-            self.client[Database.arbitrage.name][Database.premium_snapshots.name].create_index(
-                [
-                    (PremiumSnapshotAttribute.coin.name, 1),
-                    (PremiumSnapshotAttribute.time_ms.name, DESCENDING),
-                ],
-                name="idx_coin_time",
-                background=True,
-            )
-            # swap_income: query by account_id + inst_code + time range
-            self.client[Database.raw_accounts.name][Database.swap_income.name].create_index(
-                [
-                    (PerpIncomeAttribute.account_id.name, 1),
-                    (PerpIncomeAttribute.inst_code.name, 1),
-                    (PerpIncomeAttribute.time_ms.name, 1),
-                ],
-                name="idx_account_inst_time",
-                background=True,
-            )
-        except Exception as e:
-            if self.logger:
-                self.logger.debug(f"Index creation skipped or failed: {e}")
+        # funding_rate_history: unique on (exchange_id, inst_code, time_ms) for upsert dedup
+        self.client[Database.arbitrage.name][Database.funding_rate_history.name].create_index(
+            [
+                (FundingRateHistoryAttribute.exchange_id.name, 1),
+                (FundingRateHistoryAttribute.inst_code.name, 1),
+                (FundingRateHistoryAttribute.time_ms.name, DESCENDING),
+            ],
+            unique=True,
+            name="idx_exchange_inst_time",
+            background=True,
+        )
+        # premium_snapshots: query by coin + time range
+        self.client[Database.arbitrage.name][Database.premium_snapshots.name].create_index(
+            [
+                (PremiumSnapshotAttribute.coin.name, 1),
+                (PremiumSnapshotAttribute.time_ms.name, DESCENDING),
+            ],
+            name="idx_coin_time",
+            background=True,
+        )
+        # swap_income: query by account_id + inst_code + time range
+        self.client[Database.raw_accounts.name][Database.swap_income.name].create_index(
+            [
+                (PerpIncomeAttribute.account_id.name, 1),
+                (PerpIncomeAttribute.inst_code.name, 1),
+                (PerpIncomeAttribute.time_ms.name, 1),
+            ],
+            name="idx_account_inst_time",
+            background=True,
+        )
 
     def get_correct_dict(self, a_dict) -> dict:
-        from decimal import Decimal as _Decimal
         new_dict = {}
         for key1, val1 in a_dict.items():
             if isinstance(val1, dict):
@@ -127,8 +125,8 @@ class MongodbOperations:
                 val1 = int(val1)
             if isinstance(val1, np.float64):
                 val1 = float(val1)
-            if isinstance(val1, _Decimal):
-                val1 = float(val1)
+            if isinstance(val1, Decimal):
+                val1 = str(val1)
             if isinstance(val1, pd.Timedelta):
                 val1 = str(val1)
             new_dict[key1] = val1
@@ -753,7 +751,7 @@ class MongodbOperations:
             raise NoDataException(f'No swap position found for inst_code {inst_code}')
         return res
 
-    def read_swap_income(self, account_id, inst_code, since_ms=None):
+    def read_swap_income(self, account_id, inst_code, since_ms: int = None):
         params = {}
         if account_id:
             params[PerpIncomeAttribute.account_id.name] = account_id
@@ -1448,10 +1446,11 @@ class MongodbOperations:
     # ====== Funding Rate History ======
 
     def insert_funding_rate_history(self, data):
+        if not data:
+            return
         collection = self.client[Database.arbitrage.name][Database.funding_rate_history.name]
         if not isinstance(data, list):
             data = [data]
-        from pymongo import ReplaceOne
         ops = []
         for item in data:
             d = self.get_correct_dict(item)
