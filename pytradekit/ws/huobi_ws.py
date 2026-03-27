@@ -159,15 +159,19 @@ class HuobiWsManager(WsManager):
                 # v2 心跳：
                 # - 公共行情：已经在 start_bookticker_stream/subscribe 里发过订阅，这里只需要回 pong
                 # - 私有频道：继续保持原有 _send_trade 逻辑
+                data = msg.get('data')
+                if data is None:
+                    self.logger.warning(f"huobi ws ping missing data: {msg}")
+                    return
                 if not self.is_public:
                     self._send_trade()
                 # 公共和私有都要回 pong
-                self._pong(msg['data']['ts'])
+                self._pong(data['ts'])
                 return
             if 'ch' in msg and 'bbo' in msg['ch']:
                 self._queue.put_nowait(msg)
                 return
-            if 'ch' in msg and 'trade' in msg['ch'] and msg['data']:
+            if 'ch' in msg and 'trade' in msg['ch'] and msg.get('data'):
                 self._queue.put_nowait(msg['data'])
                 return
             # Log unhandled messages for debugging (auth responses, errors, etc.)
