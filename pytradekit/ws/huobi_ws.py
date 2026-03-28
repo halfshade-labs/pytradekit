@@ -156,16 +156,11 @@ class HuobiWsManager(WsManager):
                 self.send(json.dumps({'pong': msg['ping']}))
                 return
             if 'action' in msg and msg['action'] == 'ping':
-                # v2 心跳：
-                # - 公共行情：已经在 start_bookticker_stream/subscribe 里发过订阅，这里只需要回 pong
-                # - 私有频道：继续保持原有 _send_trade 逻辑
+                # v2 ping: only reply pong; subscriptions are handled elsewhere
                 data = msg.get('data')
                 if data is None:
                     self.logger.debug(f"huobi ws ping missing data: {msg}")
                     return
-                if not self.is_public:
-                    self._send_trade()
-                # 公共和私有都要回 pong
                 self._pong(data['ts'])
                 return
             if 'ch' in msg and 'bbo' in msg['ch']:
@@ -179,6 +174,8 @@ class HuobiWsManager(WsManager):
                 code = msg.get('code')
                 if code == 200:
                     self.logger.info(f"huobi ws auth success")
+                    if not self.is_public:
+                        self._send_trade()
                 else:
                     self.logger.info(f"huobi ws auth failed: code={code}, msg={msg.get('message', '')}")
             elif 'action' in msg and msg['action'] == 'sub':
