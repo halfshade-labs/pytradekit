@@ -1351,6 +1351,7 @@ class RedisFields(Enum):
     depth_order_theoretical = auto()
     portfolios = auto()
     premium = auto()
+    order_link = auto()
 
 
 class DuplicateFields(Enum):
