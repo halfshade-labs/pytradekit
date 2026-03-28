@@ -7,6 +7,7 @@
 """
 import json
 import re
+import threading
 from decimal import Decimal
 from urllib.parse import urlparse, quote_plus, urlunparse
 import functools
@@ -46,6 +47,7 @@ class CollectionPath:
 class MongodbOperations:
     _client = None
     _indexes_ensured = False
+    _indexes_lock = threading.Lock()
 
     @staticmethod
     def handle_mongodb_errors(default_return=None):
@@ -77,9 +79,10 @@ class MongodbOperations:
             MongodbOperations._client = self._create_client(mongodb_url)
         self.client = MongodbOperations._client
         self.logger = logger
-        if not MongodbOperations._indexes_ensured:
-            self._ensure_indexes()
-            MongodbOperations._indexes_ensured = True
+        with MongodbOperations._indexes_lock:
+            if not MongodbOperations._indexes_ensured:
+                self._ensure_indexes()
+                MongodbOperations._indexes_ensured = True
 
     def _ensure_indexes(self):
         """Create compound indexes for arbitrage and account collections (idempotent)."""

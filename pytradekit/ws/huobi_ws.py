@@ -161,7 +161,7 @@ class HuobiWsManager(WsManager):
                 # - 私有频道：继续保持原有 _send_trade 逻辑
                 data = msg.get('data')
                 if data is None:
-                    self.logger.warning(f"huobi ws ping missing data: {msg}")
+                    self.logger.debug(f"huobi ws ping missing data: {msg}")
                     return
                 if not self.is_public:
                     self._send_trade()
@@ -180,14 +180,14 @@ class HuobiWsManager(WsManager):
                 if code == 200:
                     self.logger.info(f"huobi ws auth success")
                 else:
-                    self.logger.error(f"huobi ws auth failed: code={code}, msg={msg.get('message', '')}")
+                    self.logger.info(f"huobi ws auth failed: code={code}, msg={msg.get('message', '')}")
             elif 'action' in msg and msg['action'] == 'sub':
                 code = msg.get('code')
                 ch = msg.get('ch', '')
                 if code == 200:
                     self.logger.info(f"huobi ws subscribed: {ch}")
                 else:
-                    self.logger.error(f"huobi ws subscribe failed: ch={ch}, code={code}, msg={msg.get('message', '')}")
+                    self.logger.info(f"huobi ws subscribe failed: ch={ch}, code={code}, msg={msg.get('message', '')}")
         except Exception as e:
             self.logger.exception(e)
             self.logger.debug(f"huobi message error {message}")

@@ -9,6 +9,7 @@ TICKER_PRICE_EXPIRE_TIME = TimeConvert.MIN_TO_S * 10
 ORDER_TICKER_EXPIRE_TIME = TimeConvert.MIN_TO_S * 30
 ORDERS_EXPIRE_TIME = TimeConvert.MIN_TO_S * 60
 PREMIUM_EXPIRE_TIME = TimeConvert.MIN_TO_S * 60 * 24 * 30
+ORDER_LINK_EXPIRE_TIME = TimeConvert.DAY_TO_S
 TIMEOUT_SECOND = 5
 
 
@@ -283,6 +284,30 @@ class RedisOperations:
         except Exception as e:
             self.logger.exception(f"Failed to set portfolios for {key}: {e}")
             raise DependencyException(f"Failed to set portfolios for {key}") from e
+
+    def set_order_link(self, spot_client_order_id: str, perp_client_order_id: str):
+        """Store spot→perp client_order_id mapping with 24h TTL."""
+        key = f"{RedisFields.order_link.name}:{spot_client_order_id}"
+        lock = self.get_lock_for_resource(key)
+        try:
+            with lock:
+                self.client.set(key, perp_client_order_id)
+                self.client.expire(key, ORDER_LINK_EXPIRE_TIME)
+        except Exception as e:
+            self.logger.exception(f"Failed to set order link for {spot_client_order_id}: {e}")
+            raise DependencyException(f"Failed to set order link for {spot_client_order_id}") from e
+
+    def get_order_link(self, spot_client_order_id: str) -> str:
+        """Retrieve perp client_order_id for a given spot client_order_id."""
+        key = f"{RedisFields.order_link.name}:{spot_client_order_id}"
+        lock = self.get_lock_for_resource(key)
+        try:
+            with lock:
+                value = self.client.get(key)
+                return value.decode() if isinstance(value, bytes) else value
+        except Exception as e:
+            self.logger.exception(f"Failed to get order link for {spot_client_order_id}: {e}")
+            raise DependencyException(f"Failed to get order link for {spot_client_order_id}") from e
 
     def set_target_premium(self, client_order_id, premium):
         key = f"{RedisFields.premium.name}:{client_order_id}"
