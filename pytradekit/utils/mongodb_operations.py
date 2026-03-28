@@ -171,7 +171,6 @@ class MongodbOperations:
         netloc = f"{username}:{password}@{parsed.hostname}:{parsed.port}"
         safe_mongodb_url = urlunparse(
             (parsed.scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment))
-        print(safe_mongodb_url)
         return MongoClient(safe_mongodb_url)
 
     def _check_connection(self):
@@ -181,7 +180,7 @@ class MongodbOperations:
             return True
         except (ConnectionFailure, NetworkTimeout):
             if self.logger:
-                self.logger.warning("MongoDB connection lost. Attempting to reconnect.")
+                self.logger.info("MongoDB connection lost. Attempting to reconnect.")
             return False
 
     def close(self):
@@ -212,7 +211,7 @@ class MongodbOperations:
             return f"Deleted {result.deleted_count} documents. The collection has been emptied."
         else:
             if self.logger:
-                self.logger.warning(
+                self.logger.info(
                     f"No documents were found in {collection_path.db_name}.{collection_path.collection_name}, or the collection does not exist.")
             return "No documents were found, or the collection does not exist."
 
