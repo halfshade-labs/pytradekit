@@ -106,8 +106,8 @@ class MongodbOperations:
             name="idx_coin_time",
             background=True,
         )
-        # swap_income: query by account_id + inst_code + time range
-        self.client[Database.raw_accounts.name][Database.swap_income.name].create_index(
+        # perp_income: query by account_id + inst_code + time range
+        self.client[Database.raw_accounts.name][Database.perp_income.name].create_index(
             [
                 (PerpIncomeAttribute.account_id.name, 1),
                 (PerpIncomeAttribute.inst_code.name, 1),
@@ -419,9 +419,9 @@ class MongodbOperations:
                                          collection_name=Database.perp_position.name)
         self.insert_data(data, collection_path)
 
-    def insert_swap_income(self, data):
+    def insert_perp_income(self, data):
         collection_path = CollectionPath(db_name=Database.raw_accounts.name,
-                                         collection_name=Database.swap_income.name)
+                                         collection_name=Database.perp_income.name)
         self.insert_data(data, collection_path)
 
     def insert_last_agg_trade_time(self, data):
@@ -753,7 +753,7 @@ class MongodbOperations:
             raise NoDataException(f'No swap position found for inst_code {inst_code}')
         return res
 
-    def read_swap_income(self, account_id, inst_code, since_ms: int = None):
+    def read_perp_income(self, account_id, inst_code, since_ms: int = None):
         params = {}
         if account_id:
             params[PerpIncomeAttribute.account_id.name] = account_id
@@ -761,10 +761,10 @@ class MongodbOperations:
             params[PerpIncomeAttribute.inst_code.name] = inst_code
         if since_ms is not None:
             params[PerpIncomeAttribute.time_ms.name] = {"$gte": since_ms}
-        res = self.client[Database.raw_accounts.name][Database.swap_income.name].find(params)
+        res = self.client[Database.raw_accounts.name][Database.perp_income.name].find(params)
         res = list(res)
         if len(res) == 0:
-            raise NoDataException(f'No swap income found for inst_code {inst_code}')
+            raise NoDataException(f'No perp income found for inst_code {inst_code}')
         return res
 
     def read_balance(self, account_id=None, exchange_id=None, hour=None, time_span=None, is_df=False, limit=1,
