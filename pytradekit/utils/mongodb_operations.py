@@ -419,7 +419,7 @@ class MongodbOperations:
                                          collection_name=Database.perp_position.name)
         self.insert_data(data, collection_path)
 
-    def insert_swap_income(self, data):
+    def insert_perp_income(self, data):
         collection_path = CollectionPath(db_name=Database.raw_accounts.name,
                                          collection_name=Database.perp_income.name)
         self.insert_data(data, collection_path)
@@ -753,7 +753,7 @@ class MongodbOperations:
             raise NoDataException(f'No swap position found for inst_code {inst_code}')
         return res
 
-    def read_swap_income(self, account_id, inst_code, since_ms: int = None):
+    def read_perp_income(self, account_id, inst_code, since_ms: int = None):
         params = {}
         if account_id:
             params[PerpIncomeAttribute.account_id.name] = account_id
