@@ -764,7 +764,7 @@ class MongodbOperations:
         res = self.client[Database.raw_accounts.name][Database.perp_income.name].find(params)
         res = list(res)
         if len(res) == 0:
-            raise NoDataException(f'No swap income found for inst_code {inst_code}')
+            raise NoDataException(f'No perp income found for inst_code {inst_code}')
         return res
 
     def read_balance(self, account_id=None, exchange_id=None, hour=None, time_span=None, is_df=False, limit=1,
