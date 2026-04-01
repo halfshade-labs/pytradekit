@@ -329,3 +329,24 @@ class RedisOperations:
         except Exception as e:
             self.logger.exception(f"Failed to get target premium for {order_id}: {e}")
             raise DependencyException(f"Failed to get target premium for {order_id}") from e
+
+    def ping(self):
+        """Verify the Redis connection is alive. Raises DependencyException on failure."""
+        try:
+            self.client.ping()
+        except Exception as e:
+            raise DependencyException("Redis ping failed") from e
+
+    def create_pubsub(self):
+        """Create and return a Redis pubsub object."""
+        try:
+            return self.client.pubsub()
+        except Exception as e:
+            raise DependencyException("Failed to create pubsub") from e
+
+    def close(self):
+        """Close the underlying Redis connection."""
+        try:
+            self.client.close()
+        except Exception as e:
+            self.logger.debug(f"error closing Redis connection (ignored): {e}")
