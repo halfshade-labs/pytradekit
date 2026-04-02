@@ -335,6 +335,7 @@ class RedisOperations:
         try:
             self.client.ping()
         except Exception as e:
+            self.logger.exception(f"Redis ping failed: {e}")
             raise DependencyException("Redis ping failed") from e
 
     def create_pubsub(self):
@@ -342,11 +343,13 @@ class RedisOperations:
         try:
             return self.client.pubsub()
         except Exception as e:
+            self.logger.exception(f"Failed to create pubsub: {e}")
             raise DependencyException("Failed to create pubsub") from e
 
     def close(self):
-        """Close the underlying Redis connection."""
+        """Close the underlying Redis connection. Raises DependencyException on failure."""
         try:
             self.client.close()
         except Exception as e:
-            self.logger.debug(f"error closing Redis connection (ignored): {e}")
+            self.logger.exception(f"Failed to close Redis connection: {e}")
+            raise DependencyException("Failed to close Redis connection") from e
