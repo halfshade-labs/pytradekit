@@ -1,4 +1,5 @@
 import json
+from decimal import Decimal
 
 import redis
 from pytradekit.utils.dynamic_types import RedisFields
@@ -325,7 +326,7 @@ class RedisOperations:
         lock = self.get_lock_for_resource(key)
         try:
             with lock:
-                return float(self.client.get(key))
+                return Decimal(self.client.get(key).decode())
         except Exception as e:
             self.logger.exception(f"Failed to get target premium for {order_id}: {e}")
             raise DependencyException(f"Failed to get target premium for {order_id}") from e
