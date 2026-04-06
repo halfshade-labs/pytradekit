@@ -424,6 +424,21 @@ class MongodbOperations:
                                          collection_name=Database.perp_income.name)
         self.insert_data(data, collection_path)
 
+    def insert_balance_pnl_snapshot(self, data):
+        collection_path = CollectionPath(db_name=Database.raw_accounts.name,
+                                         collection_name=Database.balance_pnl_snapshots.name)
+        self.insert_data(data, collection_path)
+
+    def read_yesterday_balance_pnl_snapshot(self):
+        yesterday_start = get_yesterday_datetime()
+        yesterday_end = yesterday_start.replace(hour=23, minute=59, second=59, microsecond=999999)
+        collection_path = CollectionPath(db_name=Database.raw_accounts.name,
+                                         collection_name=Database.balance_pnl_snapshots.name)
+        return self.client[collection_path.db_name][collection_path.collection_name].find_one(
+            {"timestamp": {"$gte": yesterday_start, "$lte": yesterday_end}},
+            sort=[("timestamp", -1)],
+        )
+
     def insert_last_agg_trade_time(self, data):
         collection_path = CollectionPath(db_name=Database.mvid_official.name,
                                          collection_name=Database.last_agg_trade_time.name)
