@@ -3,9 +3,13 @@ from pytradekit.utils.mongodb_operations import MongodbOperations
 
 # 测试MongoDB客户端的创建
 def test_create_client(mocker):
+    # Reset singleton so _create_client is actually invoked
+    MongodbOperations._client = None
+    MongodbOperations._indexes_ensured = False
     mongodb_url = "mongodb://username:password@localhost:27017"
+    # Mock _ensure_indexes to avoid requiring a live MongoDB connection
+    mocker.patch.object(MongodbOperations, '_ensure_indexes')
     spy = mocker.spy(MongodbOperations, '_create_client')
-    # 初始化MongodbOperations实例以触发_create_client调用
     MongodbOperations(mongodb_url)
     # 现在使用spy对象来断言_create_client是否被正确调用
     spy.assert_called_once_with(mongodb_url)
