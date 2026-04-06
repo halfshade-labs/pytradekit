@@ -1,3 +1,4 @@
+from decimal import Decimal
 from urllib.parse import urlencode
 import time
 
@@ -266,6 +267,15 @@ class BinanceClient:
         balances = self.request(HttpMmthod.GET.name, url, params=params)
         return balances
 
+    def get_nonzero_spot_balances(self) -> list:
+        """Return spot balance dicts where free + locked > 0."""
+        resp = self.get_balances()
+        balances = resp.get('balances', []) if isinstance(resp, dict) else resp or []
+        return [
+            b for b in balances
+            if Decimal(str(b.get('free') or 0)) + Decimal(str(b.get('locked') or 0)) > 0
+        ]
+
     def get_wallet(self, quoteasset):
         params = {BinanceRestful.balance_wallet_quote_asset.value: quoteasset}
         url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_wallet.value,
@@ -427,6 +437,18 @@ class BinanceClient:
                                                 params=params)
         datas = self.request(HttpMmthod.GET.name, url, params=params)
         return datas
+
+    def get_nonzero_perp_balances(self) -> list:
+        """Return perp account balance dicts where balance != 0."""
+        result = self.get_swap_balance()
+        items = result if isinstance(result, list) else []
+        return [b for b in items if Decimal(str(b.get('balance') or 0)) != 0]
+
+    def get_active_perp_positions(self) -> list:
+        """Return open perp position dicts where positionAmt != 0."""
+        result = self.get_swap_position_risk()
+        items = result if isinstance(result, list) else ([result] if result else [])
+        return [p for p in items if Decimal(str(p.get('positionAmt') or 0)) != 0]
 
     def get_swap_account(self):
         params = {}

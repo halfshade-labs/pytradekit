@@ -1,5 +1,6 @@
 import json
 import hashlib
+from decimal import Decimal
 import hmac
 import base64
 from urllib.parse import urlencode
@@ -103,6 +104,16 @@ class OkexClient:
         url = OkexAuxiliary.url_asset_balance.value
         datas = self._send_request(url, method=HttpMmthod.GET.name, use_sign=True)
         return datas
+
+    def get_nonzero_spot_balances(self) -> list:
+        """Return OKX trading account balance details where availBal > 0."""
+        resp = self.get_balances()
+        if resp and isinstance(resp, dict) and resp.get('code') == '0':
+            data = resp.get('data', [])
+            if data and isinstance(data, list):
+                details = data[0].get('details', [])
+                return [d for d in details if Decimal(str(d.get('availBal') or 0)) > 0]
+        return []
 
     def get_deposit_history(self):
         url = OkexAuxiliary.url_deposit_history.value

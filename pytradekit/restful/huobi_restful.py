@@ -1,5 +1,6 @@
 import json
 import hashlib
+from decimal import Decimal
 import hmac
 import base64
 from urllib.parse import urlencode, urlparse
@@ -121,6 +122,15 @@ class HuobiClient:
         url = HuobiAuxiliary.url_balance.value.format(hb_account_id)
         datas = self._send_request(url, method=HttpMmthod.GET.name, use_sign=True)
         return datas
+
+    def get_nonzero_spot_balances(self) -> list:
+        """Return HTX spot balance items where balance > 0."""
+        resp = self.get_balances()
+        if resp and isinstance(resp, dict):
+            data = resp.get('data') or {}
+            balance_list = data.get('list', []) if isinstance(data, dict) else []
+            return [item for item in balance_list if Decimal(str(item.get('balance') or 0)) > 0]
+        return []
 
     def get_transfer_history(self):
         data = self.get_accounts()
