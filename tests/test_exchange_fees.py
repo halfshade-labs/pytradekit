@@ -34,9 +34,9 @@ class TestFeeRateResolver:
         calculator = FeeRateResolver(logger=logger)
         config = calculator._get_account_fee_config('BN')
         assert config == {
-            'vip_level': 0,
-            'use_platform_token_discount': False,
-            'holding_discount': False
+            'VIP_LEVEL': 0,
+            'USE_PLATFORM_TOKEN_DISCOUNT': False,
+            'HOLDING_DISCOUNT': False
         }
 
     def test_get_account_fee_config_with_config(self):
@@ -59,26 +59,27 @@ class TestFeeRateResolver:
              patch.object(ConfigAgent, 'get_int', return_value=1), \
              patch.object(ConfigAgent, 'get_boolean', side_effect=[True, False]):
             result = calculator._get_account_fee_config('BN')
-            assert result['vip_level'] == 1
-            assert result['use_platform_token_discount'] is True
-            assert result['holding_discount'] is False
+            assert result['VIP_LEVEL'] == 1
+            assert result['USE_PLATFORM_TOKEN_DISCOUNT'] is True
+            assert result['HOLDING_DISCOUNT'] is False
 
-    def test_get_account_fee_config_wrong_account_id(self):
-        """Test getting account fee config with wrong account_id."""
+    def test_get_account_fee_config_config_read_failure(self):
+        """Test that a config read failure falls back to default config."""
         logger = Mock()
         config = Mock(spec=ConfigAgent)
         config.outer = MagicMock()
         config.outer.sections.return_value = ['BN_ACCOUNT']
-        
+
         calculator = FeeRateResolver(logger=logger, config=config)
-        
-        with patch.object(ConfigAgent, 'get_str', return_value='BN_001'):  # Different account_id
+
+        # Simulate config read failure (e.g., missing key in config file)
+        with patch.object(ConfigAgent, 'get_str', return_value='BN_000'), \
+             patch.object(ConfigAgent, 'get_int', side_effect=KeyError('VIP_LEVEL')):
             result = calculator._get_account_fee_config('BN')
-            # Should return default config
             assert result == {
-                'vip_level': 0,
-                'use_platform_token_discount': False,
-                'holding_discount': False
+                'VIP_LEVEL': 0,
+                'USE_PLATFORM_TOKEN_DISCOUNT': False,
+                'HOLDING_DISCOUNT': False
             }
 
     def test_get_fee_rate_exchange_not_found(self):
@@ -87,7 +88,7 @@ class TestFeeRateResolver:
         calculator = FeeRateResolver(logger=logger)
         with pytest.raises(DependencyException) as exc_info:
             calculator.get_fee_rate('INVALID', 'spot', True)
-        assert 'Exchange INVALID not found' in str(exc_info.value)
+        assert 'Exchange INVALID not found' in exc_info.value.note
 
     def test_get_fee_rate_market_type_not_found(self):
         """Test get_fee_rate with non-existent market type."""
@@ -104,7 +105,7 @@ class TestFeeRateResolver:
         
         with pytest.raises(DependencyException) as exc_info:
             calculator.get_fee_rate('TEST', 'invalid', True)
-        assert 'Market type invalid not found' in str(exc_info.value)
+        assert 'Market type invalid not found' in exc_info.value.note
 
     def test_get_fee_rate_vip_level_not_found(self):
         """Test get_fee_rate with non-existent VIP level."""
@@ -194,9 +195,9 @@ class TestFeeRateResolver:
             calculator,
             '_get_account_fee_config',
             return_value={
-                'vip_level': 0,
-                'use_platform_token_discount': True,
-                'holding_discount': False
+                'VIP_LEVEL': 0,
+                'USE_PLATFORM_TOKEN_DISCOUNT': True,
+                'HOLDING_DISCOUNT': False
             }
         ):
             rate = calculator.get_fee_rate('TEST', 'spot', True)
@@ -230,14 +231,14 @@ class TestFeeRateResolver:
             calculator,
             '_get_account_fee_config',
             return_value={
-                'vip_level': 0,
-                'use_platform_token_discount': False,
-                'holding_discount': True
+                'VIP_LEVEL': 0,
+                'USE_PLATFORM_TOKEN_DISCOUNT': False,
+                'HOLDING_DISCOUNT': True
             }
         ):
             rate = calculator.get_fee_rate('TEST', 'spot', True)
             # 0.001 * (1 - 0.1) = 0.0009
-            assert rate == 0.0009
+            assert rate == pytest.approx(0.0009)
 
     def test_get_fee_rate_with_both_discounts(self):
         """Test get_fee_rate with both platform token and holding discounts."""
@@ -266,9 +267,9 @@ class TestFeeRateResolver:
             calculator,
             '_get_account_fee_config',
             return_value={
-                'vip_level': 0,
-                'use_platform_token_discount': True,
-                'holding_discount': True
+                'VIP_LEVEL': 0,
+                'USE_PLATFORM_TOKEN_DISCOUNT': True,
+                'HOLDING_DISCOUNT': True
             }
         ):
             rate = calculator.get_fee_rate('TEST', 'spot', True)
