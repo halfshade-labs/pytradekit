@@ -414,7 +414,7 @@ class MongodbOperations:
                                          collection_name=Database.run_task.name)
         self.insert_data(data, collection_path)
 
-    def insert_swap_position_risk(self, data):
+    def insert_perp_position_risk(self, data):
         collection_path = CollectionPath(db_name=Database.raw_accounts.name,
                                          collection_name=Database.perp_position.name)
         self.insert_data(data, collection_path)
@@ -749,7 +749,7 @@ class MongodbOperations:
         else:
             return res
 
-    def read_swap_position_risk(self, inst_code, account_id, time_span=None, limit=1):
+    def read_perp_position_risk(self, inst_code, account_id, time_span=None, limit=1):
         params = {}
         if inst_code:
             params[PerpPositionAttribute.inst_code.name] = inst_code
@@ -765,7 +765,7 @@ class MongodbOperations:
             -1).limit(limit)
         res = list(res)
         if len(res) == 0:
-            raise NoDataException(f'No swap position found for inst_code {inst_code}')
+            raise NoDataException(f'No perp position found for inst_code {inst_code}')
         return res
 
     def read_perp_income(self, account_id, inst_code, since_ms: int = None):

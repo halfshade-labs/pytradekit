@@ -11,15 +11,15 @@ from pytradekit.utils.static_types import FeeStructureKey
 
 
 class OkexClient:
-    def __init__(self, logger, key=None, secret=None, passphrase=None, account_id=None, is_swap=False):
+    def __init__(self, logger, key=None, secret=None, passphrase=None, account_id=None, is_perp=False):
         self.api_key = key
         self.secret_key = secret
         self.account_id = account_id
         self.passphrase = passphrase
         self.session = requests.session()
         self.logger = logger
-        if is_swap:
-            self._url = OkexAuxiliary.swap_url.value
+        if is_perp:
+            self._url = OkexAuxiliary.perp_url.value
         else:
             self._url = OkexAuxiliary.url.value
 
@@ -64,15 +64,15 @@ class OkexClient:
         except Exception as e:
             return e
 
-    def get_swap_position(self, symbol):
+    def get_perp_position(self, symbol):
         params = {'instType': InstCodeType.SWAP.name, 'instId': symbol + "-" + InstCodeType.SWAP.name}
-        url = OkexAuxiliary.url_swap_position.value
+        url = OkexAuxiliary.url_perp_position.value
         datas = self._send_request(url, method=HttpMmthod.GET.name, params=params)
         return datas
 
-    def get_swap_interest(self, start_time, end_time):
+    def get_perp_interest(self, start_time, end_time):
         params = {'after': start_time, 'before': end_time}
-        url = OkexAuxiliary.url_swap_interest.value
+        url = OkexAuxiliary.url_perp_interest.value
         datas = self._send_request(url, method=HttpMmthod.GET.name, params=params)
         return datas
 

@@ -22,7 +22,7 @@ class BinanceWsManager(WsManager):
 
     def __init__(self, logger, config=None, running_mode=None, queue=None, api_key=None, api_secret=None,
                  strategy_id=None, portfolio_id=None,
-                 account_id=None, url=BinanceAuxiliary.url_ws.value, api_url=BinanceAuxiliary.url.value, is_swap=False,
+                 account_id=None, url=BinanceAuxiliary.url_ws.value, api_url=BinanceAuxiliary.url.value, is_perp=False,
                  ticker_queue=None, kline_queue=None, start_end_time_dict=None,
                  send_params=None, is_supplement=False, bn_client=None, mm_symbol_list=None):
         super().__init__(api_key, logger, start_end_time_dict)
@@ -30,7 +30,7 @@ class BinanceWsManager(WsManager):
         self.config = config
         self.running_mode = running_mode
         self._api_url = api_url
-        if is_swap:
+        if is_perp:
             self._url = BinanceAuxiliary.url_perp_ws.value
         else:
             self._url = url
@@ -43,8 +43,8 @@ class BinanceWsManager(WsManager):
         self._account_id = account_id
         self._ws_connected = False
         self._kline_queue = kline_queue
-        if is_swap:
-            self._listen_key_url = BinanceAuxiliary.perp_url.value + BinanceAuxiliary.user_swap_data_stream.value
+        if is_perp:
+            self._listen_key_url = BinanceAuxiliary.perp_url.value + BinanceAuxiliary.user_perp_data_stream.value
         else:
             self._listen_key_url = self._get_api_url() + BinanceAuxiliary.user_data_stream.value
         self.start_end_time_dict = start_end_time_dict
@@ -234,7 +234,7 @@ class BinanceWsManager(WsManager):
         self.start_subscribe(params)
         self._ping(BinanceAuxiliary.ws_ping_sleep.value, is_listen_key=False)
 
-    def start_swap_lastprice_stream(self, symbols):
+    def start_perp_lastprice_stream(self, symbols):
         params = []
         for symbol in symbols:
             params.append(f'{symbol.lower()}{BinanceAuxiliary.ws_lastprice.value}')

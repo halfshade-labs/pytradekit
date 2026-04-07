@@ -10,13 +10,13 @@ from pytradekit.utils.time_handler import get_timestamp_ms
 
 
 class WooxClient:
-    def __init__(self, logger, key=None, secret=None, account_id=None, is_swap=False):
+    def __init__(self, logger, key=None, secret=None, account_id=None, is_perp=False):
         self.api_key = key
         self.secret_key = secret
         self.account_id = account_id
         self.logger = logger
-        if is_swap:
-            self._url = WooxAuxiliary.swap_url.value
+        if is_perp:
+            self._url = WooxAuxiliary.perp_url.value
         else:
             self._url = WooxAuxiliary.url.value
 

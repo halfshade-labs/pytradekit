@@ -322,7 +322,7 @@ class BinanceClient:
         datas = data_in + data_out
         return datas
 
-    def get_swap_funding_rate(self, symbol=None, start_time=None, end_time=None, limit=1000):
+    def get_perp_funding_rate(self, symbol=None, start_time=None, end_time=None, limit=1000):
         params = {}
         if symbol:
             params['symbol'] = symbol
@@ -332,37 +332,37 @@ class BinanceClient:
             params['endTime'] = end_time
         if limit:
             params['limit'] = limit
-        url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_swap_funding_rate.value,
+        url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_perp_funding_rate.value,
                                                 params=params, use_sign=False)
         datas = self.request(HttpMmthod.GET.name, url, use_sign=False)
         return datas
 
-    def get_swap_last_funding_rate(self, symbol=None):
+    def get_perp_last_funding_rate(self, symbol=None):
         params = {}
         if symbol:
             params['symbol'] = symbol
-        url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_swap_last_funding_rate.value,
+        url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_perp_last_funding_rate.value,
                                                 params=params, use_sign=False)
         datas = self.request(HttpMmthod.GET.name, url, params=params, use_sign=False)
         return datas
 
-    def get_swap_last_funding_rate_info(self):
+    def get_perp_last_funding_rate_info(self):
         params = {}
-        url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_swap_last_funding_rate_info.value,
+        url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_perp_last_funding_rate_info.value,
                                                 params=params, use_sign=False)
         datas = self.request(HttpMmthod.GET.name, url, use_sign=False)
         return datas
 
-    def get_swap_ticker_price(self, symbol=None):
+    def get_perp_ticker_price(self, symbol=None):
         params = {}
         if symbol:
             params['symbol'] = symbol
-        url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_swap_ticker_price.value,
+        url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_perp_ticker_price.value,
                                                 params=params, use_sign=False)
         datas = self.request(HttpMmthod.GET.name, url, use_sign=False)
         return datas
 
-    def get_swap_open_interes_hist(self, symbol, period, limit=None, start_time=None, end_time=None):
+    def get_perp_open_interes_hist(self, symbol, period, limit=None, start_time=None, end_time=None):
         params = {}
         params['symbol'] = symbol
         params['period'] = period
@@ -373,12 +373,12 @@ class BinanceClient:
         if end_time:
             params['endTime'] = end_time
 
-        url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_swap_open_interes_hist.value,
+        url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_perp_open_interes_hist.value,
                                                 params=params)
         datas = self.request(HttpMmthod.GET.name, url, params=params)
         return datas
 
-    def get_swap_all_order(self, symbol, limit=None, start_time=None, end_time=None):
+    def get_perp_all_order(self, symbol, limit=None, start_time=None, end_time=None):
         params = {}
         params['symbol'] = symbol
         if limit:
@@ -388,12 +388,12 @@ class BinanceClient:
         if end_time:
             params['endTime'] = end_time
 
-        url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_swap_all_order.value,
+        url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_perp_all_order.value,
                                                 params=params)
         datas = self.request(HttpMmthod.GET.name, url, params=params)
         return datas
 
-    def get_swap_force_order(self, symbol, limit=None, start_time=None, end_time=None):
+    def get_perp_force_order(self, symbol, limit=None, start_time=None, end_time=None):
         params = {}
         params['symbol'] = symbol
         if limit:
@@ -403,21 +403,21 @@ class BinanceClient:
         if end_time:
             params['endTime'] = end_time
 
-        url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_swap_force_order.value,
+        url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_perp_force_order.value,
                                                 params=params)
         datas = self.request(HttpMmthod.GET.name, url, params=params)
         return datas
 
-    def get_swap_position_risk(self, symbol=None):
+    def get_perp_position_risk(self, symbol=None):
         params = {}
         if symbol:
             params['symbol'] = symbol
-        url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_swap_position_risk.value,
+        url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_perp_position_risk.value,
                                                 params=params)
         datas = self.request(HttpMmthod.GET.name, url, params=params)
         return datas
 
-    def get_swap_income(self, symbol=None, start_time=None, end_time=None, income_type='FUNDING_FEE'):
+    def get_perp_income(self, symbol=None, start_time=None, end_time=None, income_type='FUNDING_FEE'):
         params = {}
         if symbol:
             params['symbol'] = symbol
@@ -426,47 +426,47 @@ class BinanceClient:
         if end_time:
             params['endTime'] = end_time
         params['incomeType'] = income_type
-        url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_swap_income.value,
+        url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_perp_income.value,
                                                 params=params)
         datas = self.request(HttpMmthod.GET.name, url, params=params)
         return datas
 
-    def get_swap_balance(self):
+    def get_perp_balance(self):
         params = {}
-        url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_swap_balance.value,
+        url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_perp_balance.value,
                                                 params=params)
         datas = self.request(HttpMmthod.GET.name, url, params=params)
         return datas
 
     def get_nonzero_perp_balances(self) -> list:
         """Return perp account balance dicts where balance != 0."""
-        result = self.get_swap_balance()
+        result = self.get_perp_balance()
         items = result if isinstance(result, list) else []
         return [b for b in items if Decimal(str(b.get('balance') or 0)) != 0]
 
     def get_active_perp_positions(self) -> list:
         """Return open perp position dicts where positionAmt != 0."""
-        result = self.get_swap_position_risk()
+        result = self.get_perp_position_risk()
         items = result if isinstance(result, list) else ([result] if result else [])
         return [p for p in items if Decimal(str(p.get('positionAmt') or 0)) != 0]
 
-    def get_swap_account(self):
+    def get_perp_account(self):
         params = {}
-        url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_swap_account.value,
+        url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_perp_account.value,
                                                 params=params)
         datas = self.request(HttpMmthod.GET.name, url, params=params)
         return datas
 
-    def get_swap_multi_margin(self):
+    def get_perp_multi_margin(self):
         params = {}
-        url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_swap_multi_margin.value,
+        url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_perp_multi_margin.value,
                                                 params=params)
         datas = self.request(HttpMmthod.GET.name, url, params=params)
         return datas
 
-    def update_swap_margin_type(self, symbol, margin_type):
+    def update_perp_margin_type(self, symbol, margin_type):
         params = {'symbol': symbol, 'marginType': margin_type}
-        url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_swap_margin_type.value,
+        url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_perp_margin_type.value,
                                                 params=params)
         datas = self.request(HttpMmthod.GET.name, url, params=params)
         return datas
@@ -636,7 +636,7 @@ class BinanceClient:
             return None
 
 
-class BinanceSwapClient(BinanceClient):
+class BinancePerpClient(BinanceClient):
     def __init__(self, logger, key=None, secret=None, passphrase=None, account_id=None):
         super().__init__(logger, key, secret, passphrase, account_id)
         self._url = BinanceAuxiliary.perp_url.value
@@ -655,7 +655,7 @@ class BinanceSwapClient(BinanceClient):
         """
         params = {'symbol': symbol, 'leverage': leverage}
         url, params, _ = self._make_private_url(
-            url_path=BinanceAuxiliary.url_swap_leverage.value,
+            url_path=BinanceAuxiliary.url_perp_leverage.value,
             params=params
         )
         result = self.request(HttpMmthod.POST.name, url, params=params)
@@ -675,7 +675,7 @@ class BinanceSwapClient(BinanceClient):
         """
         params = {'symbol': symbol, 'marginType': margin_type}
         url, params, _ = self._make_private_url(
-            url_path=BinanceAuxiliary.url_swap_margin_type.value,
+            url_path=BinanceAuxiliary.url_perp_margin_type.value,
             params=params
         )
         result = self.request(HttpMmthod.POST.name, url, params=params)
@@ -707,7 +707,7 @@ class BinanceSwapClient(BinanceClient):
             'newClientOrderId': client_order_id
         }
         url, params, timestamp = self._make_private_url(
-            url_path=BinanceAuxiliary.url_swap_order.value,
+            url_path=BinanceAuxiliary.url_perp_order.value,
             params=params
         )
         datas, err = await self.async_request(HttpMmthod.POST.name, url, http_client=http_client, params=params)
@@ -736,7 +736,7 @@ class BinanceSwapClient(BinanceClient):
             'newClientOrderId': client_order_id
         }
         url, params, timestamp = self._make_private_url(
-            url_path=BinanceAuxiliary.url_swap_order.value,
+            url_path=BinanceAuxiliary.url_perp_order.value,
             params=params
         )
         datas, err = await self.async_request(HttpMmthod.POST.name, url, http_client=http_client, params=params)

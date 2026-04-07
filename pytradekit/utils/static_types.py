@@ -1256,6 +1256,3 @@ class FundingRateHistory:
         return {slot: getattr(self, slot) for slot in self.__slots__}
 
 
-# Aliases for backward compatibility with liquidity_monitor
-SwapPosition = PerpPosition
-SwapIncome = PerpIncome

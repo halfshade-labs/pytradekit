@@ -11,14 +11,14 @@ from pytradekit.utils.static_types import FeeStructureKey
 
 
 class HuobiClient:
-    def __init__(self, logger, key=None, secret=None, account_id=None, is_swap=False):
+    def __init__(self, logger, key=None, secret=None, account_id=None, is_perp=False):
         self.api_key = key
         self.secret_key = secret
         self.account_id = account_id
         self.session = requests.session()
         self.logger = logger
-        if is_swap:
-            self._url = HuobiAuxiliary.swap_url.value
+        if is_perp:
+            self._url = HuobiAuxiliary.perp_url.value
         else:
             self._url = HuobiAuxiliary.url.value
 
@@ -76,21 +76,21 @@ class HuobiClient:
         except Exception as e:
             return e
 
-    def get_swap_position(self, symbol):
+    def get_perp_position(self, symbol):
         params = {'contract_code': symbol}
-        url = HuobiAuxiliary.url_swap_position_info.value
+        url = HuobiAuxiliary.url_perp_position_info.value
         datas = self._send_request(url, method=HttpMmthod.POST.name, params=params)
         return datas
 
-    def get_swap_cross_position(self, symbol):
+    def get_perp_cross_position(self, symbol):
         params = {'contract_code': symbol}
-        url = HuobiAuxiliary.url_swap_cross_position_info.value
+        url = HuobiAuxiliary.url_perp_cross_position_info.value
         datas = self._send_request(url, method=HttpMmthod.POST.name, params=params)
         return datas
 
-    def get_swap_financial_record(self, symbol, start_time, end_time, types):
+    def get_perp_financial_record(self, symbol, start_time, end_time, types):
         params = {'mar_acct': symbol, 'start_time': start_time, 'end_time': end_time, 'type': types, 'direct': 'prev'}
-        url = HuobiAuxiliary.url_swap_financial_record.value
+        url = HuobiAuxiliary.url_perp_financial_record.value
         datas = self._send_request(url, method=HttpMmthod.POST.name, params=params)
         return datas
 
@@ -167,9 +167,9 @@ class HuobiClient:
         datas = self._send_request(url, method=HttpMmthod.GET.name, params=params, use_sign=True)
         return datas
 
-    def get_swap_balances(self):
+    def get_perp_balances(self):
         params = {'valuation_asset': 'USDT'}
-        url = HuobiAuxiliary.url_swap_balance.value
+        url = HuobiAuxiliary.url_perp_balance.value
         datas = self._send_request(url, method=HttpMmthod.POST.name, params=params)
         return datas
 

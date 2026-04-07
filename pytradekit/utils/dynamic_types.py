@@ -56,12 +56,12 @@ class TaskIdName(Enum):
     rs_003 = 'rs_bfx_balance'
     ws_008 = 'ws_bn_deposit_withdraw'
     ws_009 = 'fetch_ws_ticker'
-    rs_swap_001 = 'ws_bn_swap_position'
-    rs_swap_002 = 'push_slack_hedge_report'
-    rs_swap_003 = 'fetch_restful_bn_swap_position'
-    rs_swap_004 = 'fetch_restful_hb_swap_position'
-    rs_swap_005 = 'fetch_restful_okex_swap_position'
-    rs_swap_006 = 'fetch_restful_bit_swap_position'
+    rs_perp_001 = 'ws_bn_perp_position'
+    rs_perp_002 = 'push_slack_hedge_report'
+    rs_perp_003 = 'fetch_restful_bn_perp_position'
+    rs_perp_004 = 'fetch_restful_hb_perp_position'
+    rs_perp_005 = 'fetch_restful_okex_perp_position'
+    rs_perp_006 = 'fetch_restful_bit_perp_position'
 
 
 class SlackUser(Enum):
@@ -881,7 +881,7 @@ class BinanceAuxiliary(Enum):
     url_ws_base = 'wss://stream.binance.com:9443'
     url_perp_ws = 'wss://fstream.binance.com/ws'
     user_data_stream = '/api/v3/userDataStream'
-    user_swap_data_stream = '/fapi/v1/listenKey'
+    user_perp_data_stream = '/fapi/v1/listenKey'
     url_ticker_24hr = '/api/v3/ticker/24hr'
     url_perp_ticker_24hr = '/fapi/v1/ticker/24hr'
     url_balance = '/api/v3/account'
@@ -901,26 +901,26 @@ class BinanceAuxiliary(Enum):
     url_withdraw_history = '/sapi/v1/capital/withdraw/history'
     url_transfer_history = '/sapi/v1/sub-account/sub/transfer/history'
     url_transfer_sub_history = '/sapi/v1/sub-account/transfer/subUserHistory'
-    url_swap_funding_rate = '/fapi/v1/fundingRate'
-    url_swap_last_funding_rate = "/fapi/v1/premiumIndex"
-    url_swap_last_funding_rate_info = "/fapi/v1/fundingInfo"
-    url_swap_ticker_price = '/fapi/v2/ticker/price'
-    url_swap_all_order = '/fapi/v1/allOrders'
-    url_swap_force_order = '/fapi/v1/forceOrders'
-    url_swap_position_risk = '/fapi/v3/positionRisk'
-    url_swap_income = '/fapi/v1/income'
-    url_swap_balance = '/fapi/v2/balance'
-    url_swap_account = '/fapi/v2/account'
-    url_swap_multi_margin = '/fapi/v1/multiAssetsMargin'
-    url_swap_margin_type = '/fapi/v1/marginType'
-    url_swap_leverage = '/fapi/v1/leverage'  # 合约杠杆设置API
-    url_swap_order = '/fapi/v1/order'  # 合约下单API
-    url_swap_open_interes_hist = '/futures/data/openInterestHist'
+    url_perp_funding_rate = '/fapi/v1/fundingRate'
+    url_perp_last_funding_rate = "/fapi/v1/premiumIndex"
+    url_perp_last_funding_rate_info = "/fapi/v1/fundingInfo"
+    url_perp_ticker_price = '/fapi/v2/ticker/price'
+    url_perp_all_order = '/fapi/v1/allOrders'
+    url_perp_force_order = '/fapi/v1/forceOrders'
+    url_perp_position_risk = '/fapi/v3/positionRisk'
+    url_perp_income = '/fapi/v1/income'
+    url_perp_balance = '/fapi/v2/balance'
+    url_perp_account = '/fapi/v2/account'
+    url_perp_multi_margin = '/fapi/v1/multiAssetsMargin'
+    url_perp_margin_type = '/fapi/v1/marginType'
+    url_perp_leverage = '/fapi/v1/leverage'  # 合约杠杆设置API
+    url_perp_order = '/fapi/v1/order'  # 合约下单API
+    url_perp_open_interes_hist = '/futures/data/openInterestHist'
     url_alpha_exchange_info = "/bapi/defi/v1/public/wallet-direct/buw/wallet/cex/alpha/all/token/list"
     url_commission_rate = '/fapi/v1/commissionRate'  # Futures commission rate
     url_spot_commission_rate = '/api/v3/account/commission'  # Spot commission rate
     ws_aggtrade = "@aggTrade"
-    ws_ticker = "!ticker@arr"
+    ws_ticker = "!miniTicker@arr"
     ws_kline_interval = '@kline_15m'
     ws_book_ticker = '@bookTicker'
     ws_orderbook = '@depth'
@@ -956,10 +956,10 @@ class HuobiAuxiliary(Enum):
     url_ws_private = 'wss://api.huobi.pro/ws/v2'
     url_exchange = '/v2/settings/common/symbols'
     url_ticker = '/market/tickers'
-    swap_url = 'https://api.hbdm.com'
-    url_swap_cross_position_info = '/linear-swap-api/v1/swap_cross_position_info'
-    url_swap_position_info = '/linear-swap-api/v1/swap_position_info'
-    url_swap_financial_record = '/linear-swap-api/v3/swap_financial_record'
+    perp_url = 'https://api.hbdm.com'
+    url_perp_cross_position_info = '/linear-swap-api/v1/swap_cross_position_info'
+    url_perp_position_info = '/linear-swap-api/v1/swap_position_info'
+    url_perp_financial_record = '/linear-swap-api/v3/swap_financial_record'
     url_orderbook = '/market/depth'
     url_account = '/v1/account/accounts'
     url_balance = '/v1/account/accounts/{}/balance'
@@ -968,7 +968,7 @@ class HuobiAuxiliary(Enum):
     url_orders = '/v1/order/history'
     url_trades = '/v1/order/matchresults'
     url_spot_order = '/v1/order/orders/place'  # 现货下单API
-    url_swap_balance = '/linear-swap-api/v1/swap_balance_valuation'
+    url_perp_balance = '/linear-swap-api/v1/swap_balance_valuation'
     url_commission_rate = '/v2/reference/transact-fee-rate/get'
     ws_ping_sleep = 1800
     reconnection_time_sleep = 60 * 60 * 2
@@ -979,9 +979,9 @@ class OkexAuxiliary(Enum):
     url_ws = 'wss://ws.okx.com:8443/ws/v5/private'
     url_ws_public = 'wss://ws.okx.com:8443/ws/v5/public'
     url_ws_private = 'wss://ws.okx.com:8443/ws/v5/private'
-    swap_url = 'https://www.okx.com'
-    url_swap_position = '/api/v5/account/positions'
-    url_swap_interest = '/api/v5/account/interest-accrued'
+    perp_url = 'https://www.okx.com'
+    url_perp_position = '/api/v5/account/positions'
+    url_perp_interest = '/api/v5/account/interest-accrued'
     url_exchange = '/api/v5/public/instruments'
     url_ticker = '/api/v5/market/tickers'
     url_orderbook = '/api/v5/market/books-full'
@@ -1002,9 +1002,9 @@ class OkexAuxiliary(Enum):
 class BybitAuxiliary(Enum):
     url = 'https://api.bybit.com'
     url_ws = 'wss://stream.bybit.com/v5/private'
-    swap_url = 'https://api.bybit.com'
-    url_swap_position = '/v5/position/list'
-    url_swap_interest = '/v5/account/borrow-history'
+    perp_url = 'https://api.bybit.com'
+    url_perp_position = '/v5/position/list'
+    url_perp_interest = '/v5/account/borrow-history'
     url_exchange = '/v5/market/instruments-info'
     url_ticker = '/v5/market/tickers'
     url_orderbook = '/v5/market/orderbook'
@@ -1023,7 +1023,7 @@ class BybitAuxiliary(Enum):
 class KucoinAuxiliary(Enum):
     url = 'https://api.kucoin.com'
     url_ws = 'wss://ws-api-spot.kucoin.com'
-    swap_url = 'https://api.kucoin.com'
+    perp_url = 'https://api.kucoin.com'
     url_tickers = '/api/v1/market/allTickers'
     url_ticker = '/api/v1/market/orderbook/level1'
     url_exchange = '/api/v2/symbols'
@@ -1041,7 +1041,7 @@ class KucoinAuxiliary(Enum):
 
 class MexcAuxiliary(Enum):
     url = 'https://api.mexc.com'
-    swap_url = 'https://api.mexc.com'
+    perp_url = 'https://api.mexc.com'
     url_ticker = '/api/v3/ticker/24hr'
     url_exchange = '/api/v3/exchangeInfo'
     url_orderbook = '/api/v3/depth'
@@ -1056,7 +1056,7 @@ class MexcAuxiliary(Enum):
 
 class GateioAuxiliary(Enum):
     url = 'https://api.gateio.ws'
-    swap_url = 'https://api.gateio.ws'
+    perp_url = 'https://api.gateio.ws'
     url_ticker = '/api/v4/spot/tickers'
     url_exchange = '/api/v4/spot/currency_pairs'
     url_orderbook = '/api/v4/spot/order_book'
@@ -1066,15 +1066,15 @@ class GateioAuxiliary(Enum):
     url_transfer_history = '/api/v4/wallet/sub_account_transfers'
     url_orders = '/api/v4/spot/orders'
     url_trades = '/api/v4/spot/my_trades'
-    url_swap_position = '/api/v4/futures/'
-    url_swap_position_risk = '/positions'
-    url_swap_position_accounts = '/accounts'
-    url_swap_position_income = '/account_book'
+    url_perp_position = '/api/v4/futures/'
+    url_perp_position_risk = '/positions'
+    url_perp_position_accounts = '/accounts'
+    url_perp_position_income = '/account_book'
 
 
 class BitgetAuxiliary(Enum):
     url = 'https://api.bitget.com'
-    swap_url = 'https://api.bitget.com'
+    perp_url = 'https://api.bitget.com'
     url_exchange = '/api/v2/spot/public/symbols'
     url_ticker = '/api/v2/spot/market/tickers'
     url_orderbook = '/api/v2/spot/market/orderbook'
@@ -1088,7 +1088,7 @@ class BitgetAuxiliary(Enum):
 
 class WazirxAuxiliary(Enum):
     url = 'https://api.wazirx.com'
-    swap_url = 'https://api.wazirx.com'
+    perp_url = 'https://api.wazirx.com'
     url_exchange = '/sapi/v1/exchangeInfo'
     url_ticker = '/sapi/v1/tickers/24hr'
     url_orderbook = '/sapi/v1/depth'
@@ -1097,7 +1097,7 @@ class WazirxAuxiliary(Enum):
 
 class BullishAuxiliary(Enum):
     url = 'https://api.exchange.bullish.com/trading-api'
-    swap_url = 'https://api.exchange.bullish.com/trading-api'
+    perp_url = 'https://api.exchange.bullish.com/trading-api'
     url_exchange = '/v1/markets'
     url_ticker = '/tick'
     url_orderbook = '/orderbook/hybrid'
@@ -1105,7 +1105,7 @@ class BullishAuxiliary(Enum):
 
 class HashkeyAuxiliary(Enum):
     url = 'https://api-glb.hashkey.com'
-    swap_url = 'https://api-glb.hashkey.com'
+    perp_url = 'https://api-glb.hashkey.com'
     url_exchange = '/api/v1/exchangeInfo'
     url_ticker = '/quote/v1/ticker/24hr'
     url_orderbook = '/quote/v1/depth'
@@ -1116,7 +1116,7 @@ class HashkeyAuxiliary(Enum):
 
 class MercadoAuxiliary(Enum):
     url = 'https://api.mercadobitcoin.net/api/v4'
-    swap_url = 'https://api.mercadobitcoin.net/api/v4'
+    perp_url = 'https://api.mercadobitcoin.net/api/v4'
     url_exchange = '/symbols'
     url_orderbook = '/orderbook'
     url_ticker = '/tickers'
@@ -1129,7 +1129,7 @@ class MercadoAuxiliary(Enum):
 
 class BitmartAuxiliary(Enum):
     url = 'https://api-cloud.bitmart.com'
-    swap_url = 'https://api-cloud.bitmart.com'
+    perp_url = 'https://api-cloud.bitmart.com'
     url_exchange = '/spot/v1/symbols/details'
     url_tickers = '/spot/quotation/v3/tickers'
     url_ticker = '/spot/quotation/v3/ticker'
@@ -1145,7 +1145,7 @@ class BitmartAuxiliary(Enum):
 
 class ExmoAuxiliary(Enum):
     url = 'https://api.exmo.com/v1.1'
-    swap_url = 'https://api.exmo.com/v1.1'
+    perp_url = 'https://api.exmo.com/v1.1'
     url_exchange = '/pair_settings'
     url_orderbook = '/order_book'
     url_ticker = '/ticker'
@@ -1158,7 +1158,7 @@ class ExmoAuxiliary(Enum):
 
 class WooxAuxiliary(Enum):
     url = 'https://api.woox.io'
-    swap_url = 'https://api.woox.io'
+    perp_url = 'https://api.woox.io'
     url_version_v1 = '/v1'
     url_version_v3 = '/v3'
     url_exchange = '/public/info'
@@ -1188,7 +1188,7 @@ class PoloniexAuxiliary(Enum):
 
 class LbankAuxiliary(Enum):
     url = "https://api.lbkex.com"
-    swap_url = "https://api.lbkex.com"
+    perp_url = "https://api.lbkex.com"
     url_ticker = "/v2/ticker/24hr.do"
     url_ticker_price = '/v2/supplement/ticker/price.do'
     url_exchange = "/v2/currencyPairs.do"

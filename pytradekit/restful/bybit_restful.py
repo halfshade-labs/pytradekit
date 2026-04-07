@@ -9,15 +9,15 @@ from pytradekit.utils.dynamic_types import HttpMmthod, BybitAuxiliary
 
 
 class BybitClient:
-    def __init__(self, logger, key=None, secret=None, account_id=None, is_swap=False):
+    def __init__(self, logger, key=None, secret=None, account_id=None, is_perp=False):
         self.api_key = key
         self.secret_key = secret
         self.account_id = account_id
         self.session = requests.session()
         self.logger = logger
         self._recvWindow = 5000
-        if is_swap:
-            self._url = BybitAuxiliary.swap_url.value
+        if is_perp:
+            self._url = BybitAuxiliary.perp_url.value
         else:
             self._url = BybitAuxiliary.url.value
 
@@ -53,15 +53,15 @@ class BybitClient:
         except Exception as e:
             return e
 
-    def get_swap_position(self, symbol):
+    def get_perp_position(self, symbol):
         params = {'category': 'linear', 'symbol': symbol}
-        url = BybitAuxiliary.url_swap_position.value
+        url = BybitAuxiliary.url_perp_position.value
         datas = self._send_request(url, method=HttpMmthod.GET.name, params=params)
         return datas
 
-    def get_swap_interest(self, coin, start_time, end_time):
+    def get_perp_interest(self, coin, start_time, end_time):
         params = {'currency': coin, 'startTime': start_time, 'endTime': end_time}
-        url = BybitAuxiliary.url_swap_interest.value
+        url = BybitAuxiliary.url_perp_interest.value
         datas = self._send_request(url, method=HttpMmthod.GET.name, params=params)
         return datas
 

@@ -6,14 +6,14 @@ from pytradekit.utils.time_handler import get_timestamp_ms
 
 
 class MercadoClient:
-    def __init__(self, logger, key=None, secret=None, account_id=None, is_swap=False):
+    def __init__(self, logger, key=None, secret=None, account_id=None, is_perp=False):
         self.api_key = key
         self.secret_key = secret
         self.account_id = account_id
         self.session = requests.session()
         self.logger = logger
-        if is_swap:
-            self._url = MercadoAuxiliary.swap_url.value
+        if is_perp:
+            self._url = MercadoAuxiliary.perp_url.value
         else:
             self._url = MercadoAuxiliary.url.value
 

@@ -10,15 +10,15 @@ RETRY_FREQUENCY = 3
 
 
 class GateioClient:
-    def __init__(self, logger, key=None, secret=None, account_id=None, is_swap=False):
+    def __init__(self, logger, key=None, secret=None, account_id=None, is_perp=False):
         self.api_key = key
         self.secret_key = secret
         self.account_id = account_id
         self.session = requests.session()
         self.logger = logger
         self._recvWindow = 5000
-        if is_swap:
-            self._url = GateioAuxiliary.swap_url.value
+        if is_perp:
+            self._url = GateioAuxiliary.perp_url.value
         else:
             self._url = GateioAuxiliary.url.value
 
@@ -123,18 +123,18 @@ class GateioClient:
         datas = self._send_request(url, method=HttpMmthod.GET.name, params=params, use_sign=True)
         return datas
 
-    def get_swap_position_risk(self, settle):
-        url = GateioAuxiliary.url_swap_position.value + settle + GateioAuxiliary.url_swap_position_risk.value
+    def get_perp_position_risk(self, settle):
+        url = GateioAuxiliary.url_perp_position.value + settle + GateioAuxiliary.url_perp_position_risk.value
         datas = self._send_request(url, method=HttpMmthod.GET.name, use_sign=True)
         return datas
 
-    def get_swap_account(self, settle):
-        url = GateioAuxiliary.url_swap_position.value + settle + GateioAuxiliary.url_swap_position_accounts.value
+    def get_perp_account(self, settle):
+        url = GateioAuxiliary.url_perp_position.value + settle + GateioAuxiliary.url_perp_position_accounts.value
         datas = self._send_request(url, method=HttpMmthod.GET.name, use_sign=True)
         return datas
 
-    def get_swap_income(self, settle, start_time, end_time):
-        url = GateioAuxiliary.url_swap_position.value + settle + GateioAuxiliary.url_swap_position_income.value
+    def get_perp_income(self, settle, start_time, end_time):
+        url = GateioAuxiliary.url_perp_position.value + settle + GateioAuxiliary.url_perp_position_income.value
         params = {
             'from': start_time,
             'to': end_time,
