@@ -8,14 +8,14 @@ from pytradekit.utils.dynamic_types import HttpMmthod, KucoinAuxiliary
 
 
 class KucoinClient:
-    def __init__(self, logger, key=None, secret=None, passphrase=None, account_id=None, is_swap=False):
+    def __init__(self, logger, key=None, secret=None, passphrase=None, account_id=None, is_perp=False):
         self.api_key = key
         self.secret_key = secret
         self.passphrase = passphrase
         self.account_id = account_id
         self.logger = logger
-        if is_swap:
-            self._url = KucoinAuxiliary.swap_url.value
+        if is_perp:
+            self._url = KucoinAuxiliary.perp_url.value
         else:
             self._url = KucoinAuxiliary.url.value
 

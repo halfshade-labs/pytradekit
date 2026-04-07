@@ -19,7 +19,7 @@ class BinanceWsManager:
     _listen_key = {}
 
     def __init__(self, logger, queue=None, api_key=None, strategy_id=None, portfolio_id=None, account_id=None,
-                 url=BinanceAuxiliary.url_ws.value, api_url=BinanceAuxiliary.url.value, is_swap=False,
+                 url=BinanceAuxiliary.url_ws.value, api_url=BinanceAuxiliary.url.value, is_perp=False,
                  ticker_queue=None):
         self._api_url = api_url
         self._url = url
@@ -35,8 +35,8 @@ class BinanceWsManager:
         self._msg = []
         self.status = WebsocketStatus.INIT.name
         self.ws = None
-        if is_swap:
-            self._listen_key_url = BinanceAuxiliary.perp_url.value + BinanceAuxiliary.user_swap_data_stream.value
+        if is_perp:
+            self._listen_key_url = BinanceAuxiliary.perp_url.value + BinanceAuxiliary.user_perp_data_stream.value
         else:
             self._listen_key_url = self._get_api_url() + BinanceAuxiliary.user_data_stream.value
 

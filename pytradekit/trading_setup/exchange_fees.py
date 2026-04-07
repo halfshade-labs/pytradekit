@@ -382,23 +382,23 @@ class FeeRateResolver:
                     is_perp=is_perp
                 )
             elif exchange_id == ExchangeId.HTX.name:
-                is_swap = (market_type == InstCodeType.PERP.name.lower())
+                is_perp = (market_type == InstCodeType.PERP.name.lower())
                 return HuobiClient(
                     logger=self.logger,
                     key=api_key,
                     secret=api_secret,
                     account_id=account_id,
-                    is_swap=is_swap
+                    is_perp=is_perp
                 )
             elif exchange_id == ExchangeId.OKX.name:
-                is_swap = (market_type == InstCodeType.PERP.name.lower())
+                is_perp = (market_type == InstCodeType.PERP.name.lower())
                 return OkexClient(
                     logger=self.logger,
                     key=api_key,
                     secret=api_secret,
                     passphrase=api_passphrase,
                     account_id=account_id,
-                    is_swap=is_swap
+                    is_perp=is_perp
                 )
             return None
         except Exception as e:

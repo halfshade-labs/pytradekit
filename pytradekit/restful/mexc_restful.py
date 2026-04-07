@@ -7,13 +7,13 @@ from pytradekit.utils.dynamic_types import HttpMmthod, MexcAuxiliary
 
 
 class MexcClient:
-    def __init__(self, logger, key=None, secret=None, account_id=None, is_swap=False):
+    def __init__(self, logger, key=None, secret=None, account_id=None, is_perp=False):
         self.api_key = key
         self.secret_key = secret
         self.account_id = account_id
         self.logger = logger
-        if is_swap:
-            self._url = MexcAuxiliary.swap_url.value
+        if is_perp:
+            self._url = MexcAuxiliary.perp_url.value
         else:
             self._url = MexcAuxiliary.url.value
 

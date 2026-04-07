@@ -3,15 +3,15 @@ from pytradekit.utils.dynamic_types import BullishAuxiliary
 
 
 class BullishClient:
-    def __init__(self, logger, key=None, secret=None, account_id=None, is_swap=False):
+    def __init__(self, logger, key=None, secret=None, account_id=None, is_perp=False):
         self.api_key = key
         self.secret_key = secret
         self.account_id = account_id
         self.session = requests.session()
         self.logger = logger
         self._recvWindow = 5000
-        if is_swap:
-            self._url = BullishAuxiliary.swap_url.value
+        if is_perp:
+            self._url = BullishAuxiliary.perp_url.value
         else:
             self._url = BullishAuxiliary.url.value
 

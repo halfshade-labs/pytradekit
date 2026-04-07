@@ -8,14 +8,14 @@ from pytradekit.utils.time_handler import get_timestamp_ms
 
 
 class BitmartClient:
-    def __init__(self, logger, key=None, secret=None, memo=None, account_id=None, is_swap=False):
+    def __init__(self, logger, key=None, secret=None, memo=None, account_id=None, is_perp=False):
         self.api_key = key
         self.secret_key = secret
         self.memo = memo
         self.account_id = account_id
         self.logger = logger
-        if is_swap:
-            self._url = BitmartAuxiliary.swap_url.value
+        if is_perp:
+            self._url = BitmartAuxiliary.perp_url.value
         else:
             self._url = BitmartAuxiliary.url.value
 
