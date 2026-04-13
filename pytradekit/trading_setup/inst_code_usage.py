@@ -345,3 +345,24 @@ def extract_base_from_inst_code(inst_code: str) -> str:
     if "-" in pair:
         return pair.split("-")[0]
     return pair
+
+
+def extract_exchange_id_from_inst_code(inst_code: str) -> str:
+    """
+    Extract exchange ID from inst_code.
+
+    Args:
+        inst_code: Instrument code in format 'BTC-USDT_OKX.SPOT'
+
+    Returns:
+        str: Exchange ID, e.g., 'OKX'
+
+    Example:
+        'BTC-USDT_OKX.SPOT'  -> 'OKX'
+        'BTC-USDT_BN.PERP'   -> 'BN'
+        'BTC-USDT_HTX.SPOT'  -> 'HTX'
+    """
+    parts = inst_code.split('_')
+    if len(parts) < 2:
+        return ''
+    return parts[1].split('.')[0].upper()
