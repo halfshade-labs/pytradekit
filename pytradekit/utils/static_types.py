@@ -1147,6 +1147,7 @@ class TradeRecordAttribute(Enum):
     updated_time_ms = auto()
     closed_time_ms = auto()
     liq_hedge_checked = auto()
+    perp_client_order_id = auto()
     legs = auto()
     hedge_status = auto()
     pnl_summary = auto()
