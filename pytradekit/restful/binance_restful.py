@@ -322,6 +322,30 @@ class BinanceClient:
         datas = data_in + data_out
         return datas
 
+    def universal_transfer(self, transfer_type: str, asset: str, amount: str) -> dict:
+        """从合约账户向现货账户划转（UMFUTURE_MAIN）或其他类型划转。"""
+        params = {'type': transfer_type, 'asset': asset, 'amount': amount}
+        url, params, _ = self._make_private_url(
+            url_path=BinanceAuxiliary.url_universal_transfer.value, params=params
+        )
+        return self.request(HttpMmthod.POST.name, url, params=params)
+
+    def futures_transfer(self, asset: str, amount: str, direction: str = '2') -> dict:
+        """通过 /sapi/v1/futures/transfer 接口划转资金（type=2 合约→现货）。"""
+        params = {'asset': asset, 'amount': amount, 'type': direction}
+        url, params, _ = self._make_private_url(
+            url_path=BinanceAuxiliary.url_futures_transfer.value, params=params
+        )
+        return self.request(HttpMmthod.POST.name, url, params=params)
+
+    def fapi_transfer(self, asset: str, amount: str, direction: str = 'OUT') -> dict:
+        """通过 /fapi/v1/transfer 接口从合约账户划出资金。"""
+        params = {'asset': asset, 'amount': amount, 'collateralAmount': amount, 'direction': direction}
+        url, params, _ = self._make_private_url(
+            url_path=BinanceAuxiliary.url_fapi_transfer.value, params=params
+        )
+        return self.request(HttpMmthod.POST.name, url, params=params)
+
     def get_perp_funding_rate(self, symbol=None, start_time=None, end_time=None, limit=1000):
         params = {}
         if symbol:
