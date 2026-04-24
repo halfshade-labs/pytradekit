@@ -15,7 +15,7 @@ VENDOR_EXCHANGE = [ExchangeId.MCO.name, ExchangeId.EMO.name, ExchangeId.BUL.name
 
 
 class MmInstCode:
-    STABLE_COINS = ['USDT', 'TUSD', 'USDC', ' USDD']
+    STABLE_COINS = ['USDT', 'TUSD', 'USDC', 'USDD']
     BN = ['SOL-FDUSD_BN.SPOT']  # Updated to pair format (BASE-QUOTE)
     KC = []
     MCO = []
@@ -39,7 +39,7 @@ class MmInstCode:
     @classmethod
     def get_exchange_ids(cls):
         return [key for key, value in cls.__dict__.items()
-                if isinstance(value, list) and key not in ["TRON_COINS", "BCI", "STABLE_COINS"]]
+                if isinstance(value, list) and key not in ["BCI", "STABLE_COINS"]]
 
     @classmethod
     def get_trade_exchange_ids(cls):
@@ -48,15 +48,15 @@ class MmInstCode:
 
     @classmethod
     def get_order_depth_exchange_id(cls):
-        return ["HTX", "BN", "BFX"]
+        return [ExchangeId.HTX.name, ExchangeId.BN.name, ExchangeId.BFX.name]
 
     @classmethod
     def get_raw_order_exchange_ids(cls):
-        return ["BFX"]
+        return [ExchangeId.BFX.name]
 
     @classmethod
     def get_compare_order_trade_exchange_ids(cls):
-        return ['BN', 'HTX', 'OKX', 'BBT']
+        return [ExchangeId.BN.name, ExchangeId.HTX.name, ExchangeId.OKX.name, ExchangeId.BBT.name]
 
 
 class DepthThreshold:
