@@ -914,6 +914,9 @@ class BinanceAuxiliary(Enum):
     url_perp_multi_margin = '/fapi/v1/multiAssetsMargin'
     url_perp_margin_type = '/fapi/v1/marginType'
     url_perp_leverage = '/fapi/v1/leverage'  # 合约杠杆设置API
+    url_universal_transfer = '/sapi/v1/asset/transfer'
+    url_futures_transfer = '/sapi/v1/futures/transfer'
+    url_fapi_transfer = '/fapi/v1/transfer'
     url_perp_order = '/fapi/v1/order'  # 合约下单API
     url_perp_open_interes_hist = '/futures/data/openInterestHist'
     url_alpha_exchange_info = "/bapi/defi/v1/public/wallet-direct/buw/wallet/cex/alpha/all/token/list"
