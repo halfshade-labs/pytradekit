@@ -13,6 +13,7 @@ class _DecimalEncoder(json.JSONEncoder):
             return str(obj)
         return super().default(obj)
 
+
 TICKER_PRICE_EXPIRE_TIME = TimeConvert.MIN_TO_S * 10
 ORDER_TICKER_EXPIRE_TIME = TimeConvert.MIN_TO_S * 30
 ORDERS_EXPIRE_TIME = TimeConvert.MIN_TO_S * 60
