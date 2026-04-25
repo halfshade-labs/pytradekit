@@ -6,6 +6,13 @@ from pytradekit.utils.dynamic_types import RedisFields
 from pytradekit.utils.time_handler import TimeConvert
 from pytradekit.utils.exceptions import DependencyException
 
+
+class _DecimalEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, Decimal):
+            return str(obj)
+        return super().default(obj)
+
 TICKER_PRICE_EXPIRE_TIME = TimeConvert.MIN_TO_S * 10
 ORDER_TICKER_EXPIRE_TIME = TimeConvert.MIN_TO_S * 30
 ORDERS_EXPIRE_TIME = TimeConvert.MIN_TO_S * 60
@@ -280,8 +287,9 @@ class RedisOperations:
         lock = self.get_lock_for_resource(key)
         try:
             with lock:
-                self.client.set(key, json.dumps(value))
-                self.client.publish(key, json.dumps(value))
+                serialized = json.dumps(value, cls=_DecimalEncoder)
+                self.client.set(key, serialized)
+                self.client.publish(key, serialized)
         except Exception as e:
             self.logger.exception(f"Failed to set portfolios for {key}: {e}")
             raise DependencyException(f"Failed to set portfolios for {key}") from e
