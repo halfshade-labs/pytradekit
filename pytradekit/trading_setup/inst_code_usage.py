@@ -265,20 +265,20 @@ def convert_inst_code_to_pair(inst_code: str) -> str:
     return pair
 
 
-def convert_inst_code_to_symbol(inst_code: str) -> str:
+def convert_inst_code_to_symbol(inst_code) -> str:
     """
     Convert inst_code to symbol.
-    
+
     Args:
-        inst_code: Instrument code in format 'BTC-USDT_BN.SPOT'
-    
+        inst_code: InstCode object or instrument code string in format 'BTC-USDT_BN.SPOT'
+
     Returns:
         symbol: Trading symbol in format 'BTCUSDT' (no separator, uppercase)
-    
+
     Example:
         'BTC-USDT_BN.SPOT' -> 'BTCUSDT'
     """
-    pair = inst_code.split('_')[0]
+    pair = inst_code.pair if hasattr(inst_code, 'pair') else inst_code.split('_')[0]
     symbol = pair.replace('-', '').upper()
     return symbol
 
