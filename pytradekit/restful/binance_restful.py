@@ -151,7 +151,7 @@ class BinanceClient:
             private_key_bytes = base64.b64decode(self.secret_key)
             signing_key = SigningKey(private_key_bytes)
 
-            signed = signing_key.sign(query_string.encode("ASCII")).signature
+            signed = signing_key.sign(query_string.encode("UTF-8")).signature
             signature_b64 = base64.b64encode(signed).decode("ASCII")
             return signature_b64
         except Exception as e:
