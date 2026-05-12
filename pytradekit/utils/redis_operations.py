@@ -335,7 +335,12 @@ class RedisOperations:
         lock = self.get_lock_for_resource(key)
         try:
             with lock:
-                return Decimal(self.client.get(key).decode())
+                value = self.client.get(key)
+                if value is None:
+                    return None
+                if isinstance(value, bytes):
+                    value = value.decode()
+                return Decimal(value)
         except Exception as e:
             self.logger.exception(f"Failed to get target premium for {order_id}: {e}")
             raise DependencyException(f"Failed to get target premium for {order_id}") from e
