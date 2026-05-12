@@ -141,6 +141,22 @@ class HuobiWsManager(WsManager):
         _rqs = {'action': 'req', 'ch': 'auth', 'params': params}
         self.start_subscribe(_rqs)
 
+    def _reconnect_streams(self):
+        """断线重连后的恢复钩子。
+
+        私有 WS（is_public=False）必须先重新 auth；旧实现直接走 base 层的
+        _reconnect_streams 把 _subs 里的 trade.clearing#*#0 在未登录状态下重发，
+        HTX 立刻回 code=2002 invalid.auth.state，订阅在下次 subscribe() 主循环
+        触发 _login（默认 3 小时）前永远是失效的。
+
+        修复：私有连接重连后只发 auth，订阅交给 _on_message 收到 auth 成功
+        回调时再补发（已有的 _send_trade 行为）。
+        """
+        if not self.is_public:
+            self._login()
+        else:
+            super()._reconnect_streams()
+
     def start_subscribe(self, params):
         try:
             self.send_json(params)
