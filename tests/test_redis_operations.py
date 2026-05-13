@@ -1,7 +1,6 @@
 from decimal import Decimal
 
 import pytest
-from unittest.mock import MagicMock
 from pytradekit.utils.redis_operations import RedisOperations
 from pytradekit.utils.exceptions import DependencyException
 
