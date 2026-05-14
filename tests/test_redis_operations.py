@@ -100,15 +100,9 @@ class TestClose:
 
 class TestGetTargetPremium:
     def test_returns_decimal_from_str_value(self, redis_ops):
-        # decode_responses=True 时返回 str，不应再调用 .decode()
         ops, client, _ = redis_ops
         client.get.return_value = "0.0123"
         assert ops.get_target_premium("perp_sell_x") == Decimal("0.0123")
-
-    def test_returns_decimal_from_bytes_value(self, redis_ops):
-        ops, client, _ = redis_ops
-        client.get.return_value = b"0.0456"
-        assert ops.get_target_premium("perp_sell_x") == Decimal("0.0456")
 
     def test_returns_none_when_key_missing(self, redis_ops):
         ops, client, _ = redis_ops
@@ -120,3 +114,18 @@ class TestGetTargetPremium:
         client.get.side_effect = Exception("redis down")
         with pytest.raises(DependencyException):
             ops.get_target_premium("perp_sell_x")
+
+    def test_client_failure_logs_exception(self, redis_ops):
+        ops, client, logger = redis_ops
+        client.get.side_effect = Exception("redis down")
+        with pytest.raises(DependencyException):
+            ops.get_target_premium("perp_sell_x")
+        logger.exception.assert_called_once()
+
+    def test_client_failure_chains_original_exception(self, redis_ops):
+        ops, client, _ = redis_ops
+        original = Exception("redis down")
+        client.get.side_effect = original
+        with pytest.raises(DependencyException) as exc_info:
+            ops.get_target_premium("perp_sell_x")
+        assert exc_info.value.__cause__ is original

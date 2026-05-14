@@ -338,8 +338,6 @@ class RedisOperations:
                 value = self.client.get(key)
                 if value is None:
                     return None
-                if isinstance(value, bytes):
-                    value = value.decode()
                 return Decimal(value)
         except Exception as e:
             self.logger.exception(f"Failed to get target premium for {order_id}: {e}")
