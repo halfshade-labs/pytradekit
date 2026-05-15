@@ -1,10 +1,10 @@
 import json
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 import redis
 from pytradekit.utils.dynamic_types import RedisFields
 from pytradekit.utils.time_handler import TimeConvert
-from pytradekit.utils.exceptions import DependencyException
+from pytradekit.utils.exceptions import DataTypeException, DependencyException
 
 
 class _DecimalEncoder(json.JSONEncoder):
@@ -336,12 +336,17 @@ class RedisOperations:
         try:
             with lock:
                 value = self.client.get(key)
-                if value is None:
-                    return None
-                return Decimal(value)
         except Exception as e:
             self.logger.exception(f"Failed to get target premium for {order_id}: {e}")
             raise DependencyException(f"Failed to get target premium for {order_id}") from e
+
+        if value is None:
+            return None
+        try:
+            return Decimal(value)
+        except InvalidOperation as e:
+            self.logger.exception(f"Invalid premium value for {order_id}: {value!r}")
+            raise DataTypeException(f"Invalid premium value for {order_id}: {value!r}") from e
 
     def ping(self):
         """Verify the Redis connection is alive. Raises DependencyException on failure."""
