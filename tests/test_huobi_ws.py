@@ -7,10 +7,8 @@
 """
 from unittest.mock import MagicMock, patch
 
-import pytest
 
-
-def _make_manager(is_public, mocker):
+def _make_manager(is_public):
     """构造一个 HuobiWsManager 实例，跳过底层 WS 连接。"""
     with patch('pytradekit.ws.huobi_ws.WsManager.__init__', return_value=None):
         from pytradekit.ws.huobi_ws import HuobiWsManager
@@ -28,17 +26,20 @@ def _make_manager(is_public, mocker):
 
 class TestReconnectStreams:
     def test_private_ws_relogins_instead_of_resending_subs(self, mocker):
-        mgr = _make_manager(is_public=False, mocker=mocker)
+        mgr = _make_manager(is_public=False)
         mocker.patch.object(mgr, '_login')
-        mocker.patch('pytradekit.gateway.websocket.base_ws_manager.BaseWebsocketManager._reconnect_streams')
+        base_mock = mocker.patch(
+            'pytradekit.gateway.websocket.base_ws_manager.BaseWebsocketManager._reconnect_streams'
+        )
 
         mgr._reconnect_streams()
 
         # 私有连接：只调 _login，不走父类的 _reconnect_streams
         mgr._login.assert_called_once()
+        base_mock.assert_not_called()
 
     def test_public_ws_delegates_to_super(self, mocker):
-        mgr = _make_manager(is_public=True, mocker=mocker)
+        mgr = _make_manager(is_public=True)
         mocker.patch.object(mgr, '_login')
         super_mock = mocker.patch(
             'pytradekit.gateway.websocket.ws_manager.WsManager._reconnect_streams'
