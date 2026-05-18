@@ -1,4 +1,6 @@
+from dataclasses import dataclass, field
 from decimal import Decimal
+from typing import Tuple
 
 import pytest
 from pytradekit.utils.redis_operations import RedisOperations
@@ -14,17 +16,25 @@ def redis_ops(mocker):
     return ops, mock_client, mock_logger
 
 
-def assert_wraps_as_dependency_exception(redis_ops, client_attr, op_name, *args):
-    """Assert ops.<op_name>(*args) wraps a client error as DependencyException.
+@dataclass
+class FailureSpec:
+    """绑定一次失败注入所需的客户端属性、待测操作与调用参数。"""
+    client_attr: str
+    op_name: str
+    op_args: Tuple = field(default_factory=tuple)
+
+
+def assert_wraps_as_dependency_exception(redis_ops, spec: FailureSpec):
+    """Assert ops.<op_name>(*op_args) wraps a client error as DependencyException.
 
     Covers all three failure behaviors in one call:
     raises DependencyException, chains __cause__, calls logger.exception once.
     """
     ops, client, logger = redis_ops
     original = Exception("boom")
-    getattr(client, client_attr).side_effect = original
+    getattr(client, spec.client_attr).side_effect = original
     with pytest.raises(DependencyException) as exc_info:
-        getattr(ops, op_name)(*args)
+        getattr(ops, spec.op_name)(*spec.op_args)
     assert exc_info.value.__cause__ is original
     logger.exception.assert_called_once()
 
@@ -36,7 +46,9 @@ class TestPing:
         client.ping.assert_called_once()
 
     def test_failure_wraps_as_dependency_exception(self, redis_ops):
-        assert_wraps_as_dependency_exception(redis_ops, "ping", "ping")
+        assert_wraps_as_dependency_exception(
+            redis_ops, FailureSpec(client_attr="ping", op_name="ping")
+        )
 
 
 class TestCreatePubsub:
@@ -46,7 +58,9 @@ class TestCreatePubsub:
         assert result is client.pubsub.return_value
 
     def test_failure_wraps_as_dependency_exception(self, redis_ops):
-        assert_wraps_as_dependency_exception(redis_ops, "pubsub", "create_pubsub")
+        assert_wraps_as_dependency_exception(
+            redis_ops, FailureSpec(client_attr="pubsub", op_name="create_pubsub")
+        )
 
 
 class TestClose:
@@ -56,7 +70,9 @@ class TestClose:
         client.close.assert_called_once()
 
     def test_failure_wraps_as_dependency_exception(self, redis_ops):
-        assert_wraps_as_dependency_exception(redis_ops, "close", "close")
+        assert_wraps_as_dependency_exception(
+            redis_ops, FailureSpec(client_attr="close", op_name="close")
+        )
 
 
 class TestGetTargetPremium:
@@ -85,4 +101,7 @@ class TestGetTargetPremium:
             ops.get_target_premium("perp_sell_x")
 
     def test_failure_wraps_as_dependency_exception(self, redis_ops):
-        assert_wraps_as_dependency_exception(redis_ops, "get", "get_target_premium", "perp_sell_x")
+        assert_wraps_as_dependency_exception(
+            redis_ops,
+            FailureSpec(client_attr="get", op_name="get_target_premium", op_args=("perp_sell_x",)),
+        )
