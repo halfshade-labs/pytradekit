@@ -1,34 +1,47 @@
-import time
 import json
 import hmac
 import base64
 import hashlib
 import urllib.parse
 import gzip
+from dataclasses import dataclass, field
+from typing import Optional
 
-from pytradekit.utils.dynamic_types import HuobiAuxiliary, HuobiWebSocket
+from pytradekit.utils.dynamic_types import HuobiAuxiliary
 from pytradekit.gateway.websocket.ws_manager import WsManager
-from pytradekit.utils.time_handler import get_htx_timestamp, get_timestamp_s, get_millisecond_str, get_datetime
+from pytradekit.utils.time_handler import get_htx_timestamp, get_timestamp_s, sleep_min_time
+
+
+@dataclass
+class HuobiWsConfig:
+    api_key: Optional[str] = None
+    api_secret: Optional[str] = None
+    url: str = field(default_factory=lambda: HuobiAuxiliary.url_ws.value)
+    api_url: str = field(default_factory=lambda: HuobiAuxiliary.url.value)
+    is_public: bool = True
+    strategy_id: Optional[str] = None
+    portfolio_id: Optional[str] = None
+    account_id: Optional[str] = None
+
+    def __post_init__(self):
+        if not self.is_public:
+            self.url = HuobiAuxiliary.url_ws_private.value
 
 
 class HuobiWsManager(WsManager):
-    _listen_key = {}
 
-    def __init__(self, logger, queue=None, api_key=None, api_secret=None, strategy_id=None, portfolio_id=None,
-                 account_id=None, url=HuobiAuxiliary.url_ws.value, api_url=HuobiAuxiliary.url.value,
-                 is_reconnecting_queue=None, start_end_time_dict=None, is_public=True):
-        super().__init__(api_key, logger, is_reconnecting_queue, start_end_time_dict)
-        self.is_public = is_public
-        self._api_url = api_url
-        if not is_public:
-            url = HuobiAuxiliary.url_ws_private.value
-        self._url = url
-        self._api_key = api_key
-        self._api_secret = api_secret
+    def __init__(self, logger, queue=None, config: Optional[HuobiWsConfig] = None):
+        config = config or HuobiWsConfig()
+        super().__init__(config.api_key, logger, None)
+        self.is_public = config.is_public
+        self._api_url = config.api_url
+        self._url = config.url
+        self._api_key = config.api_key
+        self._api_secret = config.api_secret
         self._queue = queue
-        self._strategy_id = strategy_id
-        self._portfolio_id = portfolio_id
-        self._account_id = account_id
+        self._strategy_id = config.strategy_id
+        self._portfolio_id = config.portfolio_id
+        self._account_id = config.account_id
         self._ws_connected = False
         self.logger = logger
 
@@ -62,21 +75,21 @@ class HuobiWsManager(WsManager):
 
     def _send_order(self):
         _rqs_orders = {'action': 'sub', 'ch': 'orders#*'}
-        if not self._subs:
+        if _rqs_orders not in self._subs:
             self._subs.append(_rqs_orders)
         self.send_json(_rqs_orders)
 
     def _send_trade(self):
-        _rqs_orders = {"action": "sub","ch": "trade.clearing#*#0"}
-        if not self._subs:
-            self._subs.append(_rqs_orders)
-        self.send_json(_rqs_orders)
+        _rqs_trade = {"action": "sub", "ch": "trade.clearing#*#0"}
+        if _rqs_trade not in self._subs:
+            self._subs.append(_rqs_trade)
+        self.send_json(_rqs_trade)
 
     def _wait_reconnection_time(self, n_seconds, reconnection_time) -> None:
         """Sleep in n_seconds intervals until reconnection_time expires."""
         now_times = get_timestamp_s()
         while True:
-            time.sleep(n_seconds)
+            sleep_min_time(n_seconds)
             if int(get_timestamp_s() - now_times) >= reconnection_time:
                 return
 
