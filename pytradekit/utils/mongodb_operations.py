@@ -1407,7 +1407,10 @@ class MongodbOperations:
 
     def update_trade_record(self, trade_id, update_data):
         params = {TradeRecordAttribute.trade_id.name: trade_id}
-        update = {'$set': update_data}
+        # Strip Decimal → str via get_correct_dict; pymongo's BSON encoder rejects raw Decimal
+        # (only Decimal128). insert_data already routes through get_correct_dict; this kept the
+        # asymmetry which made subsequent updates silently fail with `cannot encode object: Decimal`.
+        update = {'$set': self.get_correct_dict(update_data)}
         self.client[Database.arbitrage.name][Database.trade_records.name].update_one(params, update)
 
     def read_trade_records(self, status=None, strategy_type=None, strategy_id=None, coin=None,

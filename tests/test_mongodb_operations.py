@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from pytradekit.utils.mongodb_operations import MongodbOperations
 
 
@@ -45,3 +47,54 @@ def test_check_connection(mocker):
     mocked_admin.command.assert_called_once_with('ping')
     # 验证返回值是否为True，即连接正常
     assert connection_status is True
+
+
+class TestUpdateTradeRecordStripsDecimal:
+    """update_trade_record was previously skipping get_correct_dict; raw Decimal in the
+    payload caused pymongo to raise `cannot encode object: Decimal(...)` and the update
+    failed silently. This guards the symmetric conversion with insert_data."""
+
+    def _make_ops(self, mocker):
+        MongodbOperations._client = None
+        MongodbOperations._indexes_ensured = False
+        mocked_client = mocker.MagicMock()
+        mocker.patch('pytradekit.utils.mongodb_operations.MongoClient', return_value=mocked_client)
+        mocker.patch.object(MongodbOperations, '_ensure_indexes')
+        ops = MongodbOperations("mongodb://x:y@localhost:27017")
+        return ops, mocked_client
+
+    def test_decimal_fields_converted_to_str(self, mocker):
+        ops, mocked_client = self._make_ops(mocker)
+        update_data = {
+            'legs': {
+                'SHORT_LEG': {'fee': Decimal('0.00057500'), 'entry_price': Decimal('523.17')},
+            },
+            'status': 'open',
+        }
+        ops.update_trade_record('trade_xyz', update_data)
+
+        collection = mocked_client['arbitrage']['trade_records']
+        collection.update_one.assert_called_once()
+        _, kwargs = collection.update_one.call_args
+        sent = collection.update_one.call_args[0]
+        sent_filter, sent_update = sent[0], sent[1]
+        assert sent_filter == {'trade_id': 'trade_xyz'}
+        legs = sent_update['$set']['legs']['SHORT_LEG']
+        assert legs['fee'] == '0.00057500'
+        assert legs['entry_price'] == '523.17'
+        # Non-decimal values pass through unchanged
+        assert sent_update['$set']['status'] == 'open'
+
+    def test_nested_decimal_in_long_leg_converted(self, mocker):
+        ops, mocked_client = self._make_ops(mocker)
+        update_data = {
+            'legs': {
+                'LONG_LEG': {
+                    'inst_code': 'ZEC-USDT_BN.SPOT',
+                    'position_size': Decimal('0.57500000'),
+                },
+            },
+        }
+        ops.update_trade_record('perp_sell_xxx', update_data)
+        sent_update = mocked_client['arbitrage']['trade_records'].update_one.call_args[0][1]
+        assert sent_update['$set']['legs']['LONG_LEG']['position_size'] == '0.57500000'

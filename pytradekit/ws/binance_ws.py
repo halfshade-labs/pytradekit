@@ -318,6 +318,15 @@ class BinanceWsManager(WsManager):
                 self._pong()
             else:
                 if self.verify_perp_order_trade(msg):
+                    # DEBUG per-event log — leave at DEBUG so it's off by default but available
+                    # for post-mortem when a perp order's WS event appears to be missing.
+                    o = msg.get(BinanceWebSocket.perp_order_data.value, {}) or {}
+                    self.logger.debug(
+                        f"perp ORDER_TRADE_UPDATE: symbol={o.get(BinanceWebSocket.symbol.value)} "
+                        f"clientOrderId={o.get(BinanceWebSocket.client_order_id_new.value)} "
+                        f"status={o.get(BinanceWebSocket.status.value)} "
+                        f"side={o.get(BinanceWebSocket.side.value)}"
+                    )
                     self._queue.put_nowait(msg)
                     return
                 if self.verify_spot_order_trade(msg):
