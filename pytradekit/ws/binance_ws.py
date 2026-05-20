@@ -4,7 +4,7 @@ from threading import Thread
 
 import requests
 
-from pytradekit.utils.dynamic_types import BinanceAuxiliary, BinanceWebSocket
+from pytradekit.utils.dynamic_types import BinanceAuxiliary, BinanceWebSocket, WebsocketStatus
 from pytradekit.gateway.websocket.ws_manager import WsManager
 from pytradekit.utils.time_handler import get_timestamp_ms, get_timestamp_s, get_millisecond_str, get_datetime, TimeSpan
 from pytradekit.utils.dynamic_types import SlackUser
@@ -182,7 +182,20 @@ class BinanceWsManager(WsManager):
     def subscribe(self):
         try:
             self.post_listen_key('SPOT')
-            params = [self._listen_key['SPOT']]
+            listen_key = self._listen_key['SPOT']
+            if not self._is_spot():
+                # Binance perp userDataStream only delivers events when listenKey is
+                # in the URL path; the SUBSCRIBE method silently drops them on fstream.
+                self._url = f"{BinanceAuxiliary.url_perp_ws.value}/{listen_key}"
+                self.logger.debug(
+                    f"perp user data stream connect with listen_key in url path "
+                    f"(len={len(listen_key)})"
+                )
+                self._reconnect_with_new_url()
+                self._ping(BinanceAuxiliary.ws_ping_sleep.value,
+                           reconnection_time=BinanceAuxiliary.reconnection_time_sleep.value)
+                return
+            params = [listen_key]
             if self._send_params:
                 params += self._send_params
             self.logger.debug(f"subscribe: {params}, url: {self._url}, listen key url:{self._listen_key_url}")
@@ -190,7 +203,18 @@ class BinanceWsManager(WsManager):
             self._ping(BinanceAuxiliary.ws_ping_sleep.value,
                        reconnection_time=BinanceAuxiliary.reconnection_time_sleep.value)
         except Exception as e:
-            self.logger.exception(e)
+            self.logger.debug(f"subscribe error: {e}", exc_info=True)
+
+    def _reconnect_with_new_url(self):
+        # Close any existing ws so connect() rebinds to the freshly built _url.
+        if self.ws is not None:
+            try:
+                self.ws.close()
+            except Exception:
+                pass
+            self.ws = None
+        self.status = WebsocketStatus.INIT.name
+        self.connect()
 
     def start_aggtrade_stream(self, symbols):
         params = []
