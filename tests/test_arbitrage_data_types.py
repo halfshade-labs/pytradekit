@@ -27,7 +27,8 @@ class TestTradeRecordAttribute:
         expected = [
             "trade_id", "strategy_type", "strategy_id", "coin", "status",
             "created_time_ms", "updated_time_ms", "closed_time_ms",
-            "liq_hedge_checked", "legs", "hedge_status", "pnl_summary",
+            "liq_hedge_checked", "perp_client_order_id",
+            "legs", "hedge_status", "pnl_summary",
         ]
         actual = [a.name for a in TradeRecordAttribute]
         assert actual == expected
