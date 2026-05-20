@@ -18,7 +18,11 @@ def redis_ops(mocker):
 
 @dataclass
 class FailureSpec:
-    """绑定一次失败注入所需的客户端属性、待测操作与调用参数。"""
+    """Spec for injecting a single client-level failure into an ops method.
+
+    Bundles the client attribute to fail (e.g. "ping"), the ops method to call
+    (e.g. "ping"), and the positional args to pass.
+    """
     client_attr: str
     op_name: str
     op_args: Tuple = field(default_factory=tuple)
@@ -28,7 +32,8 @@ def assert_wraps_as_dependency_exception(redis_ops, spec: FailureSpec):
     """Assert ops.<op_name>(*op_args) wraps a client error as DependencyException.
 
     Covers all three failure behaviors in one call:
-    raises DependencyException, chains __cause__, calls logger.exception once.
+    raises DependencyException, chains __cause__, logs once at debug level
+    with exc_info=True (CLAUDE.md restricts logging to debug/info only).
     """
     ops, client, logger = redis_ops
     original = Exception("boom")
@@ -36,7 +41,10 @@ def assert_wraps_as_dependency_exception(redis_ops, spec: FailureSpec):
     with pytest.raises(DependencyException) as exc_info:
         getattr(ops, spec.op_name)(*spec.op_args)
     assert exc_info.value.__cause__ is original
-    logger.exception.assert_called_once()
+    logger.debug.assert_called_once()
+    # exc_info=True so the traceback still lands in logs even though level is debug
+    _, kwargs = logger.debug.call_args
+    assert kwargs.get('exc_info') is True
 
 
 class TestPing:
