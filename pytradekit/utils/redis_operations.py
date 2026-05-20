@@ -337,7 +337,7 @@ class RedisOperations:
             with lock:
                 value = self.client.get(key)
         except Exception as e:
-            self.logger.exception(f"Failed to get target premium for {order_id}: {e}")
+            self.logger.debug(f"Failed to get target premium for {order_id}: {e}", exc_info=True)
             raise DependencyException(f"Failed to get target premium for {order_id}") from e
 
         if value is None:
@@ -345,7 +345,7 @@ class RedisOperations:
         try:
             return Decimal(value)
         except InvalidOperation as e:
-            self.logger.exception(f"Invalid premium value for {order_id}: {value!r}")
+            self.logger.debug(f"Invalid premium value for {order_id}: {value!r}", exc_info=True)
             raise DataTypeException(f"Invalid premium value for {order_id}: {value!r}") from e
 
     def ping(self):
@@ -353,7 +353,7 @@ class RedisOperations:
         try:
             self.client.ping()
         except Exception as e:
-            self.logger.exception(f"Redis ping failed: {e}")
+            self.logger.debug(f"Redis ping failed: {e}", exc_info=True)
             raise DependencyException("Redis ping failed") from e
 
     def create_pubsub(self):
@@ -361,7 +361,7 @@ class RedisOperations:
         try:
             return self.client.pubsub()
         except Exception as e:
-            self.logger.exception(f"Failed to create pubsub: {e}")
+            self.logger.debug(f"Failed to create pubsub: {e}", exc_info=True)
             raise DependencyException("Failed to create pubsub") from e
 
     def close(self):
@@ -369,5 +369,5 @@ class RedisOperations:
         try:
             self.client.close()
         except Exception as e:
-            self.logger.exception(f"Failed to close Redis connection: {e}")
+            self.logger.debug(f"Failed to close Redis connection: {e}", exc_info=True)
             raise DependencyException("Failed to close Redis connection") from e
