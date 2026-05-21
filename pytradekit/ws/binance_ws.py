@@ -43,6 +43,10 @@ class BinanceWsManager(WsManager):
         self._account_id = account_id
         self._ws_connected = False
         self._kline_queue = kline_queue
+        # DEBUG counters (raw msg trace): first N messages logged in full, rest summarized.
+        self._is_perp = is_perp
+        self._msg_count = 0
+        self._msg_log_full_n = 20
         if is_perp:
             self._listen_key_url = BinanceAuxiliary.perp_url.value + BinanceAuxiliary.user_perp_data_stream.value
         else:
@@ -331,8 +335,38 @@ class BinanceWsManager(WsManager):
             return True
         return False
 
+    def _on_open(self, ws, *args, **kwargs):
+        market = 'perp' if self._is_perp else 'spot'
+        url_preview = (self._url or '')[:80]
+        self.logger.debug(f"[bn_ws on_open] market={market} url={url_preview}")
+
+    def _on_close(self, ws, *args, **kwargs):
+        market = 'perp' if self._is_perp else 'spot'
+        self.logger.debug(
+            f"[bn_ws on_close] market={market} msg_count_so_far={self._msg_count} "
+            f"close_args={args} close_kwargs={list(kwargs)}"
+        )
+        # delegate to parent to trigger reconnect
+        super()._on_close(ws, *args, **kwargs)
+
+    def _on_error(self, ws, error, *args, **kwargs):
+        market = 'perp' if self._is_perp else 'spot'
+        self.logger.debug(
+            f"[bn_ws on_error] market={market} error={error!r} msg_count_so_far={self._msg_count}"
+        )
+        super()._on_error(ws, error, *args, **kwargs)
+
     def _on_message(self, _ws, message):
         msg = json.loads(message)
+        # raw-msg trace: first N msgs are logged in full, rest are summarized by top-level keys.
+        # Use to diagnose missing perp/spot event delivery when verify_* keeps returning False.
+        self._msg_count += 1
+        market = 'perp' if self._is_perp else 'spot'
+        if self._msg_count <= self._msg_log_full_n:
+            preview = str(message)[:400]
+            self.logger.debug(
+                f"[bn_ws raw #{self._msg_count}] market={market} type={type(msg).__name__} raw={preview}"
+            )
         try:
             # Ticker data from !ticker@arr is a list
             if isinstance(msg, list) and self._ticker_queue:
