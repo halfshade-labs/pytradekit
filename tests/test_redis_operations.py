@@ -18,23 +18,14 @@ def redis_ops(mocker):
 
 @dataclass
 class FailureSpec:
-    """Spec for injecting a single client-level failure into an ops method.
-
-    Bundles the client attribute to fail (e.g. "ping"), the ops method to call
-    (e.g. "ping"), and the positional args to pass.
-    """
+    """Spec for injecting a client-level failure into an ops method."""
     client_attr: str
     op_name: str
     op_args: Tuple = field(default_factory=tuple)
 
 
 def assert_wraps_as_dependency_exception(redis_ops, spec: FailureSpec):
-    """Assert ops.<op_name>(*op_args) wraps a client error as DependencyException.
-
-    Covers all three failure behaviors in one call:
-    raises DependencyException, chains __cause__, logs once at debug level
-    with exc_info=True (CLAUDE.md restricts logging to debug/info only).
-    """
+    """Assert ops.<op_name>(*op_args) wraps a client error as DependencyException."""
     ops, client, logger = redis_ops
     original = Exception("boom")
     getattr(client, spec.client_attr).side_effect = original
