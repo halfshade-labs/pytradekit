@@ -3,30 +3,35 @@ from decimal import Decimal
 from pytradekit.utils.mongodb_operations import MongodbOperations
 
 
+MONGODB_URL = "mongodb://username:password@localhost:27017"
+
+
 # 测试MongoDB客户端的创建
 def test_create_client(mocker):
     # Reset singleton so _create_client is actually invoked
     MongodbOperations._client = None
     MongodbOperations._indexes_ensured = False
-    mongodb_url = "mongodb://username:password@localhost:27017"
     # Mock _ensure_indexes to avoid requiring a live MongoDB connection
     mocker.patch.object(MongodbOperations, '_ensure_indexes')
     spy = mocker.spy(MongodbOperations, '_create_client')
-    MongodbOperations(mongodb_url)
+    MongodbOperations(MONGODB_URL)
     # 现在使用spy对象来断言_create_client是否被正确调用
-    spy.assert_called_once_with(mongodb_url)
+    spy.assert_called_once_with(MONGODB_URL)
 
 
 # 测试关闭MongoDB连接
-def test_close():
-    mongodb_url = "mongodb://username:password@localhost:27017"
-    mongodb_operations = MongodbOperations(mongodb_url)
+def test_close(mocker):
+    # Reset singleton state so this test is isolated from prior runs.
+    MongodbOperations._client = None
+    MongodbOperations._indexes_ensured = False
+    mocker.patch('pytradekit.utils.mongodb_operations.MongoClient', return_value=mocker.MagicMock())
+    mocker.patch.object(MongodbOperations, '_ensure_indexes')
+    mongodb_operations = MongodbOperations(MONGODB_URL)
     mongodb_operations.close()
     assert MongodbOperations._client is None
 
 
 def test_check_connection(mocker):
-    mongodb_url = "mongodb://username:password@localhost:27017"
     # 创建MongoClient的模拟实例
     mocked_mongo_client = mocker.Mock()
     # 创建admin属性的模拟对象
@@ -39,7 +44,7 @@ def test_check_connection(mocker):
     # 使用patch替换MongoClient，使其返回模拟的MongoClient实例
     mocker.patch('pytradekit.utils.mongodb_operations.MongoClient', return_value=mocked_mongo_client)
 
-    mongodb_operations_instance = MongodbOperations(mongodb_url)
+    mongodb_operations_instance = MongodbOperations(MONGODB_URL)
     # 调用待测试的方法
     connection_status = mongodb_operations_instance._check_connection()
 
@@ -75,7 +80,6 @@ class TestUpdateTradeRecordStripsDecimal:
 
         collection = mocked_client['arbitrage']['trade_records']
         collection.update_one.assert_called_once()
-        _, kwargs = collection.update_one.call_args
         sent = collection.update_one.call_args[0]
         sent_filter, sent_update = sent[0], sent[1]
         assert sent_filter == {'trade_id': 'trade_xyz'}
