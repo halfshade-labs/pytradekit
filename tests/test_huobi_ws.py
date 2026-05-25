@@ -28,15 +28,18 @@ class TestReconnectStreams:
     def test_private_ws_relogins_instead_of_resending_subs(self, mocker):
         mgr = _make_manager(is_public=False)
         mocker.patch.object(mgr, '_login')
-        base_mock = mocker.patch(
-            'pytradekit.gateway.websocket.base_ws_manager.BaseWebsocketManager._reconnect_streams'
+        # super()._reconnect_streams() in HuobiWsManager resolves to WsManager,
+        # not BaseWebsocketManager — patch the MRO-correct target so assert_not_called
+        # actually rules out the parent path running on the private branch.
+        super_mock = mocker.patch(
+            'pytradekit.gateway.websocket.ws_manager.WsManager._reconnect_streams'
         )
 
         mgr._reconnect_streams()
 
         # 私有连接：只调 _login，不走父类的 _reconnect_streams
         mgr._login.assert_called_once()
-        base_mock.assert_not_called()
+        super_mock.assert_not_called()
 
     def test_public_ws_delegates_to_super(self, mocker):
         mgr = _make_manager(is_public=True)

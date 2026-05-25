@@ -7,6 +7,8 @@ and skip SUBSCRIBE. Spot still uses the SUBSCRIBE-method path.
 """
 from unittest.mock import MagicMock, patch
 
+from pytradekit.utils.dynamic_types import WebsocketStatus
+
 
 def _make_manager(is_perp):
     """Build a BinanceWsManager without invoking the real WsManager __init__."""
@@ -20,7 +22,7 @@ def _make_manager(is_perp):
         mgr._listen_key = {}
         mgr._send_params = None
         mgr.ws = None
-        mgr.status = 'INIT'
+        mgr.status = WebsocketStatus.INIT.name
         if is_perp:
             mgr._url = BinanceAuxiliary.url_perp_ws.value
             mgr._listen_key_url = BinanceAuxiliary.perp_url.value + BinanceAuxiliary.user_perp_data_stream.value
@@ -55,19 +57,22 @@ class TestSubscribePerp:
         mgr = _make_manager(is_perp=True)
         stale_ws = MagicMock()
         mgr.ws = stale_ws
-        mgr.status = 'ACTIVE'
+        mgr.status = WebsocketStatus.ACTIVE.name
 
         def fake_post_listen_key(_api):
             mgr._listen_key['SPOT'] = 'NEW_PERP_LK'
         mocker.patch.object(mgr, 'post_listen_key', side_effect=fake_post_listen_key)
         mocker.patch.object(mgr, 'connect')
+        mocker.patch.object(mgr, 'start_subscribe')
         mocker.patch.object(mgr, '_ping')
 
         mgr.subscribe()
 
         stale_ws.close.assert_called_once()
-        assert mgr.status == 'INIT'
+        assert mgr.status == WebsocketStatus.INIT.name
         mgr.connect.assert_called_once()
+        # SUBSCRIBE method must NOT be sent for perp userDataStream, even on renewal.
+        mgr.start_subscribe.assert_not_called()
 
 
 class TestSubscribeSpot:
