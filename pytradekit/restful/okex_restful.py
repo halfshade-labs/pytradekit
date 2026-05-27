@@ -65,7 +65,8 @@ class OkexClient:
             return e
 
     def get_perp_position(self, symbol):
-        params = {'instType': InstCodeType.SWAP.name, 'instId': symbol + "-" + InstCodeType.SWAP.name}
+        # OKX API protocol uses 'SWAP' as instType for perpetual contracts — keep literal.
+        params = {'instType': 'SWAP', 'instId': symbol + "-SWAP"}
         url = OkexAuxiliary.url_perp_position.value
         datas = self._send_request(url, method=HttpMmthod.GET.name, params=params)
         return datas
