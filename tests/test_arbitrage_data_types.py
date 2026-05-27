@@ -1,8 +1,11 @@
 """Tests for arbitrage data storage types and MongoDB CRUD methods."""
-from unittest.mock import MagicMock, call
+from decimal import Decimal
+from unittest.mock import MagicMock
 
 import pytest
 
+from pytradekit.utils.custom_types import InstCode
+from pytradekit.utils.dynamic_types import ExchangeId
 from pytradekit.utils.static_types import (
     Database,
     TradeRecordAttribute, LegAttribute, HedgeStatusAttribute, PnlSummaryAttribute,
@@ -46,14 +49,19 @@ class TestLegAttribute:
 class TestPremiumSnapshot:
     def test_to_dict(self):
         ps = PremiumSnapshot(
-            time_ms=1000, coin="BTC", perp_exchange="BN", spot_exchange="OKX",
-            perp_price=70200.0, spot_price=70100.0, premium_pct=0.00143, premium_usdt=100.0,
+            time_ms=1000, coin="BTC",
+            perp_exchange=ExchangeId.BN.name, spot_exchange=ExchangeId.OKX.name,
+            perp_price=Decimal("70200.0"), spot_price=Decimal("70100.0"),
+            premium_pct=Decimal("0.00143"), premium_usdt=Decimal("100.0"),
         )
         d = ps.to_dict()
         assert d["coin"] == "BTC"
-        assert d["perp_exchange"] == "BN"
-        assert d["premium_pct"] == 0.00143
-        assert d["premium_usdt"] == 100.0
+        assert d["perp_exchange"] == ExchangeId.BN.name
+        assert d["spot_exchange"] == ExchangeId.OKX.name
+        assert d["perp_price"] == Decimal("70200.0")
+        assert d["spot_price"] == Decimal("70100.0")
+        assert d["premium_pct"] == Decimal("0.00143")
+        assert d["premium_usdt"] == Decimal("100.0")
 
     def test_slots_match_attribute_enum(self):
         assert PremiumSnapshot.__slots__ == [a.name for a in PremiumSnapshotAttribute]
@@ -61,14 +69,17 @@ class TestPremiumSnapshot:
 
 class TestFundingRateHistory:
     def test_to_dict(self):
+        inst_code = InstCode.from_string("BTC-USDT_BN.PERP")
         fr = FundingRateHistory(
-            time_ms=1000, exchange_id="BN", inst_code="BTC-USDT_BN.PERP",
-            funding_rate=0.0002, funding_rate_annualized=0.219,
-            mark_price=70200.0, next_funding_time_ms=2000,
+            time_ms=1000, exchange_id=ExchangeId.BN.name, inst_code=inst_code,
+            funding_rate=Decimal("0.0002"), funding_rate_annualized=Decimal("0.219"),
+            mark_price=Decimal("70200.0"), next_funding_time_ms=2000,
         )
         d = fr.to_dict()
-        assert d["inst_code"] == "BTC-USDT_BN.PERP"
-        assert d["funding_rate"] == 0.0002
+        assert d["exchange_id"] == ExchangeId.BN.name
+        assert d["inst_code"] == inst_code
+        assert d["funding_rate"] == Decimal("0.0002")
+        assert d["mark_price"] == Decimal("70200.0")
         assert d["next_funding_time_ms"] == 2000
 
     def test_slots_match_attribute_enum(self):
@@ -151,7 +162,11 @@ class TestPremiumSnapshotCRUD:
 class TestFundingRateHistoryCRUD:
     def test_insert_funding_rate_history(self, mocker):
         mongo, client = _make_mongo(mocker)
-        data = [{"time_ms": 1000, "exchange_id": "BN", "inst_code": "BTC-USDT_BN.PERP"}]
+        data = [{
+            "time_ms": 1000,
+            "exchange_id": ExchangeId.BN.name,
+            "inst_code": InstCode.from_string("BTC-USDT_BN.PERP"),
+        }]
         mongo.insert_funding_rate_history(data)
 
         collection = client["arbitrage"]["funding_rate_history"]
@@ -165,9 +180,12 @@ class TestFundingRateHistoryCRUD:
         mock_cursor.__iter__ = MagicMock(return_value=iter([]))
         client["arbitrage"]["funding_rate_history"].find.return_value = mock_cursor
 
-        mongo.read_funding_rate_history(inst_code="BTC-USDT_BN.PERP", limit=1)
+        # Production passes the serialized inst_code string read back from mongo,
+        # not the InstCode object — keep test aligned with that call path.
+        inst_code_str = str(InstCode.from_string("BTC-USDT_BN.PERP"))
+        mongo.read_funding_rate_history(inst_code=inst_code_str, limit=1)
 
         client["arbitrage"]["funding_rate_history"].find.assert_called_once_with(
-            {"inst_code": "BTC-USDT_BN.PERP"}
+            {"inst_code": inst_code_str}
         )
         mock_cursor.sort.return_value.limit.assert_called_once_with(1)

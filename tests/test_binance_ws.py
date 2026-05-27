@@ -38,7 +38,7 @@ class TestSubscribePerp:
         mgr = _make_manager(is_perp=True)
 
         def fake_post_listen_key(_api):
-            mgr._listen_key['SPOT'] = 'PERP_LK_TOKEN'
+            mgr._listen_key['PERP'] = 'PERP_LK_TOKEN'
         mocker.patch.object(mgr, 'post_listen_key', side_effect=fake_post_listen_key)
         mocker.patch.object(mgr, 'connect')
         mocker.patch.object(mgr, 'start_subscribe')
@@ -60,7 +60,7 @@ class TestSubscribePerp:
         mgr.status = WebsocketStatus.ACTIVE.name
 
         def fake_post_listen_key(_api):
-            mgr._listen_key['SPOT'] = 'NEW_PERP_LK'
+            mgr._listen_key['PERP'] = 'NEW_PERP_LK'
         mocker.patch.object(mgr, 'post_listen_key', side_effect=fake_post_listen_key)
         mocker.patch.object(mgr, 'connect')
         mocker.patch.object(mgr, 'start_subscribe')
