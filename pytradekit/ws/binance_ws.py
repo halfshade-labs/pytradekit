@@ -67,6 +67,9 @@ class BinanceWsManager(WsManager):
     def _is_spot(self):
         return '/fapi/' not in self._listen_key_url
 
+    def _listen_key_kind(self):
+        return 'SPOT' if self._is_spot() else 'PERP'
+
     def _ws_api_listen_key(self, method):
         """Use Binance WebSocket API to manage spot listen keys.
         Binance has deprecated the REST endpoint for spot userDataStream.
@@ -135,7 +138,7 @@ class BinanceWsManager(WsManager):
                 self.logger.warning(f"put_listen_key failed: HTTP {resp.status_code} from {self._listen_key_url}: {resp.text[:200]}")
                 if resp.status_code in (410, 404, 400):
                     self.logger.info("put_listen_key: listenKey expired or endpoint gone, re-creating...")
-                    self.post_listen_key('SPOT')
+                    self.post_listen_key('PERP')
             except Exception as e:
                 self.logger.warning(f"put_listen_key error: {e}")
 
@@ -185,8 +188,9 @@ class BinanceWsManager(WsManager):
 
     def subscribe(self):
         try:
-            self.post_listen_key('SPOT')
-            listen_key = self._listen_key['SPOT']
+            kind = self._listen_key_kind()
+            self.post_listen_key(kind)
+            listen_key = self._listen_key[kind]
             if not self._is_spot():
                 # Binance perp userDataStream only delivers events when listenKey is
                 # in the URL path; the SUBSCRIBE method silently drops them on fstream.
