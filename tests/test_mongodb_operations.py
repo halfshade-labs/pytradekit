@@ -1,5 +1,6 @@
 from decimal import Decimal
 
+from pytradekit.utils.custom_types import InstCode
 from pytradekit.utils.mongodb_operations import MongodbOperations
 
 
@@ -32,6 +33,12 @@ def test_close(mocker):
 
 
 def test_check_connection(mocker):
+    # 重置 singleton 状态，使 mocker.patch 的 MongoClient 一定被注入
+    # （如果 _client 已被前序测试初始化过，__init__ 会跳过 _create_client，
+    # mocked_mongo_client 永远不会成为 self.client，断言会因执行顺序失败）
+    MongodbOperations._client = None
+    MongodbOperations._indexes_ensured = False
+
     # 创建MongoClient的模拟实例
     mocked_mongo_client = mocker.Mock()
     # 创建admin属性的模拟对象
@@ -43,6 +50,8 @@ def test_check_connection(mocker):
 
     # 使用patch替换MongoClient，使其返回模拟的MongoClient实例
     mocker.patch('pytradekit.utils.mongodb_operations.MongoClient', return_value=mocked_mongo_client)
+    # _ensure_indexes 在 __init__ 中会被调用，mock 掉避免访问 mock client 的索引方法链
+    mocker.patch.object(MongodbOperations, '_ensure_indexes')
 
     mongodb_operations_instance = MongodbOperations(MONGODB_URL)
     # 调用待测试的方法
@@ -91,10 +100,13 @@ class TestUpdateTradeRecordStripsDecimal:
 
     def test_nested_decimal_in_long_leg_converted(self, mocker):
         ops, mocked_client = self._make_ops(mocker)
+        # inst_code 通过 InstCode 类构造而非裸字符串，遵守 CLAUDE.md
+        # 「交易对标识必须使用 InstCode 类和转换方法」，同时验证字符串格式
+        # 可被 InstCode.from_string 解析。
         update_data = {
             'legs': {
                 'LONG_LEG': {
-                    'inst_code': 'ZEC-USDT_BN.SPOT',
+                    'inst_code': str(InstCode.from_string('ZEC-USDT_BN.SPOT')),
                     'position_size': Decimal('0.57500000'),
                 },
             },
