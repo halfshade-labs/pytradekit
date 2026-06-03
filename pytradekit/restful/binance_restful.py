@@ -4,6 +4,8 @@ import time
 
 import httpx
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import base64
 
 from cryptography.hazmat.primitives import serialization
@@ -19,6 +21,11 @@ RECVWINDOW = 6000
 RETRY_TIMES = 10
 RETRY_INTERVAL = 5
 
+# 同步 HTTP 重试配置：BN 服务端会主动关闭 idle ≥ 60s 的 keep-alive 连接，
+# 长生命周期复用 session 时下次请求会拿到死 socket 触发 RemoteDisconnected。
+# 仅对 GET 自动重试，避免 POST/DELETE（下单/撤单）被重复执行。
+SYNC_HTTP_TIMEOUT = (5, 30)  # (connect, read)
+
 
 class BinanceClient:
     def __init__(self, logger, key=None, secret=None, passphrase=None, account_id=None, is_perp=False, is_alpha=False):
@@ -28,6 +35,16 @@ class BinanceClient:
         self.passphrase = passphrase
         self.account_id = account_id
         self.session = requests.session()
+        retry = Retry(
+            total=3, connect=3, read=3,
+            backoff_factor=0.3,
+            status_forcelist=[502, 503, 504],
+            allowed_methods=frozenset(['GET']),
+            raise_on_status=False,
+        )
+        adapter = HTTPAdapter(max_retries=retry, pool_connections=10, pool_maxsize=20)
+        self.session.mount('https://', adapter)
+        self.session.mount('http://', adapter)
         self.logger = logger
         if is_perp:
             self._url = BinanceAuxiliary.perp_url.value
@@ -59,11 +76,11 @@ class BinanceClient:
                 headers["X-MBX-APIKEY"] = self.api_key
 
             if method == "GET":
-                resp = self.session.get(url, headers=headers, params=params)
+                resp = self.session.get(url, headers=headers, params=params, timeout=SYNC_HTTP_TIMEOUT)
             elif method == "POST":
-                resp = self.session.post(url, headers=headers, data=params)
+                resp = self.session.post(url, headers=headers, data=params, timeout=SYNC_HTTP_TIMEOUT)
             elif method == "DELETE":
-                resp = self.session.delete(url, headers=headers, data=params)
+                resp = self.session.delete(url, headers=headers, data=params, timeout=SYNC_HTTP_TIMEOUT)
             else:
                 raise ExchangeException(f"Unsupported HTTP method: {method}")
 
