@@ -8,6 +8,7 @@ import requests
 from pytradekit.utils.time_handler import get_ok_timestamp
 from pytradekit.utils.dynamic_types import HttpMmthod, OkexAuxiliary, InstCodeType
 from pytradekit.utils.static_types import FeeStructureKey
+from pytradekit.utils.exceptions import ExchangeException
 
 
 class OkexClient:
@@ -52,17 +53,19 @@ class OkexClient:
             if method == HttpMmthod.GET.name:
                 if params:
                     url = f'{url}?{urlencode(params)}'
-                resp = requests.get(url, headers=headers)
+                resp = self.session.get(url, headers=headers)
             elif method == HttpMmthod.POST.name:
-                resp = requests.post(url, json=params, headers=headers)
+                resp = self.session.post(url, json=params, headers=headers)
             else:
-                return f'method {method} not support'
+                raise ExchangeException(f'method {method} not support')
             if resp.status_code != 200:
-                return f'http err:{resp.status_code} result:{resp.content}'
+                raise ExchangeException(f'http err:{resp.status_code} result:{resp.content}')
             result = resp.json()
             return result
+        except ExchangeException:
+            raise
         except Exception as e:
-            return e
+            raise ExchangeException(str(e))
 
     def get_perp_position(self, symbol):
         # OKX API protocol uses 'SWAP' as instType for perpetual contracts — keep literal.
@@ -77,13 +80,13 @@ class OkexClient:
         datas = self._send_request(url, method=HttpMmthod.GET.name, params=params)
         return datas
 
-    def get_ticker_24hr(self, inst_type='SPOT'):
+    def get_ticker_24hr(self, inst_type=InstCodeType.SPOT.name):
         params = {'instType': inst_type}
         url = OkexAuxiliary.url_ticker.value
         datas = self._send_request(url, method=HttpMmthod.GET.name, params=params, use_sign=False)
         return datas
 
-    def get_exchange_information(self, inst_type='SPOT'):
+    def get_exchange_information(self, inst_type=InstCodeType.SPOT.name):
         params = {'instType': inst_type}
         url = OkexAuxiliary.url_exchange.value
         datas = self._send_request(url, method=HttpMmthod.GET.name, params=params, use_sign=False)
@@ -153,7 +156,7 @@ class OkexClient:
         datas = self._send_request(url, method=HttpMmthod.GET.name, params=params, use_sign=True)
         return datas
 
-    def get_commission_rate(self, inst_type='SPOT', inst_id=None):
+    def get_commission_rate(self, inst_type=InstCodeType.SPOT.name, inst_id=None):
         """
         Get commission rate for an instrument.
         
@@ -174,19 +177,21 @@ class OkexClient:
             if result and isinstance(result, dict):
                 if result.get('code') == '0' and 'data' in result:
                     data_list = result['data']
+                    fee_data = None
                     if isinstance(data_list, list) and len(data_list) > 0:
                         fee_data = data_list[0]
-                        maker_rate = float(fee_data.get('maker', 0))
-                        taker_rate = float(fee_data.get('taker', 0))
-                        return {FeeStructureKey.maker.name: maker_rate, FeeStructureKey.taker.name: taker_rate}
                     elif isinstance(data_list, dict):
-                        maker_rate = float(data_list.get('maker', 0))
-                        taker_rate = float(data_list.get('taker', 0))
-                        return {FeeStructureKey.maker.name: maker_rate, FeeStructureKey.taker.name: taker_rate}
+                        fee_data = data_list
+                    if fee_data is not None:
+                        return {
+                            FeeStructureKey.maker.name: Decimal(str(fee_data.get('maker', 0))),
+                            FeeStructureKey.taker.name: Decimal(str(fee_data.get('taker', 0))),
+                        }
             return None
         except Exception as e:
             if self.logger:
-                self.logger.info(f"Failed to get commission rate from OKX for {inst_type}/{inst_id}: {e}")
+                # 静默降级路径，避免 info 触发 Slack/Lark 通知；上层调用方会拿到 None 自行处理。
+                self.logger.debug(f"Failed to get commission rate from OKX for {inst_type}/{inst_id}: {e}")
             return None
 
     def place_spot_market_order(self, inst_id, side, size, client_order_id=None):
