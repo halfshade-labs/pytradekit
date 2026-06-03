@@ -57,11 +57,13 @@ class OkexClient:
             elif method == HttpMmthod.POST.name:
                 resp = self.session.post(url, json=params, headers=headers)
             else:
-                return f'method {method} not support'
+                raise ExchangeException(f'method {method} not support')
             if resp.status_code != 200:
-                return f'http err:{resp.status_code} result:{resp.content}'
+                raise ExchangeException(f'http err:{resp.status_code} result:{resp.content}')
             result = resp.json()
             return result
+        except ExchangeException:
+            raise
         except Exception as e:
             raise ExchangeException(str(e))
 
