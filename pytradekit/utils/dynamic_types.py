@@ -34,6 +34,7 @@ class StrategyId:
     VENDOR = 'vendor'
     TRONMM = 'tronmm'
     GRID = 'GRID'
+    PERP = 'perp'
 
 
 class InstCodeType(Enum):
@@ -1319,6 +1320,9 @@ class BybitSwapRestful(Enum):
     cumRealisedPnl = auto()
     currency = auto()
     borrowCost = auto()
+    interest = auto()
+    tradeId = auto()
+    transactionId = auto()
 
 
 class GateSwapRestful(Enum):
