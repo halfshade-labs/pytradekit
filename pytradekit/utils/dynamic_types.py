@@ -1401,5 +1401,5 @@ class TradingProposalType(Enum):
 class PremiumStatus(Enum):
     open = auto()
     open_pending = auto()
-    close = auto()
+    closed = auto()
     close_pending = auto()
