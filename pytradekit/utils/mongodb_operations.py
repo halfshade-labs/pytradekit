@@ -454,6 +454,8 @@ class MongodbOperations:
     def insert_rank(self, data, exchange_id=None):
         if not exchange_id:
             exchange_id = InstCode.from_string(data['inst_code']).exchange_id
+        if isinstance(exchange_id, ExchangeId):
+            exchange_id = exchange_id.name
         collection_path = CollectionPath(db_name=Database.raw_market.name,
                                          collection_name=f'{exchange_id}_{Database.rank.name}')
         self.insert_data(data, collection_path)
@@ -583,6 +585,8 @@ class MongodbOperations:
     def read_inst_code_basic(self, inst_code=None, exchange_id=None):
         if not exchange_id:
             exchange_id = InstCode.from_string(inst_code).exchange_id
+        if isinstance(exchange_id, ExchangeId):
+            exchange_id = exchange_id.name
         params = {}
         if inst_code:
             if isinstance(inst_code, list):
@@ -1412,6 +1416,18 @@ class MongodbOperations:
         # asymmetry which made subsequent updates silently fail with `cannot encode object: Decimal`.
         update = {'$set': self.get_correct_dict(update_data)}
         self.client[Database.arbitrage.name][Database.trade_records.name].update_one(params, update)
+
+    def count_trade_records_by_status(self, status):
+        return self.client[Database.arbitrage.name][Database.trade_records.name].count_documents(
+            {TradeRecordAttribute.status.name: status})
+
+    def update_trade_records_status(self, old_status, new_status):
+        """Bulk-rewrite trade_records.status from old_status to new_status. Returns (matched, modified)."""
+        res = self.client[Database.arbitrage.name][Database.trade_records.name].update_many(
+            {TradeRecordAttribute.status.name: old_status},
+            {'$set': {TradeRecordAttribute.status.name: new_status}},
+        )
+        return res.matched_count, res.modified_count
 
     def read_trade_records(self, status=None, strategy_type=None, strategy_id=None, coin=None,
                            time_span=None, limit=0):
