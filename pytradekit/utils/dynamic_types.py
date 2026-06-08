@@ -24,6 +24,7 @@ class Api(Enum):
 
 class StrategyId:
     ALL = 'all'
+    JWJ = 'JWJ'
     JWJ_KLINE = 'jwj_kline'
     JWJ_VOLUME = 'jwj_volume'
     JWJ_DEPTH = 'jwj_depth'
@@ -35,6 +36,12 @@ class StrategyId:
     TRONMM = 'tronmm'
     GRID = 'GRID'
     PERP = 'perp'
+    MVID = 'mvid'
+    MVID_OFFICIAL = 'mvid_official'
+    MVID_TEST = 'mvid_test'
+    TUSDMM = 'TUSDMM'
+    PERP_HEDGE = 'perp_hedge'
+    TEST = 'test'
 
 
 class InstCodeType(Enum):
