@@ -50,7 +50,8 @@ class TimeConvert:
     HOUR_TO_MS = 60 * 60 * 1000
     HOUR_TO_S = 60 * 60
     DAY_TO_S = 60 * 60 * 24
-    DAT_TO_MS = 60 * 60 * 24 * 1000
+    DAY_TO_MS = 60 * 60 * 24 * 1000
+    DAT_TO_MS = DAY_TO_MS  # backward-compat alias for legacy typo
 
 
 class CronKey(Enum):
