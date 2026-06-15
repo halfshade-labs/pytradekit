@@ -13,7 +13,7 @@ from nacl.signing import SigningKey
 
 from pytradekit.utils import time_handler
 from pytradekit.utils.dynamic_types import HttpMmthod, RestfulRequestsAttribute, BinanceAuxiliary, BinanceRestful, InstCodeType
-from pytradekit.utils.exceptions import ExchangeException, MinNotionalException, InsufficientBalanceException
+from pytradekit.utils.exceptions import ExchangeException, MinNotionalException, LotSizeException, InsufficientBalanceException
 from pytradekit.utils.tools import async_retry_decorator
 from pytradekit.utils.static_types import FeeStructureKey
 
@@ -133,7 +133,20 @@ class BinanceClient:
             result = resp.json()
             if 'code' in result:
                 if result['code'] == -1013:
-                    return None, MinNotionalException.__name__
+                    # BN -1013 is a generic "Filter failure" covering several sub-types
+                    # (LOT_SIZE / MIN_NOTIONAL / PRICE_FILTER / ...); the specific one
+                    # is in `msg`. Blindly mapping all to MinNotionalException misled
+                    # callers (e.g. LOT_SIZE step misalignment retried as min-notional).
+                    msg = result.get('msg') or ''
+                    upper = msg.upper()
+                    if 'NOTIONAL' in upper:
+                        return None, MinNotionalException.__name__
+                    if 'LOT_SIZE' in upper:
+                        return None, LotSizeException.__name__
+                    # other -1013 filter failures: surface the raw msg instead of
+                    # mislabeling, so the actual filter is visible to the caller.
+                    self.logger.debug(f'BN -1013 filter failure (unclassified): {msg}')
+                    return None, f'BN -1013 filter failure: {msg}' if msg else 'BN -1013 filter failure'
                 if result['code'] == -2010:
                     return None, InsufficientBalanceException.__name__
             if resp.status_code != 200:
