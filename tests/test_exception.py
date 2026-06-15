@@ -1,5 +1,5 @@
 import pytest
-from pytradekit.utils.exceptions import JwjException, NoDataException, ExchangeException, DataTypeException
+from pytradekit.utils.exceptions import JwjException, NoDataException, ExchangeException, DataTypeException, MinNotionalException, LotSizeException
 
 
 def test_jwj_exception():
@@ -27,3 +27,18 @@ def test_data_type_exception():
         raise DataTypeException(note="Expected int but got str")
     assert str(excinfo.value) == "data type is not as except"
     assert excinfo.value.note == "Expected int but got str"
+
+
+def test_min_notional_exception():
+    with pytest.raises(MinNotionalException) as excinfo:
+        raise MinNotionalException(note="qty too small")
+    assert str(excinfo.value) == "trade amount below minimum notional value"
+    assert excinfo.value.note == "qty too small"
+
+
+def test_lot_size_exception():
+    with pytest.raises(LotSizeException) as excinfo:
+        raise LotSizeException(note="qty not aligned to step")
+    assert str(excinfo.value) == "order quantity not aligned to lot size step"
+    assert excinfo.value.note == "qty not aligned to step"
+    assert isinstance(excinfo.value, JwjException)
