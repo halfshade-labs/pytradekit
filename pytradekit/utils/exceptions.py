@@ -47,6 +47,12 @@ class MinNotionalException(JwjException):
         self.note = note
 
 
+class LotSizeException(JwjException):
+    def __init__(self, note=None):
+        super().__init__('order quantity not aligned to lot size step')
+        self.note = note
+
+
 class PlaceOrderException(JwjException):
     def __init__(self, note=None):
         super().__init__('place order exception')
