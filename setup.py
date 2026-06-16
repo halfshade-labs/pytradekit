@@ -22,5 +22,8 @@ setuptools.setup(
         "concurrent-log-handler",
         "pycryptodome",
         "PyNaCl",
+        "cryptography",
+        "pytz",
+        "httpx",
     ]
 )
