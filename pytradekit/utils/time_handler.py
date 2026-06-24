@@ -12,7 +12,6 @@ DATETIME_FORMAT_DAY = '%Y-%m-%d'
 DATETIME_FORMAT_DAY2 = '%Y-%m-%d 00:00:00'
 DATETIME_FORMAT_HOUR = '%Y-%m-%d %H:00:00'
 DATETIME_FORMAT_HMS = '%H-%M-%S'
-DATETIME_FORMAT_ADS = '%Y-%m-%dT%H:%M:%S'
 DATETIME_FORMAT_HB = '%Y-%m-%dT%H:%M:%S'
 DATETIME_FORMAT_OKEX = '%Y-%m-%d %H:%M:%S.%fZ'
 TIME_ZONE = pytz.timezone('UTC')
