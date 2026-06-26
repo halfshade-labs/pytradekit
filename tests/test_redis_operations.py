@@ -104,3 +104,43 @@ class TestGetTargetPremium:
             redis_ops,
             FailureSpec(client_attr="get", op_name="get_target_premium", op_args=("perp_sell_x",)),
         )
+
+
+class TestArbitrageThreshold:
+    def test_set_writes_value_and_expiry(self, redis_ops):
+        ops, client, _ = redis_ops
+        ops.set_arbitrage_threshold(Decimal("0.0042"))
+        client.set.assert_called_once_with("arbitrage_threshold", "0.0042")
+        client.expire.assert_called_once()
+        assert client.expire.call_args[0][0] == "arbitrage_threshold"
+
+    def test_get_returns_decimal_from_str_value(self, redis_ops):
+        ops, client, _ = redis_ops
+        client.get.return_value = "0.0042"
+        assert ops.get_arbitrage_threshold() == Decimal("0.0042")
+        client.get.assert_called_once_with("arbitrage_threshold")
+
+    def test_get_returns_none_when_key_missing(self, redis_ops):
+        ops, client, _ = redis_ops
+        client.get.return_value = None
+        assert ops.get_arbitrage_threshold() is None
+
+    def test_get_invalid_decimal_string_raises_data_type_exception(self, redis_ops):
+        ops, client, _ = redis_ops
+        client.get.return_value = "not-a-number"
+        with pytest.raises(DataTypeException):
+            ops.get_arbitrage_threshold()
+
+    def test_set_failure_wraps_as_dependency_exception(self, redis_ops):
+        ops, client, logger = redis_ops
+        original = Exception("boom")
+        client.set.side_effect = original
+        with pytest.raises(DependencyException) as exc_info:
+            ops.set_arbitrage_threshold(Decimal("0.0042"))
+        assert exc_info.value.__cause__ is original
+
+    def test_get_failure_wraps_as_dependency_exception(self, redis_ops):
+        assert_wraps_as_dependency_exception(
+            redis_ops,
+            FailureSpec(client_attr="get", op_name="get_arbitrage_threshold"),
+        )
