@@ -52,6 +52,7 @@ class Database(Enum):
     premium_snapshots = auto()
     funding_rate_history = auto()
     balance_pnl_snapshots = auto()
+    arbitrage_threshold = auto()
 
 
 class OrderAttribute(Enum):
