@@ -1366,6 +1366,7 @@ class RedisFields(Enum):
     portfolios = auto()
     premium = auto()
     order_link = auto()
+    arbitrage_threshold = auto()
 
 
 class DuplicateFields(Enum):

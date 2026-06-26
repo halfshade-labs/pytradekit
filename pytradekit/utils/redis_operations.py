@@ -19,6 +19,8 @@ ORDER_TICKER_EXPIRE_TIME = TimeConvert.MIN_TO_S * 30
 ORDERS_EXPIRE_TIME = TimeConvert.MIN_TO_S * 60
 PREMIUM_EXPIRE_TIME = TimeConvert.MIN_TO_S * 60 * 24 * 30
 ORDER_LINK_EXPIRE_TIME = TimeConvert.DAY_TO_S
+# Daily threshold; TTL > 24h so a single missed analyzer run does not drop it
+ARBITRAGE_THRESHOLD_EXPIRE_TIME = TimeConvert.DAY_TO_S * 2
 TIMEOUT_SECOND = 5
 
 
@@ -347,6 +349,40 @@ class RedisOperations:
         except InvalidOperation as e:
             self.logger.debug(f"Invalid premium value for {order_id}: {value!r}", exc_info=True)
             raise DataTypeException(f"Invalid premium value for {order_id}: {value!r}") from e
+
+    def set_arbitrage_threshold(self, value):
+        """Store the global arbitrage premium threshold (single key, no identifier).
+
+        Written daily by the premium analyzer and read by realtime_compute_premium.
+        """
+        key = RedisFields.arbitrage_threshold.name
+        lock = self.get_lock_for_resource(key)
+        try:
+            with lock:
+                self.client.set(key, str(value))
+                self.client.expire(key, ARBITRAGE_THRESHOLD_EXPIRE_TIME)
+        except Exception as e:
+            self.logger.exception(f"Failed to set arbitrage threshold: {e}")
+            raise DependencyException("Failed to set arbitrage threshold") from e
+
+    def get_arbitrage_threshold(self):
+        """Return the global arbitrage premium threshold as Decimal, or None if unset."""
+        key = RedisFields.arbitrage_threshold.name
+        lock = self.get_lock_for_resource(key)
+        try:
+            with lock:
+                value = self.client.get(key)
+        except Exception as e:
+            self.logger.debug(f"Failed to get arbitrage threshold: {e}", exc_info=True)
+            raise DependencyException("Failed to get arbitrage threshold") from e
+
+        if value is None:
+            return None
+        try:
+            return Decimal(value)
+        except InvalidOperation as e:
+            self.logger.debug(f"Invalid arbitrage threshold value: {value!r}", exc_info=True)
+            raise DataTypeException(f"Invalid arbitrage threshold value: {value!r}") from e
 
     def ping(self):
         """Verify the Redis connection is alive. Raises DependencyException on failure."""
