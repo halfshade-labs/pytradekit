@@ -64,6 +64,27 @@ def test_bn_1013_other_filter_surfaces_raw_msg():
     assert err not in (MinNotionalException.__name__, LotSizeException.__name__)
 
 
+def test_get_perp_user_trades_builds_params():
+    client = _make_client()
+    captured = {}
+
+    def fake_make_private_url(url_path, params, **kwargs):
+        captured["url_path"] = url_path
+        captured["params"] = dict(params)
+        return f"https://fapi.binance.com{url_path}", params, 0
+
+    client._make_private_url = fake_make_private_url
+    client.request = Mock(return_value=[{"commission": "0.13", "commissionAsset": "USDT"}])
+
+    out = client.get_perp_user_trades("ZECUSDT", order_id=123, limit=50)
+
+    assert captured["url_path"] == "/fapi/v1/userTrades"
+    assert captured["params"]["symbol"] == "ZECUSDT"
+    assert captured["params"]["orderId"] == 123
+    assert captured["params"]["limit"] == 50
+    assert out[0]["commissionAsset"] == "USDT"
+
+
 def test_bn_success_passthrough():
     client = _make_client()
     payload = {"orderId": 123, "status": "FILLED"}
