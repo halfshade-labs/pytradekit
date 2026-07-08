@@ -447,6 +447,25 @@ class BinanceClient:
         datas = self.request(HttpMmthod.GET.name, url, params=params)
         return datas
 
+    def get_perp_user_trades(self, symbol, order_id=None, start_time=None, end_time=None, limit=None):
+        """Account trade list (/fapi/v1/userTrades): per-fill records including
+        `commission` / `commissionAsset`, which allOrders does not return."""
+        params = {}
+        params['symbol'] = symbol
+        if order_id:
+            params['orderId'] = order_id
+        if limit:
+            params['limit'] = limit
+        if start_time:
+            params['startTime'] = start_time
+        if end_time:
+            params['endTime'] = end_time
+
+        url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_perp_user_trades.value,
+                                                params=params)
+        datas = self.request(HttpMmthod.GET.name, url, params=params)
+        return datas
+
     def get_perp_force_order(self, symbol, limit=None, start_time=None, end_time=None):
         params = {}
         params['symbol'] = symbol
