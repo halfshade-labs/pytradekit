@@ -914,6 +914,7 @@ class BinanceAuxiliary(Enum):
     url_perp_last_funding_rate_info = "/fapi/v1/fundingInfo"
     url_perp_ticker_price = '/fapi/v2/ticker/price'
     url_perp_all_order = '/fapi/v1/allOrders'
+    url_perp_kline = '/fapi/v1/klines'
     url_perp_user_trades = '/fapi/v1/userTrades'
     url_perp_force_order = '/fapi/v1/forceOrders'
     url_perp_position_risk = '/fapi/v3/positionRisk'
