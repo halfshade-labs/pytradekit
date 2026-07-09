@@ -447,6 +447,25 @@ class BinanceClient:
         datas = self.request(HttpMmthod.GET.name, url, params=params)
         return datas
 
+    def get_perp_klines(self, symbol, interval, start_time=None, end_time=None, limit=None):
+        """Public perp klines (/fapi/v1/klines). Times are epoch milliseconds.
+
+        Same payload shape as spot get_klines: list of
+        [openTime, open, high, low, close, volume, closeTime, ...].
+        """
+        params = {RestfulRequestsAttribute.symbol.name: symbol,
+                  RestfulRequestsAttribute.interval.name: interval}
+        if start_time:
+            params[RestfulRequestsAttribute.startTime.name] = start_time
+        if end_time:
+            params[RestfulRequestsAttribute.endTime.name] = end_time
+        if limit:
+            params['limit'] = limit
+        url = self._make_public_url(url_path=BinanceAuxiliary.url_perp_kline.value,
+                                    params=params)
+        datas = self.request(HttpMmthod.GET.name, url, params=params, use_sign=False)
+        return datas
+
     def get_perp_user_trades(self, symbol, order_id=None, start_time=None, end_time=None, limit=None):
         """Account trade list (/fapi/v1/userTrades): per-fill records including
         `commission` / `commissionAsset`, which allOrders does not return."""
