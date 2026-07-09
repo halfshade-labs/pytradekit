@@ -85,6 +85,31 @@ def test_get_perp_user_trades_builds_params():
     assert out[0]["commissionAsset"] == "USDT"
 
 
+def test_get_perp_klines_builds_public_url():
+    client = _make_client()
+    client._url = "https://fapi.binance.com"
+    captured = {}
+
+    def fake_request(method, url, params=None, use_sign=True):
+        captured["method"] = method
+        captured["url"] = url
+        captured["params"] = dict(params or {})
+        captured["use_sign"] = use_sign
+        return [[1700000000000, "1.0", "1.1", "0.9", "1.05", "100", 1700028799999]]
+
+    client.request = fake_request
+
+    out = client.get_perp_klines("ZECUSDT", "8h", start_time=1700000000000, limit=1000)
+
+    assert "/fapi/v1/klines" in captured["url"]
+    assert captured["params"]["symbol"] == "ZECUSDT"
+    assert captured["params"]["interval"] == "8h"
+    assert captured["params"]["startTime"] == 1700000000000
+    assert captured["params"]["limit"] == 1000
+    assert captured["use_sign"] is False
+    assert out[0][4] == "1.05"
+
+
 def test_bn_success_passthrough():
     client = _make_client()
     payload = {"orderId": 123, "status": "FILLED"}
