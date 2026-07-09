@@ -391,7 +391,10 @@ class BinanceClient:
             params['limit'] = limit
         url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_perp_funding_rate.value,
                                                 params=params, use_sign=False)
-        datas = self.request(HttpMmthod.GET.name, url, use_sign=False)
+        # _make_private_url does NOT embed the query in the URL — dropping
+        # params here silently ignored symbol/limit/startTime and the API
+        # returned the global latest-100 rows for every request.
+        datas = self.request(HttpMmthod.GET.name, url, params=params, use_sign=False)
         return datas
 
     def get_perp_last_funding_rate(self, symbol=None):
@@ -416,7 +419,7 @@ class BinanceClient:
             params['symbol'] = symbol
         url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_perp_ticker_price.value,
                                                 params=params, use_sign=False)
-        datas = self.request(HttpMmthod.GET.name, url, use_sign=False)
+        datas = self.request(HttpMmthod.GET.name, url, params=params, use_sign=False)
         return datas
 
     def get_perp_open_interes_hist(self, symbol, period, limit=None, start_time=None, end_time=None):
