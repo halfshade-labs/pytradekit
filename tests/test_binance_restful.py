@@ -113,6 +113,42 @@ def test_get_perp_klines_builds_public_url():
     assert out[0][4] == "1.05"
 
 
+def test_get_perp_funding_rate_sends_filter_params():
+    client = _make_client()
+    client._url = "https://fapi.binance.com"
+    client.get_timestamp = lambda: 0
+    captured = {}
+
+    def fake_request(method, url, params=None, use_sign=True):
+        captured["params"] = dict(params or {})
+        return []
+
+    client.request = fake_request
+    client.get_perp_funding_rate(symbol="ZECUSDT", start_time=123, end_time=456, limit=1000)
+
+    # _make_private_url keeps the query OUT of the url; params must be passed
+    # through or the API silently returns the global latest-100 rows.
+    assert captured["params"]["symbol"] == "ZECUSDT"
+    assert captured["params"]["startTime"] == 123
+    assert captured["params"]["endTime"] == 456
+    assert captured["params"]["limit"] == 1000
+
+
+def test_get_perp_ticker_price_sends_symbol_param():
+    client = _make_client()
+    client._url = "https://fapi.binance.com"
+    client.get_timestamp = lambda: 0
+    captured = {}
+
+    def fake_request(method, url, params=None, use_sign=True):
+        captured["params"] = dict(params or {})
+        return {}
+
+    client.request = fake_request
+    client.get_perp_ticker_price(symbol="ZECUSDT")
+    assert captured["params"]["symbol"] == "ZECUSDT"
+
+
 def test_get_klines_does_not_duplicate_query_params():
     client = _make_client()
     client._url = "https://api.binance.com"
