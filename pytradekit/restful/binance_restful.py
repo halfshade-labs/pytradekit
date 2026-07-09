@@ -285,9 +285,12 @@ class BinanceClient:
             params[RestfulRequestsAttribute.startTime.name] = from_date * 1000
         if to_date:
             params[RestfulRequestsAttribute.endTime.name] = to_date * 1000
+        # Query params are already encoded into the URL by _make_public_url;
+        # passing them again makes requests duplicate them and spot /api/v3
+        # rejects with -1101 "Duplicate values for parameter".
         url = self._make_public_url(url_path=BinanceAuxiliary.url_kline.value,
                                     params=params)
-        datas = self.request(HttpMmthod.GET.name, url, params=params)
+        datas = self.request(HttpMmthod.GET.name, url, use_sign=False)
         return datas
 
     def get_balances(self):
@@ -463,7 +466,7 @@ class BinanceClient:
             params['limit'] = limit
         url = self._make_public_url(url_path=BinanceAuxiliary.url_perp_kline.value,
                                     params=params)
-        datas = self.request(HttpMmthod.GET.name, url, params=params, use_sign=False)
+        datas = self.request(HttpMmthod.GET.name, url, use_sign=False)
         return datas
 
     def get_perp_user_trades(self, symbol, order_id=None, start_time=None, end_time=None, limit=None):
