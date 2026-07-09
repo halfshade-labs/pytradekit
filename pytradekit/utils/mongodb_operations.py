@@ -1457,6 +1457,32 @@ class MongodbOperations:
         res = self.client[Database.arbitrage.name][Database.trade_records.name].find_one(params)
         return res
 
+    # ====== Shadow Trades (paper trading ledger) ======
+
+    def insert_shadow_trade(self, data):
+        collection_path = CollectionPath(db_name=Database.arbitrage.name,
+                                         collection_name=Database.shadow_trades.name)
+        if isinstance(data, dict) and 'shadow_id' in data:
+            data["_id"] = data['shadow_id']
+        self.insert_data(data, collection_path)
+
+    def update_shadow_trade(self, shadow_id, update_data):
+        update = {'$set': self.get_correct_dict(update_data)}
+        self.client[Database.arbitrage.name][Database.shadow_trades.name].update_one(
+            {'shadow_id': shadow_id}, update)
+
+    def read_shadow_trades(self, status=None, time_span=None, limit=0):
+        params = {}
+        if status:
+            params['status'] = status
+        if time_span:
+            params['entry_time_ms'] = {"$gte": time_span.start, "$lte": time_span.end}
+        cursor = self.client[Database.arbitrage.name][Database.shadow_trades.name].find(
+            params).sort('entry_time_ms', -1)
+        if limit:
+            cursor = cursor.limit(limit)
+        return list(cursor)
+
     # ====== Premium Snapshots ======
 
     def insert_premium_snapshot(self, data):

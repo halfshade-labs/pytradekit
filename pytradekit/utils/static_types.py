@@ -50,6 +50,7 @@ class Database(Enum):
     arbitrage = auto()
     trade_records = auto()
     premium_snapshots = auto()
+    shadow_trades = auto()
     funding_rate_history = auto()
     balance_pnl_snapshots = auto()
     arbitrage_threshold = auto()
