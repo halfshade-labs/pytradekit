@@ -215,3 +215,45 @@ class TestRecvWindow:
         client, _ = self._client_with_capture()
         _, params, _ = client._make_private_url("/api/v3/exchangeInfo", {}, use_sign=False)
         assert 'recvWindow' not in params
+
+
+class TestCancelOrderWiring:
+    """Live probe on 2026-07-10 caught -2014 on every async cancel:
+    http_client was passed positionally into use_sign, dropping the
+    X-MBX-APIKEY header; and the inherited perp cancel hit the spot
+    path against the fapi base. Same bug family as #87/#88."""
+
+    def _wire(self, client):
+        client._url = "https://example"
+        client._hashing = lambda payload: "sig"
+        captured = {}
+
+        async def fake_async_request(method, url, use_sign=True, http_client=None, params=None):
+            captured.update(method=method, url=url, use_sign=use_sign, params=params)
+            return {"status": "CANCELED"}, None
+
+        client.async_request = fake_async_request
+        return captured
+
+    def test_spot_cancel_keeps_api_key_header(self):
+        client = _make_client()
+        captured = self._wire(client)
+        asyncio.new_event_loop().run_until_complete(
+            client.cancel_order("BTCUSDT", client_order_id="cid-1")
+        )
+        assert captured['use_sign'] is True
+        assert captured['method'] == 'DELETE'
+        assert '/api/v3/order' in captured['url']
+
+    def test_perp_cancel_uses_fapi_path(self):
+        from pytradekit.restful.binance_restful import BinancePerpClient
+        client = BinancePerpClient.__new__(BinancePerpClient)
+        client.logger = Mock()
+        client.api_key = "k"
+        captured = self._wire(client)
+        asyncio.new_event_loop().run_until_complete(
+            client.cancel_order("DOGEUSDT", order_id=123)
+        )
+        assert captured['use_sign'] is True
+        assert '/fapi/v1/order' in captured['url']
+        assert captured['params']['orderId'] == 123
