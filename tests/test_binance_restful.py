@@ -175,3 +175,43 @@ def test_bn_success_passthrough():
     data, err = _run_request(client)
     assert err is None
     assert data == payload
+
+
+class TestRecvWindow:
+    """Signed requests must carry recvWindow inside the signed payload;
+    unsigned requests must not (BN rejects unknown params on some public
+    endpoints and the constant was previously dead code — requests ran on
+    the 5000ms server default and died with -1021 under latency spikes)."""
+
+    def _client_with_capture(self):
+        client = BinanceClient.__new__(BinanceClient)
+        client.logger = Mock()
+        client._url = "https://api.binance.com"
+        captured = {}
+
+        def fake_hashing(payload):
+            captured['payload'] = payload
+            return "sig"
+
+        client._hashing = fake_hashing
+        return client, captured
+
+    def test_signed_request_includes_recv_window_in_payload(self):
+        from pytradekit.restful.binance_restful import RECVWINDOW
+        client, captured = self._client_with_capture()
+        _, params, _ = client._make_private_url("/api/v3/order", {"symbol": "BTCUSDT"})
+        assert params['recvWindow'] == RECVWINDOW
+        assert f"recvWindow={RECVWINDOW}" in captured['payload']
+        # signature computed over payload that already contains recvWindow
+        assert captured['payload'].index('recvWindow') < captured['payload'].index('timestamp')
+
+    def test_caller_override_is_respected(self):
+        client, captured = self._client_with_capture()
+        _, params, _ = client._make_private_url("/api/v3/order", {"recvWindow": 3000})
+        assert params['recvWindow'] == 3000
+        assert "recvWindow=3000" in captured['payload']
+
+    def test_unsigned_request_has_no_recv_window(self):
+        client, _ = self._client_with_capture()
+        _, params, _ = client._make_private_url("/api/v3/exchangeInfo", {}, use_sign=False)
+        assert 'recvWindow' not in params

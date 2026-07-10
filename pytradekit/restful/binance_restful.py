@@ -17,7 +17,10 @@ from pytradekit.utils.exceptions import ExchangeException, MinNotionalException,
 from pytradekit.utils.tools import async_retry_decorator
 from pytradekit.utils.static_types import FeeStructureKey
 
-RECVWINDOW = 6000
+# Signed-request validity window. BN's server default is 5000ms; incident-time
+# latency spikes (retry storms, event-loop congestion) pushed requests past it
+# and hedge orders died with -1021 while positions sat unprotected (CEA #447).
+RECVWINDOW = 10000
 RETRY_TIMES = 10
 RETRY_INTERVAL = 5
 
@@ -197,6 +200,10 @@ class BinanceClient:
 
     def _make_private_url(self, url_path, params, use_sign=True, timestamp=True):
         timestamp1 = self.get_timestamp()
+        if use_sign:
+            # recvWindow must be part of the signed payload; setdefault keeps
+            # per-request overrides possible.
+            params.setdefault('recvWindow', RECVWINDOW)
         params['timestamp'] = timestamp1
         payload = '&'.join([f'{param}={value}' for param, value in params.items()])
         if use_sign:
