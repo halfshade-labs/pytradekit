@@ -640,10 +640,17 @@ class BinanceClient:
             params['orderId'] = order_id
         if client_order_id:
             params['origClientOrderId'] = client_order_id
-        url, params, timestamp = self._make_private_url(url_path=BinanceAuxiliary.url_order.value,
+        url, params, timestamp = self._make_private_url(url_path=self._cancel_order_path(),
                                                         params=params)
-        datas, err = await self.async_request(HttpMmthod.DELETE.name, url, http_client, params=params)
+        # http_client must be passed by keyword: positionally it lands in
+        # use_sign, dropping the X-MBX-APIKEY header (-2014 on every cancel).
+        datas, err = await self.async_request(HttpMmthod.DELETE.name, url,
+                                              http_client=http_client, params=params)
         return datas, err, timestamp
+
+    @staticmethod
+    def _cancel_order_path():
+        return BinanceAuxiliary.url_order.value
 
     def restful_place_market_order(self, symbol, client_order_id, side, volume):
         params = {'symbol': symbol, 'side': side, 'type': 'MARKET',
@@ -745,6 +752,12 @@ class BinancePerpClient(BinanceClient):
     def __init__(self, logger, key=None, secret=None, passphrase=None, account_id=None):
         super().__init__(logger, key, secret, passphrase, account_id)
         self._url = BinanceAuxiliary.perp_url.value
+
+    @staticmethod
+    def _cancel_order_path():
+        # Inherited cancel_order previously hit the spot path (/api/v3/order)
+        # against the fapi base URL — every perp cancel was doomed.
+        return BinanceAuxiliary.url_perp_order.value
 
     def set_leverage(self, symbol, leverage):
         """
