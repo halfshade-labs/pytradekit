@@ -871,6 +871,38 @@ class OrderSide(Enum):
     sell = 'S'
 
 
+class BinanceOrderSide(Enum):
+    """Binance API wire values for order side.
+
+    Distinct from :class:`OrderSide` ('B'/'S'), which is the internal
+    storage format — these values go into request params / come back in
+    API responses and must match Binance exactly.
+    """
+    BUY = 'BUY'
+    SELL = 'SELL'
+
+
+class BinanceOrderType(Enum):
+    """Binance API wire values for order type (request param ``type``)."""
+    MARKET = 'MARKET'
+    LIMIT = 'LIMIT'
+    LIMIT_MAKER = 'LIMIT_MAKER'
+
+
+class BinanceOrderStatus(Enum):
+    """Binance API wire values for order status (response field ``status``).
+
+    Distinct from :class:`OrderStatus` ('FULLY_FILLED'/'CANCELLED' —
+    note the double L), which is the internal storage format.
+    """
+    NEW = 'NEW'
+    PARTIALLY_FILLED = 'PARTIALLY_FILLED'
+    FILLED = 'FILLED'
+    CANCELED = 'CANCELED'
+    REJECTED = 'REJECTED'
+    EXPIRED = 'EXPIRED'
+
+
 class WebsocketStatus(Enum):
     ACTIVE = auto()
     SUSPENDED = auto()
