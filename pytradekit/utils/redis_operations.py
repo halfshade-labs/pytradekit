@@ -19,6 +19,9 @@ ORDER_TICKER_EXPIRE_TIME = TimeConvert.MIN_TO_S * 30
 ORDERS_EXPIRE_TIME = TimeConvert.MIN_TO_S * 60
 PREMIUM_EXPIRE_TIME = TimeConvert.MIN_TO_S * 60 * 24 * 30
 ORDER_LINK_EXPIRE_TIME = TimeConvert.DAY_TO_S
+# Merged portfolios snapshot for close-side premium checks; per-tick freshness
+# is validated by the reader, TTL only prevents an eternally stale key.
+PORTFOLIOS_EXPIRE_TIME = TimeConvert.MIN_TO_S * 60
 # Daily threshold; TTL > 24h so a single missed analyzer run does not drop it
 ARBITRAGE_THRESHOLD_EXPIRE_TIME = TimeConvert.DAY_TO_S * 2
 TIMEOUT_SECOND = 5
@@ -286,13 +289,34 @@ class RedisOperations:
             raise DependencyException(f"Failed to set depth_order_theoretical for {key}") from e
 
     def set_portfolios(self, value):
+        """Merge `value` ({symbol: data}) into the stored portfolios snapshot and
+        publish only the delta.
+
+        The stored key is read by close-side services to evaluate the premium
+        close condition across ALL open positions, so it must accumulate
+        symbols: a plain SET left only the last signalled symbol in the key,
+        silently disabling premium-based closes for every other position
+        (cross_exchange_arbitrage#472). Pub/sub subscribers (arbitrage_executor)
+        still receive just the per-signal delta. The key expires after
+        PORTFOLIOS_EXPIRE_TIME so a quiet market cannot serve an arbitrarily
+        old snapshot forever; per-tick freshness (ts_ms/local_ts) is the
+        reader's responsibility.
+        """
         key = f"{RedisFields.portfolios.name}"
         lock = self.get_lock_for_resource(key)
         try:
             with lock:
-                serialized = json.dumps(value, cls=_DecimalEncoder)
-                self.client.set(key, serialized)
-                self.client.publish(key, serialized)
+                existing_raw = self.client.get(key)
+                try:
+                    merged = json.loads(existing_raw) if existing_raw else {}
+                except (TypeError, ValueError):
+                    merged = {}
+                if not isinstance(merged, dict):
+                    merged = {}
+                merged.update(value)
+                self.client.set(key, json.dumps(merged, cls=_DecimalEncoder))
+                self.client.expire(key, PORTFOLIOS_EXPIRE_TIME)
+                self.client.publish(key, json.dumps(value, cls=_DecimalEncoder))
         except Exception as e:
             self.logger.exception(f"Failed to set portfolios for {key}: {e}")
             raise DependencyException(f"Failed to set portfolios for {key}") from e
