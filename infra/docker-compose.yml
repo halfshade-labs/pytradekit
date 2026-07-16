@@ -2,11 +2,12 @@ version: '3.8'
 
 services:
   mongodb:
-    image: mongo:4.4
+    image: mongo:8.0@sha256:ffa440e8d62533e24a67696ae1bbb46e610ebb3167d65abd122b496ae06d28e6
     container_name: infra_mongodb
     restart: unless-stopped
     volumes:
-      - mongodb_data:/data/db
+      - mongodb_data_v8:/data/db
+      - /etc/codex/secrets/mongodb-health.env:/run/secrets/mongodb-health.env:ro
     networks:
       - infra_network
     ports:
@@ -14,6 +15,20 @@ services:
     environment:
       - MONGO_INITDB_ROOT_USERNAME=${MONGO_USERNAME}
       - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD}
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          . /run/secrets/mongodb-health.env &&
+          mongosh --quiet
+          --username "$$MONGO_HEALTH_USERNAME"
+          --password "$$MONGO_HEALTH_PASSWORD"
+          --authenticationDatabase admin
+          --eval 'var status=db.getSiblingDB("admin").runCommand({connectionStatus:1}); if(status.ok!==1 || !status.authInfo || status.authInfo.authenticatedUsers.length<1){quit(1);} if(!db.getSiblingDB("arbitrage").getCollection("arbitrage_threshold").find({}, {_id:1}).limit(1).hasNext()){quit(2);} quit(0);'
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
 
   redis:
     image: redis:7.2.1
@@ -33,6 +48,7 @@ networks:
     name: infra_network
 
 volumes:
-  mongodb_data:
+  mongodb_data_v8:
+    external: true
+    name: infra_mongodb_data_v8
   redis_data:
-
