@@ -106,6 +106,46 @@ class TestGetTargetPremium:
         )
 
 
+class TestSetPortfolios:
+    """CEA#472: the stored key must accumulate symbols (merge), publish only the
+    delta, and carry a TTL so a quiet market cannot serve an eternal snapshot."""
+
+    def test_merges_into_existing_snapshot(self, redis_ops):
+        import json
+        from pytradekit.utils.redis_operations import PORTFOLIOS_EXPIRE_TIME
+        ops, client, _ = redis_ops
+        client.get.return_value = json.dumps({"BTCUSDT": {"short": {"ask": "1"}}})
+
+        ops.set_portfolios({"REUSDT": {"short": {"ask": "2"}}})
+
+        stored = json.loads(client.set.call_args.args[1])
+        assert set(stored) == {"BTCUSDT", "REUSDT"}
+        published = json.loads(client.publish.call_args.args[1])
+        assert set(published) == {"REUSDT"}
+        client.expire.assert_called_once()
+        assert client.expire.call_args.args[1] == PORTFOLIOS_EXPIRE_TIME
+
+    def test_new_value_overwrites_same_symbol(self, redis_ops):
+        import json
+        ops, client, _ = redis_ops
+        client.get.return_value = json.dumps({"REUSDT": {"short": {"ask": "1"}}})
+
+        ops.set_portfolios({"REUSDT": {"short": {"ask": "9"}}})
+
+        stored = json.loads(client.set.call_args.args[1])
+        assert stored["REUSDT"]["short"]["ask"] == "9"
+
+    def test_corrupt_or_missing_existing_starts_fresh(self, redis_ops):
+        import json
+        ops, client, _ = redis_ops
+        client.get.return_value = "not-json"
+
+        ops.set_portfolios({"REUSDT": {"short": {"ask": "2"}}})
+
+        stored = json.loads(client.set.call_args.args[1])
+        assert set(stored) == {"REUSDT"}
+
+
 class TestArbitrageThreshold:
     def test_set_writes_value_and_expiry(self, redis_ops):
         ops, client, _ = redis_ops
