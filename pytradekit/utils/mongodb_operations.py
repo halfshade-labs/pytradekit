@@ -118,22 +118,24 @@ class MongodbOperations:
         )
 
     def get_correct_dict(self, a_dict) -> dict:
-        new_dict = {}
-        for key1, val1 in a_dict.items():
-            if isinstance(val1, dict):
-                val1 = self.get_correct_dict(val1)
-            if isinstance(val1, np.bool_):
-                val1 = bool(val1)
-            if isinstance(val1, np.int64):
-                val1 = int(val1)
-            if isinstance(val1, np.float64):
-                val1 = float(val1)
-            if isinstance(val1, Decimal):
-                val1 = str(val1)
-            if isinstance(val1, pd.Timedelta):
-                val1 = str(val1)
-            new_dict[key1] = val1
-        return new_dict
+        return {key1: self.get_correct_value(val1) for key1, val1 in a_dict.items()}
+
+    def get_correct_value(self, value):
+        if isinstance(value, dict):
+            return self.get_correct_dict(value)
+        if isinstance(value, (list, tuple)):
+            return [self.get_correct_value(item) for item in value]
+        if isinstance(value, np.bool_):
+            return bool(value)
+        if isinstance(value, np.int64):
+            return int(value)
+        if isinstance(value, np.float64):
+            return float(value)
+        if isinstance(value, Decimal):
+            return str(value)
+        if isinstance(value, pd.Timedelta):
+            return str(value)
+        return value
 
     def log_duplicates(self, df, subset, message):
         duplicate_rows = df[df.duplicated(subset=subset, keep=False)]

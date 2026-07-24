@@ -98,6 +98,40 @@ class TestUpdateTradeRecordStripsDecimal:
         # Non-decimal values pass through unchanged
         assert sent_update['$set']['status'] == 'open'
 
+    def test_decimal_inside_list_converted(self, mocker):
+        """get_correct_dict previously only recursed into dicts; Decimal values nested
+        inside lists (e.g. ArbitragePoolsReport.report = list[pool dict]) reached
+        pymongo unconverted and raised `cannot encode object: Decimal(...)`."""
+        ops, mocked_client = self._make_ops(mocker)
+        report_document = {
+            'day': '2026-07-20',
+            'report': [
+                {
+                    'coin': 'BTC',
+                    'short_leg': {
+                        'inst_code': str(InstCode.from_string('BTC-USDT_BN.PERP')),
+                        'price': Decimal('64609.3'),
+                    },
+                    'long_legs': [
+                        {
+                            'inst_code': str(InstCode.from_string('BTC-USDT_OKX.SPOT')),
+                            'price': Decimal('64605.1'),
+                        },
+                    ],
+                },
+            ],
+        }
+        converted = ops.get_correct_dict(report_document)
+        pool = converted['report'][0]
+        assert pool['short_leg']['price'] == '64609.3'
+        assert pool['long_legs'][0]['price'] == '64605.1'
+        assert converted['day'] == '2026-07-20'
+
+    def test_tuple_converted_to_list_with_decimals(self, mocker):
+        ops, _ = self._make_ops(mocker)
+        converted = ops.get_correct_dict({'prices': (Decimal('1.5'), Decimal('2.5'))})
+        assert converted['prices'] == ['1.5', '2.5']
+
     def test_nested_decimal_in_long_leg_converted(self, mocker):
         ops, mocked_client = self._make_ops(mocker)
         # inst_code 通过 InstCode 类构造而非裸字符串，遵守 CLAUDE.md
