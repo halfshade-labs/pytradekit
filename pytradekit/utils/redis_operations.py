@@ -134,7 +134,7 @@ class RedisOperations:
                 self.client.zadd(key, {json.dumps(value): timestamp})
                 self.client.expire(key, ORDERS_EXPIRE_TIME)
                 self.client.publish(key, json.dumps(value))
-        except DependencyException as e:
+        except Exception as e:
             self.logger.exception(f"Failed to set trades for : {e}")
             raise DependencyException("Failed to set trades for ") from e
 
@@ -239,7 +239,10 @@ class RedisOperations:
         lock = self.get_lock_for_resource(key)
         try:
             with lock:
-                return json.loads(self.client.get(key))
+                raw = self.client.get(key)
+                if raw is None:
+                    return None
+                return json.loads(raw)
         except Exception as e:
             self.logger.exception(f"Failed to get book ticker for {exchange_id}: {e}")
             raise DependencyException(f"Failed to get book ticker for {exchange_id}") from e
@@ -339,8 +342,9 @@ class RedisOperations:
         lock = self.get_lock_for_resource(key)
         try:
             with lock:
-                value = self.client.get(key)
-                return value.decode() if isinstance(value, bytes) else value
+                # client is created with decode_responses=True, so get() already
+                # returns str (or None); no bytes decoding needed.
+                return self.client.get(key)
         except Exception as e:
             self.logger.exception(f"Failed to get order link for {spot_client_order_id}: {e}")
             raise DependencyException(f"Failed to get order link for {spot_client_order_id}") from e
