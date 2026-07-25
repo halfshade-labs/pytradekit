@@ -184,3 +184,49 @@ class TestArbitrageThreshold:
             redis_ops,
             FailureSpec(client_attr="get", op_name="get_arbitrage_threshold"),
         )
+
+
+class TestSetPublishTrades:
+    """#97: the except clause caught DependencyException, which the client's
+    zadd/expire/publish calls never raise, so real client errors escaped
+    uncaught instead of being wrapped like every other method in the module."""
+
+    def test_client_error_wraps_as_dependency_exception(self, redis_ops):
+        ops, client, _ = redis_ops
+        original = Exception("connection reset")
+        client.zadd.side_effect = original
+        with pytest.raises(DependencyException) as exc_info:
+            ops.set_publish_trades({"BTCUSDT": {"side": "B"}}, 1700000000000)
+        assert exc_info.value.__cause__ is original
+
+
+class TestGetNewBookTicker:
+    """#98: json.loads was called on the raw get() result without a null check,
+    so a normal cache miss (get -> None) raised inside json.loads and surfaced
+    as a false DependencyException instead of a plain None."""
+
+    def test_returns_none_on_cache_miss(self, redis_ops):
+        ops, client, _ = redis_ops
+        client.get.return_value = None
+        assert ops.get_new_book_ticker("BN") is None
+
+    def test_parses_value_when_present(self, redis_ops):
+        import json
+        ops, client, _ = redis_ops
+        client.get.return_value = json.dumps({"bid": "1", "ask": "2"})
+        assert ops.get_new_book_ticker("BN") == {"bid": "1", "ask": "2"}
+
+
+class TestGetOrderLink:
+    """#99: decode_responses=True means get() already returns str/None, so the
+    isinstance(value, bytes) branch was dead code."""
+
+    def test_returns_str_value(self, redis_ops):
+        ops, client, _ = redis_ops
+        client.get.return_value = "perp_abc123"
+        assert ops.get_order_link("spot_xyz") == "perp_abc123"
+
+    def test_returns_none_when_missing(self, redis_ops):
+        ops, client, _ = redis_ops
+        client.get.return_value = None
+        assert ops.get_order_link("spot_xyz") is None
