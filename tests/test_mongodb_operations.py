@@ -1,5 +1,7 @@
 from decimal import Decimal
 
+import pytest
+
 from pytradekit.utils.custom_types import InstCode
 from pytradekit.utils.mongodb_operations import MongodbOperations
 
@@ -148,3 +150,53 @@ class TestUpdateTradeRecordStripsDecimal:
         ops.update_trade_record('perp_sell_xxx', update_data)
         sent_update = mocked_client['arbitrage']['trade_records'].update_one.call_args[0][1]
         assert sent_update['$set']['legs']['LONG_LEG']['position_size'] == '0.57500000'
+
+
+class TestDeleteInstCodeBasicGuard:
+    """#110: a falsy inst_code made query == {}, so delete_many wiped the entire
+    {exchange_id}_inst_code_basic collection. The guard must refuse and never
+    issue a delete_many({})."""
+
+    def _make_ops(self, mocker):
+        MongodbOperations._client = None
+        MongodbOperations._indexes_ensured = False
+        mocked_client = mocker.MagicMock()
+        mocker.patch('pytradekit.utils.mongodb_operations.MongoClient', return_value=mocked_client)
+        mocker.patch.object(MongodbOperations, '_ensure_indexes')
+        ops = MongodbOperations("mongodb://x:y@localhost:27017")
+        return ops, mocked_client
+
+    def test_empty_inst_code_refuses_delete(self, mocker):
+        ops, client = self._make_ops(mocker)
+        collection = client['raw_market']['BN_inst_code_basic']
+        result = ops.delete_inst_code_basic('BN', inst_code=None)
+        assert result is None
+        collection.delete_many.assert_not_called()
+
+    def test_present_inst_code_deletes_scoped(self, mocker):
+        ops, client = self._make_ops(mocker)
+        collection = client['raw_market']['BN_inst_code_basic']
+        ops.delete_inst_code_basic('BN', inst_code='BTC-USDT_BN.SPOT')
+        collection.delete_many.assert_called_once_with({'inst_code': 'BTC-USDT_BN.SPOT'})
+
+
+class TestGetBalanceTimeSpanNoData:
+    """#109: empty read_balance result raised an uncontrolled IndexError on res[0];
+    it must raise NoDataException like the rest of the module's empty-result paths."""
+
+    def _make_ops(self, mocker):
+        MongodbOperations._client = None
+        MongodbOperations._indexes_ensured = False
+        mocked_client = mocker.MagicMock()
+        mocker.patch('pytradekit.utils.mongodb_operations.MongoClient', return_value=mocked_client)
+        mocker.patch.object(MongodbOperations, '_ensure_indexes')
+        ops = MongodbOperations("mongodb://x:y@localhost:27017")
+        return ops
+
+    def test_empty_result_raises_no_data_exception(self, mocker):
+        from pytradekit.utils.exceptions import NoDataException
+        from pytradekit.utils.time_handler import TimeSpan
+        ops = self._make_ops(mocker)
+        mocker.patch.object(ops, 'read_balance', return_value=[])
+        with pytest.raises(NoDataException):
+            ops.get_balance_time_span('BN_000', TimeSpan(start=0, end=1))
