@@ -272,12 +272,20 @@ class MongodbOperations:
         return logs_list
 
     def delete_inst_code_basic(self, exchange_id, inst_code=None):
+        # A falsy inst_code would make query == {}, i.e. delete_many wipes the whole
+        # {exchange_id}_inst_code_basic collection. Every caller targets a single
+        # inst_code, so an empty value is bad data / a bug, not a delete-all request —
+        # refuse it instead of silently dropping the collection.
+        if not inst_code:
+            if self.logger:
+                self.logger.info(
+                    f"delete_inst_code_basic refused: empty inst_code for {exchange_id} "
+                    f"(would delete the entire collection)"
+                )
+            return None
 
         collection = self.client[Database.raw_market.name][f'{exchange_id}_{Database.inst_code_basic.name}']
-        query = {}
-        if inst_code:
-            query['inst_code'] = inst_code
-        result = collection.delete_many(query)
+        result = collection.delete_many({'inst_code': inst_code})
         return result
 
     def insert_data_if_not_exists(self, data, collection_path):
@@ -529,6 +537,11 @@ class MongodbOperations:
             asc=False,
             is_df=False
         )
+
+        if not res_first or not res_last:
+            raise NoDataException(
+                f"No balance data found for account {account_id} in {time_span}"
+            )
 
         first_hour_str = res_first[0][BalanceAttribute.hour.name]
         last_hour_str = res_last[0][BalanceAttribute.hour.name]
