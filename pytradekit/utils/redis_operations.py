@@ -182,8 +182,8 @@ class RedisOperations:
                 data = self.client.get(key)
                 return data
         except Exception as e:
-            self.logger.exception(f"Failed to get inventory for {key}: {e}")
-            raise DependencyException(f"Failed to get inventory for {key}") from e
+            self.logger.exception(f"Failed to get trading proposal for {key}: {e}")
+            raise DependencyException(f"Failed to get trading proposal for {key}") from e
 
     def push_book_ticker(self, exchange_id, value):
         key = f"{RedisFields.book_ticker.name}:{exchange_id}"
