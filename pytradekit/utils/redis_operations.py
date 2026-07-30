@@ -108,7 +108,7 @@ class RedisOperations:
         lock = self.get_lock_for_resource(key)
         try:
             with lock:
-                self.client.sadd(key, json.dumps(value))
+                self.client.sadd(key, json.dumps(value, cls=_DecimalEncoder))
                 self.client.expire(key, ORDERS_EXPIRE_TIME)
         except Exception as e:
             self.logger.exception(f"Failed to set orders for {strategy_id}: {e}")
@@ -131,9 +131,9 @@ class RedisOperations:
         lock = self.get_lock_for_resource(key)
         try:
             with lock:
-                self.client.zadd(key, {json.dumps(value): timestamp})
+                self.client.zadd(key, {json.dumps(value, cls=_DecimalEncoder): timestamp})
                 self.client.expire(key, ORDERS_EXPIRE_TIME)
-                self.client.publish(key, json.dumps(value))
+                self.client.publish(key, json.dumps(value, cls=_DecimalEncoder))
         except Exception as e:
             self.logger.exception(f"Failed to set trades for : {e}")
             raise DependencyException("Failed to set trades for ") from e
