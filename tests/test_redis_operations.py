@@ -186,6 +186,19 @@ class TestArbitrageThreshold:
         )
 
 
+class TestSetOrders:
+    """#118: json.dumps must use _DecimalEncoder; order payloads carry Decimal
+    price/qty fields, so a plain json.dumps(value) raised TypeError (swallowed
+    and re-raised as DependencyException) and silently dropped every order."""
+
+    def test_decimal_fields_serialize_as_str(self, redis_ops):
+        import json
+        ops, client, _ = redis_ops
+        ops.set_orders("strat_x", {"price": Decimal("1.5"), "qty": Decimal("0.001")})
+        member = json.loads(client.sadd.call_args.args[1])
+        assert member == {"price": "1.5", "qty": "0.001"}
+
+
 class TestSetPublishTrades:
     """#97: the except clause caught DependencyException, which the client's
     zadd/expire/publish calls never raise, so real client errors escaped
@@ -198,6 +211,17 @@ class TestSetPublishTrades:
         with pytest.raises(DependencyException) as exc_info:
             ops.set_publish_trades({"BTCUSDT": {"side": "B"}}, 1700000000000)
         assert exc_info.value.__cause__ is original
+
+    def test_decimal_fields_serialize_as_str(self, redis_ops):
+        """#119: zadd member and published payload both carry Decimal price
+        fields; without _DecimalEncoder json.dumps raised TypeError."""
+        import json
+        ops, client, _ = redis_ops
+        ops.set_publish_trades({"BTCUSDT": {"price": Decimal("1.5")}}, 1700000000000)
+        member = next(iter(client.zadd.call_args.args[1]))
+        assert json.loads(member) == {"BTCUSDT": {"price": "1.5"}}
+        published = json.loads(client.publish.call_args.args[1])
+        assert published == {"BTCUSDT": {"price": "1.5"}}
 
 
 class TestGetNewBookTicker:
