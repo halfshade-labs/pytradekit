@@ -45,7 +45,7 @@ class RedisOperations:
         lock = self.get_lock_for_resource(key)
         try:
             with lock:
-                self.client.hmset(key, value)
+                self.client.hset(key, mapping=value)
                 self.client.expire(key, TICKER_PRICE_EXPIRE_TIME)
         except Exception as e:
             self.logger.exception(f"Failed to set ticker price for {exchange_id}: {e}")
@@ -76,7 +76,7 @@ class RedisOperations:
         lock = self.get_lock_for_resource(key)
         try:
             with lock:
-                self.client.hmset(key, value)
+                self.client.hset(key, mapping=value)
                 self.client.expire(key, ORDER_TICKER_EXPIRE_TIME)
         except Exception as e:
             self.logger.exception(f"Failed to set book ticker for {inst_code}: {e}")
