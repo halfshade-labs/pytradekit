@@ -34,5 +34,8 @@ class ExchangeApi:
 def get_account_api(config, account_id):
     api_key = encrypt_decrypt(config.private[account_id + '_key'], 'decrypt')
     api_secret = encrypt_decrypt(config.private[account_id + '_secret'], 'decrypt')
-    api_passphrase = encrypt_decrypt(config.private[account_id + '_passphrase'], 'decrypt')
+    # Passphrase is exchange-specific (e.g. OKX); BN/HTX accounts have none, so
+    # read it optionally instead of KeyError-ing on the missing key.
+    raw_passphrase = config.private.get(account_id + '_passphrase')
+    api_passphrase = encrypt_decrypt(raw_passphrase, 'decrypt') if raw_passphrase else None
     return api_key, api_secret, api_passphrase
