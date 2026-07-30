@@ -254,3 +254,22 @@ class TestGetOrderLink:
         ops, client, _ = redis_ops
         client.get.return_value = None
         assert ops.get_order_link("spot_xyz") is None
+
+
+class TestHashWritesUseHset:
+    """#112/#113/#117: hmset() is deprecated (removed in redis-py 6.x); hash
+    writes must use hset(key, mapping=...) instead."""
+
+    def test_set_ticker_price_uses_hset_mapping(self, redis_ops):
+        ops, client, _ = redis_ops
+        ops.set_ticker_price("BN", {"BTCUSDT": "1"})
+        client.hset.assert_called_once()
+        assert client.hset.call_args.kwargs["mapping"] == {"BTCUSDT": "1"}
+        client.hmset.assert_not_called()
+
+    def test_set_book_ticker_uses_hset_mapping(self, redis_ops):
+        ops, client, _ = redis_ops
+        ops.set_book_ticker("BTC-USDT_BN.SPOT", {"bid": "1", "ask": "2"})
+        client.hset.assert_called_once()
+        assert client.hset.call_args.kwargs["mapping"] == {"bid": "1", "ask": "2"}
+        client.hmset.assert_not_called()
