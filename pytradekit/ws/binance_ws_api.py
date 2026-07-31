@@ -33,6 +33,10 @@ PING_INTERVAL_S = 180
 PING_TIMEOUT_S = 10
 RECONNECT_BASE_DELAY_S = 1
 RECONNECT_MAX_DELAY_S = 60
+# Only order events carry a clientOrderId and are meant for the order-trade
+# consumer. Account snapshots (outboundAccountPosition / balanceUpdate) must not
+# be forwarded to the business queue, matching the legacy listenKey stream.
+EXECUTION_REPORT_EVENT = 'executionReport'
 
 
 class BinanceWsApiUserData:
@@ -170,7 +174,10 @@ class BinanceWsApiUserData:
                 f"({event.get('s', '')}, total={self.event_counts[event_type]})"
             )
             return
-        if self._queue is not None:
+        # Live: forward only order events to the business queue. Non-order
+        # account snapshots (outboundAccountPosition / balanceUpdate) have no
+        # clientOrderId and would raise KeyError in the order-trade consumer.
+        if self._queue is not None and event_type == EXECUTION_REPORT_EVENT:
             self._queue.put(event)
 
     def _on_error(self, _ws, error):

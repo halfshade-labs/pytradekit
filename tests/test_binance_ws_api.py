@@ -142,6 +142,18 @@ class TestShadowDispatch:
         assert business_queue.get_nowait() == event
         assert client.event_counts['executionReport'] == 1
 
+    def test_live_mode_does_not_queue_non_order_events(self):
+        # outboundAccountPosition/balanceUpdate have no clientOrderId and would
+        # KeyError the order-trade consumer; count them but keep them off queue.
+        business_queue = queue.Queue()
+        client, _ = _make_client(shadow=False, business_queue=business_queue)
+        client._on_message(FakeWs(), json.dumps(
+            {'event': {'e': 'outboundAccountPosition'}}
+        ))
+        assert client.event_counts['outboundAccountPosition'] == 1
+        assert client.last_event_ms is not None
+        assert business_queue.empty()
+
     def test_stats_snapshot_for_channel_comparison(self):
         client, _ = _make_client(shadow=True)
         client._on_message(FakeWs(), json.dumps({'event': {'e': 'executionReport'}}))
