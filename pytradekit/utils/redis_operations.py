@@ -188,7 +188,7 @@ class RedisOperations:
     def push_book_ticker(self, exchange_id, value):
         key = f"{RedisFields.book_ticker.name}:{exchange_id}"
         try:
-            self.client.publish(key, json.dumps(value))
+            self.client.publish(key, json.dumps(value, cls=_DecimalEncoder))
         except Exception as e:
             self.logger.exception(f"Failed to push data for {key}: {e}")
             raise DependencyException(f"Failed to push data for {key}") from e
@@ -198,8 +198,8 @@ class RedisOperations:
         lock = self.get_lock_for_resource(key)
         try:
             with lock:
-                self.client.set(key, json.dumps(value))
-                self.client.publish(key, json.dumps(value))
+                self.client.set(key, json.dumps(value, cls=_DecimalEncoder))
+                self.client.publish(key, json.dumps(value, cls=_DecimalEncoder))
         except Exception as e:
             self.logger.exception(f"Failed to set profit_loss for {key}: {e}")
             raise DependencyException(f"Failed to set profit_loss for {key}") from e
@@ -209,7 +209,7 @@ class RedisOperations:
         lock = self.get_lock_for_resource(key)
         try:
             with lock:
-                self.client.set(key, json.dumps(value))
+                self.client.set(key, json.dumps(value, cls=_DecimalEncoder))
         except Exception as e:
             self.logger.exception(f"Failed to set trading_proposal for {key}: {e}")
             raise DependencyException(f"Failed to set trading_proposal for {key}") from e
@@ -228,7 +228,7 @@ class RedisOperations:
         lock = self.get_lock_for_resource(key)
         try:
             with lock:
-                self.client.set(key, json.dumps(value))
+                self.client.set(key, json.dumps(value, cls=_DecimalEncoder))
                 self.client.expire(key, ORDER_TICKER_EXPIRE_TIME)
         except Exception as e:
             self.logger.exception(f"Failed to set book ticker for {exchange_id}: {e}")
@@ -272,9 +272,9 @@ class RedisOperations:
         lock = self.get_lock_for_resource(key)
         try:
             with lock:
-                self.client.set(key, json.dumps(value))
+                self.client.set(key, json.dumps(value, cls=_DecimalEncoder))
                 self.client.expire(key, TICKER_PRICE_EXPIRE_TIME)
-                self.client.publish(key, json.dumps(value))
+                self.client.publish(key, json.dumps(value, cls=_DecimalEncoder))
         except Exception as e:
             self.logger.exception(f"Failed to set non_compliant_inst_code for {key}: {e}")
             raise DependencyException(f"Failed to set non_compliant_inst_code for {key}") from e
@@ -284,9 +284,9 @@ class RedisOperations:
         lock = self.get_lock_for_resource(key)
         try:
             with lock:
-                self.client.set(key, json.dumps(value))
+                self.client.set(key, json.dumps(value, cls=_DecimalEncoder))
                 self.client.expire(key, TICKER_PRICE_EXPIRE_TIME)
-                self.client.publish(key, json.dumps(value))
+                self.client.publish(key, json.dumps(value, cls=_DecimalEncoder))
         except Exception as e:
             self.logger.exception(f"Failed to set depth_order_theoretical for {key}: {e}")
             raise DependencyException(f"Failed to set depth_order_theoretical for {key}") from e
