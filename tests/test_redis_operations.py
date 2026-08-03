@@ -273,3 +273,34 @@ class TestHashWritesUseHset:
         client.hset.assert_called_once()
         assert client.hset.call_args.kwargs["mapping"] == {"bid": "1", "ask": "2"}
         client.hmset.assert_not_called()
+
+
+class TestDecimalEncoderConsistency:
+    """#120/#114: every json.dumps of a business value must use _DecimalEncoder;
+    book_ticker / depth / inventory-close payloads carry Decimal price fields and
+    would raise TypeError otherwise."""
+
+    def test_set_new_book_ticker_encodes_decimal(self, redis_ops):
+        import json
+        ops, client, _ = redis_ops
+        ops.set_new_book_ticker("BN", {"bid": Decimal("1.5"), "ask": Decimal("1.6")})
+        assert json.loads(client.set.call_args.args[1]) == {"bid": "1.5", "ask": "1.6"}
+
+    def test_push_book_ticker_encodes_decimal(self, redis_ops):
+        import json
+        ops, client, _ = redis_ops
+        ops.push_book_ticker("BN", {"bid": Decimal("1.5")})
+        assert json.loads(client.publish.call_args.args[1]) == {"bid": "1.5"}
+
+    def test_set_depth_order_theoretical_encodes_decimal(self, redis_ops):
+        import json
+        ops, client, _ = redis_ops
+        ops.set_depth_order_theoretical("BN", {"px": Decimal("2.5")})
+        assert json.loads(client.set.call_args.args[1]) == {"px": "2.5"}
+        assert json.loads(client.publish.call_args.args[1]) == {"px": "2.5"}
+
+    def test_set_publish_inventory_close_encodes_decimal(self, redis_ops):
+        import json
+        ops, client, _ = redis_ops
+        ops.set_publish_inventory_close({"pnl": Decimal("-3.25")})
+        assert json.loads(client.set.call_args.args[1]) == {"pnl": "-3.25"}
