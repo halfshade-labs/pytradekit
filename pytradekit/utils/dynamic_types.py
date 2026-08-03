@@ -1014,7 +1014,7 @@ class HuobiAuxiliary(Enum):
     url_trades = '/v1/order/matchresults'
     url_spot_order = '/v1/order/orders/place'  # 现货下单API
     url_perp_balance = '/linear-swap-api/v1/swap_balance_valuation'
-    url_commission_rate = '/v2/reference/transact-fee-rate/get'
+    url_commission_rate = '/v2/reference/transact-fee-rate'
     ws_ping_sleep = 1800
     reconnection_time_sleep = 60 * 60 * 2
 

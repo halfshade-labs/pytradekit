@@ -186,10 +186,12 @@ class HuobiClient:
         try:
             params = {}
             if symbol:
-                params['symbol'] = symbol.lower()
+                # HTX /v2/reference/transact-fee-rate expects `symbols` (plural,
+                # comma-separated); a singular `symbol` returns 2003 missing-field.
+                params['symbols'] = symbol.lower()
             url = HuobiAuxiliary.url_commission_rate.value
             result = self._send_request(url, method=HttpMmthod.GET.name, params=params, use_sign=True)
-            
+
             if result and isinstance(result, dict):
                 if result.get('code') == 200 and 'data' in result:
                     data = result['data']
@@ -199,13 +201,14 @@ class HuobiClient:
                         fee_data = data
                     else:
                         return None
-                    
-                    maker_rate = float(fee_data.get('maker-fee-rate', 0))
-                    taker_rate = float(fee_data.get('taker-fee-rate', 0))
+
+                    # v2 response uses camelCase makerFeeRate/takerFeeRate.
+                    maker_rate = float(fee_data.get('makerFeeRate', 0))
+                    taker_rate = float(fee_data.get('takerFeeRate', 0))
                     return {FeeStructureKey.maker.name: maker_rate, FeeStructureKey.taker.name: taker_rate}
-                elif isinstance(result, dict) and 'maker-fee-rate' in result:
-                    maker_rate = float(result.get('maker-fee-rate', 0))
-                    taker_rate = float(result.get('taker-fee-rate', 0))
+                elif isinstance(result, dict) and 'makerFeeRate' in result:
+                    maker_rate = float(result.get('makerFeeRate', 0))
+                    taker_rate = float(result.get('takerFeeRate', 0))
                     return {FeeStructureKey.maker.name: maker_rate, FeeStructureKey.taker.name: taker_rate}
             return None
         except Exception as e:
