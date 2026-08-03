@@ -75,8 +75,12 @@ class MongodbOperations:
         return decorator
 
     def __init__(self, mongodb_url, logger=None):
+        # Double-checked locking: guard the shared client creation so concurrent
+        # callers don't each build a MongoClient (extra connection pools).
         if MongodbOperations._client is None:
-            MongodbOperations._client = self._create_client(mongodb_url)
+            with MongodbOperations._indexes_lock:
+                if MongodbOperations._client is None:
+                    MongodbOperations._client = self._create_client(mongodb_url)
         self.client = MongodbOperations._client
         self.logger = logger
         with MongodbOperations._indexes_lock:
@@ -194,6 +198,9 @@ class MongodbOperations:
             if self.logger:
                 self.logger.debug("MongoDB connection closed.")
             MongodbOperations._client = None
+            # Reset so a reconnect re-ensures indexes on the new client; the flag
+            # is bound to the connection's lifecycle, not the process.
+            MongodbOperations._indexes_ensured = False
 
     def delete_coll(self, collection_path):
         """
