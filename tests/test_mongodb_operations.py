@@ -32,6 +32,25 @@ def test_close(mocker):
     mongodb_operations = MongodbOperations(MONGODB_URL)
     mongodb_operations.close()
     assert MongodbOperations._client is None
+    # #133: the index-ensured flag is bound to the connection lifecycle and must
+    # reset on close so a reconnect re-ensures indexes.
+    assert MongodbOperations._indexes_ensured is False
+
+
+def test_reconnect_after_close_reensures_indexes(mocker):
+    # #132/#133: after close(), a new instance must build a fresh client AND
+    # re-ensure indexes (the flag no longer sticks from the old connection).
+    MongodbOperations._client = None
+    MongodbOperations._indexes_ensured = False
+    mocker.patch('pytradekit.utils.mongodb_operations.MongoClient', return_value=mocker.MagicMock())
+    ensure = mocker.patch.object(MongodbOperations, '_ensure_indexes')
+
+    ops = MongodbOperations(MONGODB_URL)
+    assert ensure.call_count == 1
+
+    ops.close()
+    MongodbOperations(MONGODB_URL)
+    assert ensure.call_count == 2
 
 
 def test_check_connection(mocker):
