@@ -1,5 +1,6 @@
 from pytradekit.utils.dynamic_types import RunningMode
 from pytradekit.utils.tools import encrypt_decrypt
+from pytradekit.utils.exceptions import DataTypeException
 
 
 
@@ -32,8 +33,13 @@ class ExchangeApi:
 
 
 def get_account_api(config, account_id):
-    api_key = encrypt_decrypt(config.private[account_id + '_key'], 'decrypt')
-    api_secret = encrypt_decrypt(config.private[account_id + '_secret'], 'decrypt')
+    # key/secret are required; surface a domain exception (not a raw KeyError)
+    # so callers catch a single well-defined type, consistent with passphrase.
+    try:
+        api_key = encrypt_decrypt(config.private[account_id + '_key'], 'decrypt')
+        api_secret = encrypt_decrypt(config.private[account_id + '_secret'], 'decrypt')
+    except KeyError as e:
+        raise DataTypeException(f"Missing required credential {e} for account {account_id}") from e
     # Passphrase is exchange-specific (e.g. OKX); BN/HTX accounts have none, so
     # read it optionally instead of KeyError-ing on the missing key.
     raw_passphrase = config.private.get(account_id + '_passphrase')

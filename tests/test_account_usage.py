@@ -7,7 +7,10 @@ fell back to static fees instead of live API fees.
 """
 from types import SimpleNamespace
 
+import pytest
+
 import pytradekit.trading_setup.account_usage as account_usage
+from pytradekit.utils.exceptions import DataTypeException
 
 
 def _config(private):
@@ -37,3 +40,13 @@ def test_empty_passphrase_treated_as_none(monkeypatch):
     _key, _secret, passphrase = account_usage.get_account_api(config, "BN_000")
 
     assert passphrase is None
+
+
+def test_missing_required_key_raises_data_type_exception(monkeypatch):
+    # #141: a missing key/secret must surface a domain exception, not a raw
+    # KeyError, consistent with the passphrase handling.
+    monkeypatch.setattr(account_usage, "encrypt_decrypt", lambda value, _mode: value)
+    config = _config({"BN_000_secret": "s"})  # no _key
+
+    with pytest.raises(DataTypeException):
+        account_usage.get_account_api(config, "BN_000")
