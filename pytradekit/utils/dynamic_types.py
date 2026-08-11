@@ -1400,6 +1400,7 @@ class RedisFields(Enum):
     portfolios = auto()
     premium = auto()
     order_link = auto()
+    trade_context = auto()
     arbitrage_threshold = auto()
     arbitrage_thresholds = auto()
 
