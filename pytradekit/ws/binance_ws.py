@@ -273,7 +273,10 @@ class BinanceWsManager(WsManager):
         target_symbols = normalize_subscription_targets(symbols)
         params = self._build_bookticker_params(target_symbols)
         self._bookticker_symbols = target_symbols
-        self.start_subscribe(params)
+        if params:
+            self.start_subscribe(params)
+        else:
+            self._subs = []
         self._ping(BinanceAuxiliary.ws_ping_sleep.value, is_listen_key=False)
 
     @staticmethod
@@ -304,10 +307,12 @@ class BinanceWsManager(WsManager):
                 "params": self._build_bookticker_params(update.removed),
             })
         self._bookticker_symbols = target_symbols
-        self._subs = [{
-            "method": BinanceWebSocket.subscribe.value,
-            "params": self._build_bookticker_params(target_symbols),
-        }]
+        self._subs = []
+        if target_symbols:
+            self._subs = [{
+                "method": BinanceWebSocket.subscribe.value,
+                "params": self._build_bookticker_params(target_symbols),
+            }]
         return update
 
     def start_perp_lastprice_stream(self, symbols):

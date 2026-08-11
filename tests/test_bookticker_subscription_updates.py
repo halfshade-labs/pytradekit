@@ -1,6 +1,6 @@
 import pytest
 
-from pytradekit.utils.dynamic_types import BinanceWebSocket
+from pytradekit.utils.dynamic_types import BinanceAuxiliary, BinanceWebSocket
 from pytradekit.ws.binance_ws import BinanceWsManager
 from pytradekit.ws.huobi_ws import HuobiWsManager
 from pytradekit.ws.okex_ws import OkexWsManager
@@ -76,6 +76,60 @@ def test_binance_updates_bookticker_subscriptions(mocker):
             "params": ["btcusdt@bookTicker", "ethusdt@bookTicker"],
         }
     ]
+
+
+def test_binance_starts_idle_for_empty_bookticker_targets(mocker):
+    manager = _make_binance_manager(mocker)
+    manager.start_subscribe = mocker.Mock()
+    manager._ping = mocker.Mock()
+
+    manager.start_bookticker_stream([])
+
+    assert manager._bookticker_symbols == frozenset()
+    assert manager._subs == []
+    manager.start_subscribe.assert_not_called()
+    manager._ping.assert_called_once_with(
+        BinanceAuxiliary.ws_ping_sleep.value,
+        is_listen_key=False,
+    )
+
+
+def test_binance_empty_update_can_later_add_bookticker_targets(mocker):
+    manager = _make_binance_manager(mocker)
+
+    empty_update = manager.update_bookticker_stream([])
+
+    assert empty_update == SubscriptionUpdate(
+        added=(),
+        removed=("BTCUSDT", "XRPUSDT"),
+    )
+    assert manager._bookticker_symbols == frozenset()
+    assert manager._subs == []
+    assert manager.send_json.call_args_list == [
+        mocker.call(
+            {
+                "method": "UNSUBSCRIBE",
+                "params": ["btcusdt@bookTicker", "xrpusdt@bookTicker"],
+            }
+        )
+    ]
+
+    manager.send_json.reset_mock()
+    added_update = manager.update_bookticker_stream(["ETHUSDT"])
+
+    assert added_update == SubscriptionUpdate(added=("ETHUSDT",), removed=())
+    assert manager._subs == [
+        {
+            "method": BinanceWebSocket.subscribe.value,
+            "params": ["ethusdt@bookTicker"],
+        }
+    ]
+    manager.send_json.assert_called_once_with(
+        {
+            "method": BinanceWebSocket.subscribe.value,
+            "params": ["ethusdt@bookTicker"],
+        }
+    )
 
 
 def test_htx_updates_bookticker_subscriptions(mocker):
