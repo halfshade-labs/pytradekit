@@ -1,6 +1,7 @@
 import time
 import json
 from threading import Thread
+from typing import Iterable, List
 
 import requests
 
@@ -11,6 +12,14 @@ from pytradekit.utils.dynamic_types import SlackUser
 from pytradekit.ws.save_restful_bn_deposit_withdraw import HandleRestfulDepositWithdraw
 from pytradekit.ws.bn_add_missing_orders import get_binance_trade
 from pytradekit.utils.tools import get_redis
+from pytradekit.ws.subscription_update import (
+    SubscriptionUpdate,
+    calculate_subscription_update,
+    normalize_subscription_targets,
+)
+
+
+BINANCE_UNSUBSCRIBE_METHOD = "UNSUBSCRIBE"
 
 
 class AtUser:
@@ -57,6 +66,7 @@ class BinanceWsManager(WsManager):
         self._bn_client = bn_client
         self._mm_symbol_list = mm_symbol_list
         self.verify_bookticker_duplicate = {}
+        self._bookticker_symbols = frozenset()
 
     def _get_api_url(self) -> str:
         return self._api_url
@@ -259,12 +269,46 @@ class BinanceWsManager(WsManager):
         self.start_subscribe(params)
         self._ping(BinanceAuxiliary.ws_ping_sleep.value)
 
-    def start_bookticker_stream(self, symbols):
-        params = []
-        for symbol in symbols:
-            params.append(f'{symbol.lower()}{BinanceAuxiliary.ws_book_ticker.value}')
+    def start_bookticker_stream(self, symbols: Iterable[str]) -> None:
+        target_symbols = normalize_subscription_targets(symbols)
+        params = self._build_bookticker_params(target_symbols)
+        self._bookticker_symbols = target_symbols
         self.start_subscribe(params)
         self._ping(BinanceAuxiliary.ws_ping_sleep.value, is_listen_key=False)
+
+    @staticmethod
+    def _build_bookticker_params(symbols: Iterable[str]) -> List[str]:
+        return [
+            f"{symbol.lower()}{BinanceAuxiliary.ws_book_ticker.value}"
+            for symbol in sorted(symbols)
+        ]
+
+    def update_bookticker_stream(
+        self,
+        symbols: Iterable[str],
+    ) -> SubscriptionUpdate:
+        """Update a live book-ticker stream without reconnecting it."""
+        target_symbols = normalize_subscription_targets(symbols)
+        current_symbols = getattr(self, "_bookticker_symbols", frozenset())
+        update = calculate_subscription_update(current_symbols, target_symbols)
+        if not update.added and not update.removed:
+            return update
+        if update.added:
+            self.send_json({
+                "method": BinanceWebSocket.subscribe.value,
+                "params": self._build_bookticker_params(update.added),
+            })
+        if update.removed:
+            self.send_json({
+                "method": BINANCE_UNSUBSCRIBE_METHOD,
+                "params": self._build_bookticker_params(update.removed),
+            })
+        self._bookticker_symbols = target_symbols
+        self._subs = [{
+            "method": BinanceWebSocket.subscribe.value,
+            "params": self._build_bookticker_params(target_symbols),
+        }]
+        return update
 
     def start_perp_lastprice_stream(self, symbols):
         params = []
