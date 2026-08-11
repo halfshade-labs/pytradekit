@@ -1,5 +1,6 @@
 import json
 from decimal import Decimal, InvalidOperation
+from typing import Dict, Mapping
 
 import redis
 from pytradekit.utils.dynamic_types import RedisFields
@@ -12,6 +13,29 @@ class _DecimalEncoder(json.JSONEncoder):
         if isinstance(obj, Decimal):
             return str(obj)
         return super().default(obj)
+
+
+def _normalize_arbitrage_thresholds(
+    thresholds: Mapping[str, Decimal],
+) -> Dict[str, Decimal]:
+    """Validate and normalize a venue-to-threshold mapping."""
+    if not isinstance(thresholds, Mapping) or not thresholds:
+        raise DataTypeException("Arbitrage thresholds must be a non-empty mapping")
+    normalized = {}
+    for venue, raw_threshold in thresholds.items():
+        normalized_venue = str(venue).strip().upper()
+        try:
+            threshold = Decimal(str(raw_threshold))
+        except (InvalidOperation, ValueError, TypeError) as exc:
+            raise DataTypeException(
+                f"Invalid arbitrage threshold for {normalized_venue or venue}: {raw_threshold!r}"
+            ) from exc
+        if not normalized_venue or not threshold.is_finite() or threshold < 0:
+            raise DataTypeException(
+                f"Invalid arbitrage threshold for {normalized_venue or venue}: {raw_threshold!r}"
+            )
+        normalized[normalized_venue] = threshold
+    return normalized
 
 
 TICKER_PRICE_EXPIRE_TIME = TimeConvert.MIN_TO_S * 10
@@ -411,6 +435,39 @@ class RedisOperations:
         except InvalidOperation as e:
             self.logger.debug(f"Invalid arbitrage threshold value: {value!r}", exc_info=True)
             raise DataTypeException(f"Invalid arbitrage threshold value: {value!r}") from e
+
+    def set_arbitrage_thresholds(self, thresholds: Mapping[str, Decimal]):
+        """Store atomic per-venue arbitrage thresholds under a separate key."""
+        normalized = _normalize_arbitrage_thresholds(thresholds)
+        key = RedisFields.arbitrage_thresholds.name
+        payload = json.dumps(normalized, cls=_DecimalEncoder, sort_keys=True)
+        lock = self.get_lock_for_resource(key)
+        try:
+            with lock:
+                self.client.set(key, payload)
+                self.client.expire(key, ARBITRAGE_THRESHOLD_EXPIRE_TIME)
+        except Exception as e:
+            self.logger.exception(f"Failed to set arbitrage thresholds: {e}")
+            raise DependencyException("Failed to set arbitrage thresholds") from e
+
+    def get_arbitrage_thresholds(self):
+        """Return per-venue Decimal thresholds, or None when the key is absent."""
+        key = RedisFields.arbitrage_thresholds.name
+        lock = self.get_lock_for_resource(key)
+        try:
+            with lock:
+                value = self.client.get(key)
+        except Exception as e:
+            self.logger.debug(f"Failed to get arbitrage thresholds: {e}", exc_info=True)
+            raise DependencyException("Failed to get arbitrage thresholds") from e
+        if value is None:
+            return None
+        try:
+            decoded = json.loads(value)
+            return _normalize_arbitrage_thresholds(decoded)
+        except (json.JSONDecodeError, DataTypeException, TypeError) as e:
+            self.logger.debug(f"Invalid arbitrage thresholds value: {value!r}", exc_info=True)
+            raise DataTypeException(f"Invalid arbitrage thresholds value: {value!r}") from e
 
     def ping(self):
         """Verify the Redis connection is alive. Raises DependencyException on failure."""
