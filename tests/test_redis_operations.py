@@ -186,6 +186,58 @@ class TestArbitrageThreshold:
         )
 
 
+class TestArbitrageThresholds:
+    def test_set_writes_normalized_json_and_expiry(self, redis_ops):
+        import json
+
+        ops, client, _ = redis_ops
+        ops.set_arbitrage_thresholds({"okx": Decimal("0.0042"), "HTX": "0.0051"})
+
+        key, payload = client.set.call_args.args
+        assert key == "arbitrage_thresholds"
+        assert json.loads(payload) == {"HTX": "0.0051", "OKX": "0.0042"}
+        client.expire.assert_called_once()
+        assert client.expire.call_args.args[0] == "arbitrage_thresholds"
+
+    def test_get_returns_decimal_mapping(self, redis_ops):
+        ops, client, _ = redis_ops
+        client.get.return_value = '{"HTX": "0.0051", "OKX": "0.0042"}'
+
+        assert ops.get_arbitrage_thresholds() == {
+            "HTX": Decimal("0.0051"),
+            "OKX": Decimal("0.0042"),
+        }
+
+    def test_get_returns_none_when_key_missing(self, redis_ops):
+        ops, client, _ = redis_ops
+        client.get.return_value = None
+
+        assert ops.get_arbitrage_thresholds() is None
+
+    @pytest.mark.parametrize(
+        "raw_value",
+        ["not-json", "[]", '{"OKX": "not-a-number"}', '{"OKX": "NaN"}'],
+    )
+    def test_get_invalid_value_raises_data_type_exception(self, redis_ops, raw_value):
+        ops, client, _ = redis_ops
+        client.get.return_value = raw_value
+
+        with pytest.raises(DataTypeException):
+            ops.get_arbitrage_thresholds()
+
+    def test_set_invalid_mapping_raises_data_type_exception(self, redis_ops):
+        ops, _, _ = redis_ops
+
+        with pytest.raises(DataTypeException):
+            ops.set_arbitrage_thresholds({"OKX": Decimal("-0.001")})
+
+    def test_get_failure_wraps_as_dependency_exception(self, redis_ops):
+        assert_wraps_as_dependency_exception(
+            redis_ops,
+            FailureSpec(client_attr="get", op_name="get_arbitrage_thresholds"),
+        )
+
+
 class TestSetOrders:
     """#118: json.dumps must use _DecimalEncoder; order payloads carry Decimal
     price/qty fields, so a plain json.dumps(value) raised TypeError (swallowed
