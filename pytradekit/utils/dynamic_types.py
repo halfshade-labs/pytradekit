@@ -1401,6 +1401,7 @@ class RedisFields(Enum):
     premium = auto()
     order_link = auto()
     arbitrage_threshold = auto()
+    arbitrage_thresholds = auto()
 
 
 class DuplicateFields(Enum):
