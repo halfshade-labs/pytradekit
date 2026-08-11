@@ -43,6 +43,8 @@ ORDER_TICKER_EXPIRE_TIME = TimeConvert.MIN_TO_S * 30
 ORDERS_EXPIRE_TIME = TimeConvert.MIN_TO_S * 60
 PREMIUM_EXPIRE_TIME = TimeConvert.MIN_TO_S * 60 * 24 * 30
 ORDER_LINK_EXPIRE_TIME = TimeConvert.DAY_TO_S
+TRADE_CONTEXT_EXPIRE_TIME = TimeConvert.DAY_TO_S * 30
+TRADE_CONTEXT_MAX_BYTES = 64 * 1024
 # Merged portfolios snapshot for close-side premium checks; per-tick freshness
 # is validated by the reader, TTL only prevents an eternally stale key.
 PORTFOLIOS_EXPIRE_TIME = TimeConvert.MIN_TO_S * 60
@@ -372,6 +374,61 @@ class RedisOperations:
         except Exception as e:
             self.logger.exception(f"Failed to get order link for {spot_client_order_id}: {e}")
             raise DependencyException(f"Failed to get order link for {spot_client_order_id}") from e
+
+    def set_trade_context(self, trade_id: str, value: Mapping) -> None:
+        """Merge a bounded JSON context for a trade and refresh its 30-day TTL."""
+        key = self._trade_context_key(trade_id)
+        if not isinstance(value, Mapping):
+            raise DataTypeException("Trade context value must be a mapping")
+        lock = self.get_lock_for_resource(key)
+        try:
+            with lock:
+                current = self._decode_trade_context(self.client.get(key), key)
+                merged = {**current, **dict(value)}
+                payload = json.dumps(merged, cls=_DecimalEncoder, sort_keys=True)
+                if len(payload.encode("utf-8")) > TRADE_CONTEXT_MAX_BYTES:
+                    raise DataTypeException(
+                        f"Trade context exceeds {TRADE_CONTEXT_MAX_BYTES} bytes"
+                    )
+                self.client.set(key, payload)
+                self.client.expire(key, TRADE_CONTEXT_EXPIRE_TIME)
+        except DataTypeException:
+            raise
+        except Exception as e:
+            self.logger.debug(f"Failed to set trade context for {trade_id}: {e}", exc_info=True)
+            raise DependencyException(f"Failed to set trade context for {trade_id}") from e
+
+    def get_trade_context(self, trade_id: str):
+        """Return the stored trade context, or None when the key is absent."""
+        key = self._trade_context_key(trade_id)
+        lock = self.get_lock_for_resource(key)
+        try:
+            with lock:
+                raw = self.client.get(key)
+        except Exception as e:
+            self.logger.debug(f"Failed to get trade context for {trade_id}: {e}", exc_info=True)
+            raise DependencyException(f"Failed to get trade context for {trade_id}") from e
+        if raw is None:
+            return None
+        return self._decode_trade_context(raw, key)
+
+    @staticmethod
+    def _trade_context_key(trade_id: str) -> str:
+        if not isinstance(trade_id, str) or not trade_id.strip():
+            raise DataTypeException("Trade context id must be a non-empty string")
+        return f"{RedisFields.trade_context.name}:{trade_id}"
+
+    @staticmethod
+    def _decode_trade_context(raw, key: str) -> dict:
+        if raw is None:
+            return {}
+        try:
+            decoded = json.loads(raw)
+        except (json.JSONDecodeError, TypeError) as e:
+            raise DataTypeException(f"Invalid trade context JSON for {key}") from e
+        if not isinstance(decoded, dict):
+            raise DataTypeException(f"Trade context for {key} must be a JSON object")
+        return decoded
 
     def set_target_premium(self, client_order_id, premium):
         key = f"{RedisFields.premium.name}:{client_order_id}"

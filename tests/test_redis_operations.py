@@ -106,6 +106,74 @@ class TestGetTargetPremium:
         )
 
 
+class TestTradeContext:
+    def test_set_serializes_decimal_and_applies_ttl(self, redis_ops):
+        import json
+        from pytradekit.utils.redis_operations import TRADE_CONTEXT_EXPIRE_TIME
+
+        ops, client, _ = redis_ops
+        client.get.return_value = None
+
+        ops.set_trade_context("trade-1", {"entry": {"perp_bid": Decimal("1.25")}})
+
+        key, payload = client.set.call_args.args
+        assert key == "trade_context:trade-1"
+        assert json.loads(payload) == {"entry": {"perp_bid": "1.25"}}
+        client.expire.assert_called_once_with(key, TRADE_CONTEXT_EXPIRE_TIME)
+
+    def test_set_merges_top_level_sections(self, redis_ops):
+        import json
+
+        ops, client, _ = redis_ops
+        client.get.return_value = '{"entry": {"perp_bid": "1.25"}}'
+
+        ops.set_trade_context("trade-1", {"close": {"perp_ask": Decimal("1.20")}})
+
+        stored = json.loads(client.set.call_args.args[1])
+        assert stored == {
+            "entry": {"perp_bid": "1.25"},
+            "close": {"perp_ask": "1.20"},
+        }
+
+    def test_get_returns_mapping(self, redis_ops):
+        ops, client, _ = redis_ops
+        client.get.return_value = '{"entry": {"spot_ask": "1.10"}}'
+
+        assert ops.get_trade_context("trade-1") == {
+            "entry": {"spot_ask": "1.10"}
+        }
+
+    def test_get_missing_returns_none(self, redis_ops):
+        ops, client, _ = redis_ops
+        client.get.return_value = None
+
+        assert ops.get_trade_context("trade-1") is None
+
+    @pytest.mark.parametrize("raw", ["not-json", "[]"])
+    def test_malformed_payload_raises_data_type_exception(self, redis_ops, raw):
+        ops, client, _ = redis_ops
+        client.get.return_value = raw
+
+        with pytest.raises(DataTypeException):
+            ops.get_trade_context("trade-1")
+
+    def test_invalid_value_raises_data_type_exception(self, redis_ops):
+        ops, _, _ = redis_ops
+
+        with pytest.raises(DataTypeException):
+            ops.set_trade_context("trade-1", ["not", "a", "mapping"])
+
+    def test_client_failure_wraps_as_dependency_exception(self, redis_ops):
+        assert_wraps_as_dependency_exception(
+            redis_ops,
+            FailureSpec(
+                client_attr="get",
+                op_name="get_trade_context",
+                op_args=("trade-1",),
+            ),
+        )
+
+
 class TestSetPortfolios:
     """CEA#472: the stored key must accumulate symbols (merge), publish only the
     delta, and carry a TTL so a quiet market cannot serve an eternal snapshot."""
