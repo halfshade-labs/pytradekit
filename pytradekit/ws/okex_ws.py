@@ -2,10 +2,16 @@ import time
 import json
 import hmac
 import base64
+from typing import Iterable, List
 
 from pytradekit.utils.dynamic_types import OkexAuxiliary, OkexWebSocket, WebsocketStatus
 from pytradekit.gateway.websocket.ws_manager import WsManager
 from pytradekit.utils.time_handler import get_timestamp_s, get_millisecond_str, get_datetime
+from pytradekit.ws.subscription_update import (
+    SubscriptionUpdate,
+    calculate_subscription_update,
+    normalize_subscription_targets,
+)
 
 
 class OkexWsManager(WsManager):
@@ -29,6 +35,7 @@ class OkexWsManager(WsManager):
         self._account_id = account_id
         self._ws_connected = False
         self.logger = logger
+        self._bookticker_symbols = frozenset()
 
     def get_signature(self, params):
         mac = hmac.new(bytes(self._api_secret, encoding='utf8'), bytes(params, encoding='utf-8'), digestmod='sha256')
@@ -83,15 +90,49 @@ class OkexWsManager(WsManager):
         }
         self.start_subscribe(login_params)
 
-    def start_bookticker_stream(self, symbol_list):
-        arg = []
-        for i in symbol_list:
-            arg.append({'channel': 'tickers', 'instId': i})
-        params = {"op": "subscribe", "args": arg}
+    def start_bookticker_stream(self, symbol_list: Iterable[str]) -> None:
+        target_symbols = normalize_subscription_targets(symbol_list)
+        args = self._build_bookticker_args(target_symbols)
+        params = {"op": "subscribe", "args": args}
+        self._bookticker_symbols = target_symbols
         if params not in self._subs:
             self._subs.append(params)
         self.start_subscribe(params)
         self._ping(20)
+
+    @staticmethod
+    def _build_bookticker_args(symbols: Iterable[str]) -> List[dict]:
+        return [
+            {"channel": "tickers", "instId": symbol}
+            for symbol in sorted(symbols)
+        ]
+
+    def update_bookticker_stream(
+        self,
+        symbols: Iterable[str],
+    ) -> SubscriptionUpdate:
+        """Update a live public book-ticker stream in place."""
+        target_symbols = normalize_subscription_targets(symbols)
+        current_symbols = getattr(self, "_bookticker_symbols", frozenset())
+        update = calculate_subscription_update(current_symbols, target_symbols)
+        if not update.added and not update.removed:
+            return update
+        if update.added:
+            self.send_json({
+                "op": "subscribe",
+                "args": self._build_bookticker_args(update.added),
+            })
+        if update.removed:
+            self.send_json({
+                "op": "unsubscribe",
+                "args": self._build_bookticker_args(update.removed),
+            })
+        self._bookticker_symbols = target_symbols
+        self._subs = [{
+            "op": "subscribe",
+            "args": self._build_bookticker_args(target_symbols),
+        }]
+        return update
 
     def subscribe(self):
         try:

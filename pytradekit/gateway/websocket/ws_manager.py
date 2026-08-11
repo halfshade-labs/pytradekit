@@ -42,7 +42,7 @@ class WsManager(BaseWebsocketManager):
         super().send_json(msg)
 
     def _reconnect_streams(self):
-        for sub in self._subs:
+        for sub in tuple(self._subs):
             self.send_json(sub)
 
     def _ping(self, n_seconds) -> None:

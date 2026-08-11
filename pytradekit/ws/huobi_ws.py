@@ -5,11 +5,16 @@ import hashlib
 import urllib.parse
 import gzip
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Iterable, List, Optional
 
 from pytradekit.utils.dynamic_types import HuobiAuxiliary
 from pytradekit.gateway.websocket.ws_manager import WsManager
 from pytradekit.utils.time_handler import get_htx_timestamp, get_timestamp_s, sleep_min_time
+from pytradekit.ws.subscription_update import (
+    SubscriptionUpdate,
+    calculate_subscription_update,
+    normalize_subscription_targets,
+)
 
 
 @dataclass
@@ -44,6 +49,7 @@ class HuobiWsManager(WsManager):
         self._account_id = config.account_id
         self._ws_connected = False
         self.logger = logger
+        self._bookticker_symbols = frozenset()
 
     def get_signature(self, params):
         sorted_params = sorted(params.items(), key=lambda d: d[0], reverse=False)
@@ -95,10 +101,10 @@ class HuobiWsManager(WsManager):
 
     def _send_all_subscriptions(self) -> None:
         """Send all cached subscription requests."""
-        for req in self._subs:
+        for req in tuple(self._subs):
             self.start_subscribe(req)
 
-    def start_bookticker_stream(self, symbol_list):
+    def start_bookticker_stream(self, symbol_list: Iterable[str]) -> None:
         """
         Start Huobi(HTX) spot BBO websocket stream for given symbols.
 
@@ -107,12 +113,9 @@ class HuobiWsManager(WsManager):
         - 逐条发送订阅
         - 定期重订阅保持连接活跃
         """
-        self._subs = []
-
-        for idx, symbol in enumerate(symbol_list, start=1):
-            ch = f"market.{symbol.lower()}.bbo"
-            req = {"sub": ch, "id": idx}
-            self._subs.append(req)
+        target_symbols = normalize_subscription_targets(symbol_list)
+        self._bookticker_symbols = target_symbols
+        self._subs = self._build_bookticker_requests(target_symbols)
 
         self._send_all_subscriptions()
 
@@ -122,6 +125,38 @@ class HuobiWsManager(WsManager):
                 HuobiAuxiliary.reconnection_time_sleep.value,
             )
             self._send_all_subscriptions()
+
+    @staticmethod
+    def _build_bookticker_channel(symbol: str) -> str:
+        return f"market.{symbol.lower()}.bbo"
+
+    @classmethod
+    def _build_bookticker_requests(
+        cls,
+        symbols: Iterable[str],
+    ) -> List[dict]:
+        return [
+            {"sub": cls._build_bookticker_channel(symbol), "id": index}
+            for index, symbol in enumerate(sorted(symbols), start=1)
+        ]
+
+    def update_bookticker_stream(
+        self,
+        symbols: Iterable[str],
+    ) -> SubscriptionUpdate:
+        """Update a live public book-ticker stream in place."""
+        target_symbols = normalize_subscription_targets(symbols)
+        current_symbols = getattr(self, "_bookticker_symbols", frozenset())
+        update = calculate_subscription_update(current_symbols, target_symbols)
+        if not update.added and not update.removed:
+            return update
+        for symbol in update.added:
+            self.send_json({"sub": self._build_bookticker_channel(symbol)})
+        for symbol in update.removed:
+            self.send_json({"unsub": self._build_bookticker_channel(symbol)})
+        self._bookticker_symbols = target_symbols
+        self._subs = self._build_bookticker_requests(target_symbols)
+        return update
 
     def subscribe(self):
         """
