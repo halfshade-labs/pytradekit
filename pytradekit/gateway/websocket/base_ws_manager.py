@@ -158,5 +158,5 @@ class BaseWebsocketManager:
 
     def _reconnect_streams(self):
         self.logger.debug("reconnect_streams: ", self._subs)
-        for sub in self._subs:
+        for sub in tuple(self._subs):
             self.send_json(sub)
