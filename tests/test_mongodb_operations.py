@@ -22,6 +22,25 @@ def test_create_client(mocker):
     spy.assert_called_once_with(MONGODB_URL)
 
 
+@pytest.mark.parametrize(
+    "mongodb_url",
+    [
+        "mongodb://user%40name:p%40%3A%2F%2B+word@localhost:27017/?authSource=admin",
+        "mongodb://localhost:27017/",
+        "mongodb://[::1]:27017/?directConnection=true",
+    ],
+)
+def test_create_client_preserves_mongodb_url(mocker, mongodb_url):
+    mongo_client = mocker.patch(
+        'pytradekit.utils.mongodb_operations.MongoClient',
+        return_value=mocker.MagicMock(),
+    )
+
+    MongodbOperations._create_client(mongodb_url)
+
+    mongo_client.assert_called_once_with(mongodb_url)
+
+
 # 测试关闭MongoDB连接
 def test_close(mocker):
     # Reset singleton state so this test is isolated from prior runs.
