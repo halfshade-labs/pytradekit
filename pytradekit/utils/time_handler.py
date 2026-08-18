@@ -1,10 +1,7 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import functools
 import time
 from enum import Enum, auto
-
-import pytz
-import pandas as pd
 
 from pytradekit.utils.clock import (
     get_monotonic_timestamp_ns as get_monotonic_timestamp_ns,
@@ -20,7 +17,7 @@ DATETIME_FORMAT_HOUR = '%Y-%m-%d %H:00:00'
 DATETIME_FORMAT_HMS = '%H-%M-%S'
 DATETIME_FORMAT_HB = '%Y-%m-%dT%H:%M:%S'
 DATETIME_FORMAT_OKEX = '%Y-%m-%d %H:%M:%S.%fZ'
-TIME_ZONE = pytz.timezone('UTC')
+TIME_ZONE = timezone.utc
 
 
 class TimeFrame(Enum):
@@ -216,23 +213,25 @@ def get_now_hour_utc8(a_format=DATETIME_FORMAT) -> str:
 
 
 def get_timestamp_ms() -> int:
+    """Return the current Unix timestamp in milliseconds."""
     return int(round(time.time() * TimeConvert.S_TO_MS))
 
 
 def get_timestamp_s() -> int:
+    """Return the current Unix timestamp in seconds."""
     return round(time.time())
 
 
 def convert_str_to_timestamp(date_string):
+    """Interpret a timezone-naive datetime string as UTC and return its epoch timestamp."""
     if len(date_string) == 19:
         date_format = DATETIME_FORMAT
     elif len(date_string) == 23:
         date_format = DATETIME_FORMAT_MS
     else:
         raise ValueError("unsupported date format")
-    utc_zone = pytz.utc
     naive_datetime = datetime.strptime(date_string, date_format)
-    timestamp = naive_datetime.replace(tzinfo=utc_zone).timestamp()
+    timestamp = naive_datetime.replace(tzinfo=timezone.utc).timestamp()
     if date_format == DATETIME_FORMAT_MS:
         return int(timestamp * TimeConvert.S_TO_MS)
     else:
@@ -256,14 +255,16 @@ def check_time_within_threshold(data_time, threshold_minutes):
 
 
 def convert_timestamp_to_hour_str(timestamp):
-    dt_object = datetime.fromtimestamp(timestamp / TimeConvert.S_TO_MS)
+    """Convert a millisecond epoch timestamp to its timezone-naive UTC hour string."""
+    dt_object = convert_timestamp_to_datetime(timestamp)
     hour = dt_object.strftime("%Y-%m-%d %H:00:00")
     return hour
 
 
 def get_today_start_timestamp(unit=TimeUnits.MS):
-    today_start_str = get_datetime().strftime('%Y-%m-%d 00:00:00')
-    today_start_timestamp = int(time.mktime(time.strptime(today_start_str, DATETIME_FORMAT)))
+    """Return the start of the current UTC day as an epoch timestamp."""
+    today_start = get_datetime().replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=timezone.utc)
+    today_start_timestamp = int(today_start.timestamp())
 
     if unit == TimeUnits.MS:
         return today_start_timestamp * TimeConvert.S_TO_MS
@@ -274,8 +275,9 @@ def get_today_start_timestamp(unit=TimeUnits.MS):
 
 
 def get_hours_start_timestamp(unit=TimeUnits.MS):
-    hours_start_str = get_datetime().strftime('%Y-%m-%d %H:00:00')
-    hours_start_timestamp = int(time.mktime(time.strptime(hours_start_str, DATETIME_FORMAT)))
+    """Return the start of the current UTC hour as an epoch timestamp."""
+    hours_start = get_datetime().replace(minute=0, second=0, microsecond=0, tzinfo=timezone.utc)
+    hours_start_timestamp = int(hours_start.timestamp())
 
     if unit == TimeUnits.MS:
         return hours_start_timestamp * TimeConvert.S_TO_MS
@@ -286,11 +288,14 @@ def get_hours_start_timestamp(unit=TimeUnits.MS):
 
 
 def get_hours_start_end_timestamp():
-    now = get_datetime()
-    current_hour = int(
-        datetime(year=now.year, month=now.month, day=now.day, hour=now.hour, minute=0, second=0).timestamp())
-    previous_hour_timestamp = current_hour - TimeConvert.MIN_TO_S * TimeConvert.MIN_TO_S
-    time_span = TimeSpan(start=previous_hour_timestamp * TimeConvert.S_TO_MS, end=current_hour * TimeConvert.S_TO_MS)
+    """Return the previous and current UTC hour boundaries in milliseconds."""
+    current_hour = get_datetime().replace(minute=0, second=0, microsecond=0, tzinfo=timezone.utc)
+    current_hour_timestamp = int(current_hour.timestamp())
+    previous_hour_timestamp = current_hour_timestamp - TimeConvert.HOUR_TO_S
+    time_span = TimeSpan(
+        start=previous_hour_timestamp * TimeConvert.S_TO_MS,
+        end=current_hour_timestamp * TimeConvert.S_TO_MS,
+    )
     return time_span
 
 
@@ -311,15 +316,20 @@ def convert_date_str_timezone(date_str, hours=8, date_format=DATETIME_FORMAT):
     return (convert_str_to_datetime(date_str) + timedelta(hours=hours)).strftime(date_format)
 
 
-def convert_timestamp_to_str(timestamp, unit=TimeUnits.MS, a_format=DATETIME_FORMAT):
+def convert_timestamp_to_utc_str(timestamp, unit=TimeUnits.MS, a_format=DATETIME_FORMAT):
+    """Convert an epoch timestamp to a timezone-naive UTC string."""
     if unit == TimeUnits.MS:
         timestamp = int(timestamp) / TimeConvert.S_TO_MS
     elif unit == TimeUnits.SECOND:
         timestamp = int(timestamp)
     else:
         raise ValueError("Unsupported unit. Please use 'ms' for milliseconds or 's' for seconds.")
-    time_str = time.strftime(a_format, time.localtime(timestamp))
-    return time_str
+    return datetime.fromtimestamp(timestamp, tz=timezone.utc).strftime(a_format)
+
+
+def convert_timestamp_to_str(timestamp, unit=TimeUnits.MS, a_format=DATETIME_FORMAT):
+    """Backward-compatible name for converting an epoch timestamp to a UTC string."""
+    return convert_timestamp_to_utc_str(timestamp, unit=unit, a_format=a_format)
 
 
 def convert_datatime_to_timestamp(datatime, a_format=DATETIME_FORMAT):
@@ -329,18 +339,24 @@ def convert_datatime_to_timestamp(datatime, a_format=DATETIME_FORMAT):
 
 
 def convert_timestamp_to_datetime(timestamp, unit=TimeUnits.MS):
+    """Convert an epoch timestamp to a timezone-naive UTC datetime."""
     if unit == TimeUnits.MS:
         timestamp = int(timestamp) / TimeConvert.S_TO_MS
     elif unit == TimeUnits.SECOND:
         timestamp = int(timestamp)
     else:
         raise ValueError("Unsupported unit. Please use 'ms' for milliseconds or 's' for seconds.")
-    dt = datetime.utcfromtimestamp(timestamp)
-    return dt
+    return datetime.fromtimestamp(timestamp, tz=timezone.utc).replace(tzinfo=None)
+
+
+def get_utc_datetime() -> datetime:
+    """Return the current UTC time as a naive datetime for backward compatibility."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def get_datetime() -> datetime:
-    return datetime.utcnow()
+    """Backward-compatible name for the current timezone-naive UTC datetime."""
+    return get_utc_datetime()
 
 
 def get_current_hour_datetime() -> datetime:
@@ -528,6 +544,8 @@ def get_time_span_by_hour(raw_cron):
 
 
 def get_ms_time_span_by_hour(raw_cron):
+    import pandas as pd
+
     assert raw_cron['hour'][0] == '*'
     hours = int(raw_cron['hour'].split('/')[1])
     time_span = get_rounded_time_interval(back_hours=hours)
@@ -550,6 +568,8 @@ def check_str_format(time_str, date_format=DATETIME_FORMAT):
 
 
 def get_df_time_diff(df, start_time, end_time):
+    import pandas as pd
+
     df[start_time] = pd.to_datetime(df[start_time])
     df[end_time] = pd.to_datetime(df[end_time])
     df['time_diff'] = (df[end_time] - df[start_time]).dt.total_seconds() * TimeConvert.S_TO_MS

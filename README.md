@@ -188,18 +188,24 @@ log_level = config.get("log", "level", fallback="INFO")
 ### 5. 使用时间处理工具
 
 ```python
-from pytradekit.utils.time_handler import TimeConvert, TimeFrame
-import time
+from pytradekit.utils.time_handler import (
+    convert_timestamp_to_utc_str,
+    get_timestamp_ms,
+    get_utc_datetime,
+)
 
-# 时间戳转换
-current_ms = int(time.time() * 1000)
-datetime_obj = TimeConvert.ms_to_datetime(current_ms)
-formatted = TimeConvert.datetime_to_str(datetime_obj)
-
-# 时间计算
-one_hour_ago_ms = current_ms - TimeConvert.HOUR_TO_MS
-one_day_ago_ms = current_ms - TimeConvert.DAY_TO_MS
+now_utc = get_utc_datetime()
+current_ms = get_timestamp_ms()
+formatted_utc = convert_timestamp_to_utc_str(current_ms)
 ```
+
+时间模块以 UTC 为内部契约：Unix timestamp 使用秒或毫秒；`get_utc_datetime()`、
+`get_datetime()` 以及 timestamp 转换 helper 返回 timezone-naive UTC，方便兼容现有
+MongoDB 字段。展示 UTC+8 等本地时间时，应在业务适配层显式转换。
+
+`convert_timestamp_to_str()` 保留为兼容名称，但同样按 UTC 格式化，不再依赖运行机器的
+本地时区。只有 DataFrame 相关 helper 会在调用时加载 pandas，基础时间函数导入时不需要
+pandas。
 
 ### 6. 使用数据库操作
 
