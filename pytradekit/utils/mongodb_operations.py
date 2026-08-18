@@ -9,7 +9,6 @@ import json
 import re
 import threading
 from decimal import Decimal
-from urllib.parse import urlparse, quote_plus, urlunparse
 import functools
 
 import pandas as pd
@@ -169,15 +168,7 @@ class MongodbOperations:
 
     @staticmethod
     def _create_client(mongodb_url):
-        parsed = urlparse(mongodb_url)
-        # urlparse automatically decodes URL-encoded values, so we should NOT re-encode them
-        # The username and password in the URL are already properly encoded by quote_plus in tools.py
-        username = parsed.username or ""
-        password = parsed.password or ""
-        netloc = f"{username}:{password}@{parsed.hostname}:{parsed.port}"
-        safe_mongodb_url = urlunparse(
-            (parsed.scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment))
-        return MongoClient(safe_mongodb_url)
+        return MongoClient(mongodb_url)
 
     def _check_connection(self):
         try:
