@@ -1,11 +1,69 @@
-from datetime import timedelta, datetime
+from datetime import timedelta, datetime, timezone
+import os
+from pathlib import Path
+import subprocess
+import sys
+import time
 
 import pytest
 
 from pytradekit.utils.time_handler import get_datetime, get_rounded_time_interval, DATETIME_FORMAT, get_timestamp_ms, \
     get_next_min_ms, get_today_start_timestamp, TimeUnits, get_tomorrow_datetime, get_last_complete_month_utc, \
     get_last_complete_week_utc, get_last_complete_quarter_utc, get_since_2000_utc, get_before_yesterday_utc, \
-    get_today_str, TimeSpan, adjust_time_span, get_last_quarter_day_range, get_next_hour_time
+    get_today_str, TimeSpan, adjust_time_span, get_last_quarter_day_range, get_next_hour_time, \
+    convert_timestamp_to_str, convert_timestamp_to_hour_str, get_hours_start_timestamp, \
+    get_hours_start_end_timestamp
+
+
+@pytest.fixture
+def shanghai_process_timezone():
+    if not hasattr(time, 'tzset'):
+        pytest.skip('time.tzset is required for process timezone tests')
+    original_timezone = os.environ.get('TZ')
+    os.environ['TZ'] = 'Asia/Shanghai'
+    time.tzset()
+    yield
+    if original_timezone is None:
+        os.environ.pop('TZ', None)
+    else:
+        os.environ['TZ'] = original_timezone
+    time.tzset()
+
+
+def test_import_does_not_load_pandas():
+    project_root = Path(__file__).resolve().parents[1]
+    result = subprocess.run(
+        [
+            sys.executable,
+            '-c',
+            (
+                'import sys; '
+                'import pytradekit.utils.time_handler; '
+                'raise SystemExit(1 if "pandas" in sys.modules else 0)'
+            ),
+        ],
+        cwd=project_root,
+        check=False,
+    )
+    assert result.returncode == 0
+
+
+def test_epoch_conversion_uses_utc_in_non_utc_process_timezone(shanghai_process_timezone):
+    assert convert_timestamp_to_str(0, unit=TimeUnits.SECOND) == '1970-01-01 00:00:00'
+    assert convert_timestamp_to_hour_str(0) == '1970-01-01 00:00:00'
+
+
+def test_utc_boundaries_ignore_process_timezone(monkeypatch, shanghai_process_timezone):
+    fixed_utc = datetime(2024, 1, 2, 3, 4, 5)
+    monkeypatch.setattr('pytradekit.utils.time_handler.get_datetime', lambda: fixed_utc)
+    expected_day_start = int(datetime(2024, 1, 2, tzinfo=timezone.utc).timestamp())
+    expected_hour_start = int(datetime(2024, 1, 2, 3, tzinfo=timezone.utc).timestamp())
+
+    assert get_today_start_timestamp(unit=TimeUnits.SECOND) == expected_day_start
+    assert get_hours_start_timestamp(unit=TimeUnits.SECOND) == expected_hour_start
+    time_span = get_hours_start_end_timestamp()
+    assert time_span.start == (expected_hour_start - 3600) * 1000
+    assert time_span.end == expected_hour_start * 1000
 
 
 @pytest.mark.parametrize(
