@@ -14,7 +14,7 @@ import functools
 import pandas as pd
 from pandas import DataFrame
 import numpy as np
-from pymongo import MongoClient, DESCENDING, ReplaceOne
+from pymongo import MongoClient, DESCENDING, ReplaceOne, UpdateOne
 from pymongo.errors import ConnectionFailure, NetworkTimeout, OperationFailure, ServerSelectionTimeoutError
 
 from pytradekit.utils.time_handler import DATETIME_FORMAT_DAY, get_yesterday_datetime, \
@@ -46,6 +46,7 @@ class CollectionPath:
 class MongodbOperations:
     _client = None
     _indexes_ensured = False
+    _deposit_withdraw_indexes_ensured = set()
     _indexes_lock = threading.Lock()
 
     @staticmethod
@@ -100,6 +101,7 @@ class MongodbOperations:
             name="idx_exchange_inst_time",
             background=True,
         )
+
         # premium_snapshots: query by coin + time range
         self.client[Database.arbitrage.name][Database.premium_snapshots.name].create_index(
             [
@@ -119,6 +121,21 @@ class MongodbOperations:
             name="idx_account_inst_time",
             background=True,
         )
+
+    def _ensure_deposit_withdraw_index(self, collection, collection_name):
+        with MongodbOperations._indexes_lock:
+            if collection_name in MongodbOperations._deposit_withdraw_indexes_ensured:
+                return
+            collection.create_index(
+                [
+                    (DepositWithdrawAttribute.account_id.name, 1),
+                    (DepositWithdrawAttribute.id.name, 1),
+                ],
+                unique=True,
+                name="idx_account_transaction",
+                background=True,
+            )
+            MongodbOperations._deposit_withdraw_indexes_ensured.add(collection_name)
 
     def get_correct_dict(self, a_dict) -> dict:
         return {key1: self.get_correct_value(val1) for key1, val1 in a_dict.items()}
@@ -192,6 +209,7 @@ class MongodbOperations:
             # Reset so a reconnect re-ensures indexes on the new client; the flag
             # is bound to the connection's lifecycle, not the process.
             MongodbOperations._indexes_ensured = False
+            MongodbOperations._deposit_withdraw_indexes_ensured.clear()
 
     def delete_coll(self, collection_path):
         """
@@ -392,20 +410,42 @@ class MongodbOperations:
         self.insert_data(data, collection_path)
 
     def insert_deposit_withdraw(self, data, exchange_id):
+        if not data:
+            return False
+
         collection_path = CollectionPath(db_name=Database.raw_accounts.name,
                                          collection_name=f'{exchange_id}_{Database.deposit_withdraw.name}')
         collection = self.client[collection_path.db_name][collection_path.collection_name]
+        account_id_field = DepositWithdrawAttribute.account_id.name
+        transaction_id_field = DepositWithdrawAttribute.id.name
+        self._ensure_deposit_withdraw_index(collection, collection_path.collection_name)
 
-        new_ids = {item["id"] for item in data}
-        existing_ids = {item["id"] for item in collection.find({"id": {"$in": list(new_ids)}})}
-        filtered_data = [item for item in data if item["id"] not in existing_ids]
+        unique_data = {}
+        for item in data:
+            normalized_item = self.get_correct_dict(item)
+            identity = (
+                normalized_item[account_id_field],
+                normalized_item[transaction_id_field],
+            )
+            unique_data[identity] = (item, normalized_item)
 
-        if not filtered_data:
+        unique_records = list(unique_data.values())
+        operations = [
+            UpdateOne(
+                {account_id_field: account_id, transaction_id_field: transaction_id},
+                {"$setOnInsert": normalized_item},
+                upsert=True,
+            )
+            for (account_id, transaction_id), (_, normalized_item) in unique_data.items()
+        ]
+        result = collection.bulk_write(operations, ordered=False)
+        inserted_data = [
+            unique_records[operation_index][0]
+            for operation_index in sorted(result.upserted_ids)
+        ]
+        if not inserted_data and self.logger:
             self.logger.debug("No new data to insert.")
-            return False
-
-        self.insert_data(filtered_data, collection_path)
-        return filtered_data
+        return inserted_data or False
 
     def insert_pnl(self, data):
         collection_path = CollectionPath(db_name=Database.raw_metrics.name,
