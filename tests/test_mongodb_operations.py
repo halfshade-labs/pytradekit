@@ -171,6 +171,102 @@ class TestUpdateTradeRecordStripsDecimal:
         assert sent_update['$set']['legs']['LONG_LEG']['position_size'] == '0.57500000'
 
 
+class TestInsertDepositWithdraw:
+    def _make_ops(self, mocker):
+        MongodbOperations._client = None
+        MongodbOperations._indexes_ensured = False
+        MongodbOperations._deposit_withdraw_indexes_ensured.clear()
+        mocked_client = mocker.MagicMock()
+        mocker.patch('pytradekit.utils.mongodb_operations.MongoClient', return_value=mocked_client)
+        mocker.patch.object(MongodbOperations, '_ensure_indexes')
+        return MongodbOperations(MONGODB_URL), mocked_client
+
+    @staticmethod
+    def _record(account_id, transaction_id, quantity='1.25'):
+        return {
+            'account_id': account_id,
+            'id': transaction_id,
+            'quantity': Decimal(quantity),
+        }
+
+    def test_uses_atomic_upserts_and_returns_only_inserted_records(self, mocker):
+        ops, client = self._make_ops(mocker)
+        collection = client['raw_accounts']['BN_deposit_withdraw']
+        collection.bulk_write.return_value.upserted_ids = {1: 'inserted-id'}
+        records = [
+            self._record('BN_000', 'transaction-1'),
+            self._record('BN_000', 'transaction-2'),
+        ]
+
+        inserted = ops.insert_deposit_withdraw(records, 'BN')
+
+        collection.create_index.assert_called_once_with(
+            [('account_id', 1), ('id', 1)],
+            unique=True,
+            name='idx_account_transaction',
+            background=True,
+        )
+        operations = collection.bulk_write.call_args.args[0]
+        assert collection.bulk_write.call_args.kwargs == {'ordered': False}
+        assert [operation._filter for operation in operations] == [
+            {'account_id': 'BN_000', 'id': 'transaction-1'},
+            {'account_id': 'BN_000', 'id': 'transaction-2'},
+        ]
+        assert all(operation._upsert for operation in operations)
+        assert operations[0]._doc == {
+            '$setOnInsert': {
+                'account_id': 'BN_000',
+                'id': 'transaction-1',
+                'quantity': '1.25',
+            },
+        }
+        assert inserted == [records[1]]
+
+    def test_deduplicates_within_batch_by_account_and_transaction(self, mocker):
+        ops, client = self._make_ops(mocker)
+        collection = client['raw_accounts']['BN_deposit_withdraw']
+        collection.bulk_write.return_value.upserted_ids = {0: 'inserted-id'}
+        records = [
+            self._record('BN_000', 'shared-id', '1'),
+            self._record('BN_000', 'shared-id', '2'),
+            self._record('BN_001', 'shared-id', '3'),
+        ]
+
+        inserted = ops.insert_deposit_withdraw(records, 'BN')
+
+        operations = collection.bulk_write.call_args.args[0]
+        assert len(operations) == 2
+        assert [operation._filter for operation in operations] == [
+            {'account_id': 'BN_000', 'id': 'shared-id'},
+            {'account_id': 'BN_001', 'id': 'shared-id'},
+        ]
+        assert operations[0]._doc['$setOnInsert']['quantity'] == '2'
+        assert inserted == [records[1]]
+
+    def test_returns_false_when_every_record_already_exists(self, mocker):
+        ops, client = self._make_ops(mocker)
+        collection = client['raw_accounts']['OKX_deposit_withdraw']
+        collection.bulk_write.return_value.upserted_ids = {}
+
+        result = ops.insert_deposit_withdraw(
+            [self._record('OKX_000', 'transaction-1')],
+            'OKX',
+        )
+
+        assert result is False
+
+    def test_creates_each_collection_index_once_per_client(self, mocker):
+        ops, client = self._make_ops(mocker)
+        collection = client['raw_accounts']['BN_deposit_withdraw']
+        collection.bulk_write.return_value.upserted_ids = {}
+        records = [self._record('BN_000', 'transaction-1')]
+
+        ops.insert_deposit_withdraw(records, 'BN')
+        ops.insert_deposit_withdraw(records, 'BN')
+
+        collection.create_index.assert_called_once()
+
+
 class TestDeleteInstCodeBasicGuard:
     """#110: a falsy inst_code made query == {}, so delete_many wiped the entire
     {exchange_id}_inst_code_basic collection. The guard must refuse and never
