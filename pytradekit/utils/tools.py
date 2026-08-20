@@ -16,8 +16,14 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 import pandas as pd
 
-from pytradekit.utils.dynamic_types import OrderStatus, ExchangeId, InstCodeType, Env, RunningMode, TradeAttribute, \
-    SlackUser
+from pytradekit.utils.dynamic_types import (
+    Env,
+    ExchangeId,
+    InstCodeType,
+    OrderStatus,
+    RunningMode,
+    TradeAttribute,
+)
 from pytradekit.utils.custom_types import InstCode, KlineFrame, ReportTitle
 from pytradekit.utils.static_types import InstcodeBasicAttribute
 from pytradekit.utils.time_handler import get_now_time, DATETIME_FORMAT_DAY, DATETIME_FORMAT_HMS

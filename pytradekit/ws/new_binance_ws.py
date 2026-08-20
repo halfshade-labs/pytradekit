@@ -5,9 +5,8 @@ from threading import Thread
 import requests
 from websocket import WebSocketApp
 
-from pytradekit.utils.dynamic_types import BinanceAuxiliary, BinanceWebSocket
+from pytradekit.utils.dynamic_types import BinanceAuxiliary, BinanceWebSocket, WebsocketStatus
 from pytradekit.utils.time_handler import get_timestamp_ms, get_timestamp_s
-from pytradekit.utils.dynamic_types import SlackUser, WebsocketStatus
 from pytradekit.utils.exceptions import ExchangeException
 
 
