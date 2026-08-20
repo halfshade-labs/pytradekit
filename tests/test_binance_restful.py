@@ -149,6 +149,47 @@ def test_get_perp_ticker_price_sends_symbol_param():
     assert captured["params"]["symbol"] == "ZECUSDT"
 
 
+def test_get_usdm_exchange_information_uses_fapi_endpoint():
+    client = _make_client()
+    client._url = "https://api.binance.com"
+    captured = {}
+
+    def fake_request(method, url, params=None, use_sign=True):
+        captured["url"] = url
+        captured["params"] = params
+        captured["use_sign"] = use_sign
+        return {"symbols": []}
+
+    client.request = fake_request
+    result = client.get_usdm_exchange_information()
+
+    assert captured["url"] == "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    assert captured["params"] is None
+    assert captured["use_sign"] is False
+    assert result == {"symbols": []}
+
+
+def test_get_usdm_orderbook_uses_fapi_endpoint_and_query():
+    client = _make_client()
+    client._url = "https://api.binance.com"
+    captured = {}
+
+    def fake_request(method, url, params=None, use_sign=True):
+        captured["url"] = url
+        captured["params"] = params
+        captured["use_sign"] = use_sign
+        return {"bids": [], "asks": []}
+
+    client.request = fake_request
+    client.get_usdm_orderbook("BTCUSDT_260925", limit=100)
+
+    assert captured["url"] == (
+        "https://fapi.binance.com/fapi/v1/depth?symbol=BTCUSDT_260925&limit=100"
+    )
+    assert captured["params"] is None
+    assert captured["use_sign"] is False
+
+
 def test_get_klines_does_not_duplicate_query_params():
     client = _make_client()
     client._url = "https://api.binance.com"

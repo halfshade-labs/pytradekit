@@ -1,4 +1,5 @@
 from decimal import Decimal
+from typing import Any, Dict, Optional
 from urllib.parse import urlencode
 import time
 
@@ -198,6 +199,15 @@ class BinanceClient:
             url = url + '?' + query_string
         return url
 
+    @staticmethod
+    def _make_usdm_public_url(url_path: str, params: Dict[str, Any]) -> str:
+        """Build a USD-M public URL independently of the client account mode."""
+        query_string = urlencode(params, True)
+        url = BinanceAuxiliary.perp_url.value + url_path
+        if query_string:
+            url = url + '?' + query_string
+        return url
+
     def _make_private_url(self, url_path, params, use_sign=True, timestamp=True):
         timestamp1 = self.get_timestamp()
         if use_sign:
@@ -275,6 +285,34 @@ class BinanceClient:
                                     params=params)
         stats = self.request(HttpMmthod.GET.name, url, use_sign=False)
         return stats
+
+    def get_usdm_exchange_information(self) -> Any:
+        """Return all Binance USD-M instruments, including dated futures.
+
+        The existing ``get_exchange_information`` method is the spot endpoint
+        even when the client uses the fapi base URL. Keep this explicit method
+        separate so callers cannot silently hit ``/api/v3`` on fapi.
+        """
+        url = self._make_usdm_public_url(
+            url_path=BinanceAuxiliary.url_usdm_exchange.value,
+            params={},
+        )
+        return self.request(HttpMmthod.GET.name, url, use_sign=False)
+
+    def get_usdm_orderbook(
+            self,
+            symbol: str,
+            limit: Optional[int] = None,
+    ) -> Any:
+        """Return a Binance USD-M L2 snapshot for perpetual or dated futures."""
+        params = {RestfulRequestsAttribute.symbol.name: symbol}
+        if limit is not None:
+            params[RestfulRequestsAttribute.limit.name] = limit
+        url = self._make_usdm_public_url(
+            url_path=BinanceAuxiliary.url_usdm_orderbook.value,
+            params=params,
+        )
+        return self.request(HttpMmthod.GET.name, url, use_sign=False)
 
     def get_orderbook(self, symbol, limit=None):
         params = {RestfulRequestsAttribute.symbol.name: symbol}

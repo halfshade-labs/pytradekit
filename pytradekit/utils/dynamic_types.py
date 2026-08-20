@@ -50,6 +50,25 @@ class InstCodeType(Enum):
     FUTU = auto()
 
 
+class OkexInstrumentType(Enum):
+    """OKX public/private API wire values for instrument type."""
+
+    SPOT = "SPOT"
+    SWAP = "SWAP"
+    FUTURES = "FUTURES"
+
+
+class BinanceUsdMContractType(Enum):
+    """Known Binance USD-M exchangeInfo contractType wire values."""
+
+    PERPETUAL = "PERPETUAL"
+    CURRENT_MONTH = "CURRENT_MONTH"
+    NEXT_MONTH = "NEXT_MONTH"
+    CURRENT_QUARTER = "CURRENT_QUARTER"
+    NEXT_QUARTER = "NEXT_QUARTER"
+    PERPETUAL_DELIVERING = "PERPETUAL_DELIVERING"
+
+
 class TaskIdName(Enum):
     key = 'task_id'
     ws_001 = 'ws_bn_order_trade'
@@ -924,6 +943,8 @@ class BinanceAuxiliary(Enum):
     user_perp_data_stream = '/fapi/v1/listenKey'
     url_ticker_24hr = '/api/v3/ticker/24hr'
     url_perp_ticker_24hr = '/fapi/v1/ticker/24hr'
+    url_usdm_exchange = '/fapi/v1/exchangeInfo'
+    url_usdm_orderbook = '/fapi/v1/depth'
     url_balance = '/api/v3/account'
     url_wallet = '/sapi/v1/asset/wallet/balance'
     url_funding_balance = '/sapi/v1/asset/get-funding-asset'
@@ -1030,6 +1051,7 @@ class OkexAuxiliary(Enum):
     url_exchange = '/api/v5/public/instruments'
     url_ticker = '/api/v5/market/tickers'
     url_orderbook = '/api/v5/market/books-full'
+    url_orderbook_l2 = '/api/v5/market/books'
     url_balance = '/api/v5/account/balance'
     url_asset_balance = '/api/v5/asset/balances'
     url_deposit_history = '/api/v5/asset/deposit-history'

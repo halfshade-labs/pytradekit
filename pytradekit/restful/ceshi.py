@@ -1,15 +1,11 @@
-"""
-Minimal OKX balance check (based on okex_restful.py signing).
+"""Minimal environment-only OKX balance check.
 
-No local pytradekit dependency. Only requires: requests
+Configure ``OKX_API_KEY``, ``OKX_API_SECRET``, and ``OKX_PASSPHRASE`` through
+a secret manager or non-echoing shell input, then run::
 
-Run:
-  OKX_API_KEY=xxx OKX_API_SECRET=yyy OKX_PASSPHRASE=zzz \
-  python okex_balance_check.py
+    python -m pytradekit.restful.ceshi
 
-Optional:
-  OKX_BASE_URL=https://www.okx.com
-  OKX_CCY=USDT
+Optional environment variables are ``OKX_BASE_URL`` and ``OKX_CCY``.
 """
 
 import base64
@@ -18,51 +14,68 @@ import hmac
 import json
 import os
 from datetime import datetime, timezone
+from urllib.parse import urlencode
 
 import requests
 
-OKX_API_KEY = "a4a89592-c6c5-4685-8054-591c46e7a496"  # 直接填你的 key（不建议提交到 git）
-OKX_API_SECRET = "21EB40D5C011CC52C66A4ED6BF07A95B"  # 直接填你的 secret（不建议提交到 git）
-OKX_PASSPHRASE = "Goldwave112#"  # 直接填你的 passphrase（不建议提交到 git）
+
+REQUEST_TIMEOUT_SECONDS = 15
 
 
-def okx_ts() -> str:
-    return datetime.now(tz=timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+def get_okx_timestamp() -> str:
+    """Return an OKX-compatible UTC timestamp."""
+    return datetime.now(tz=timezone.utc).isoformat(timespec="milliseconds").replace(
+        "+00:00",
+        "Z",
+    )
+
+
+def get_required_environment(name: str) -> str:
+    """Read a required non-empty environment variable."""
+    value = os.getenv(name, "").strip()
+    if not value:
+        raise SystemExit(f"Missing required environment variable: {name}")
+    return value
 
 
 def main() -> None:
-    key = (OKX_API_KEY or os.getenv("OKX_API_KEY", "")).strip()
-    secret = (OKX_API_SECRET or os.getenv("OKX_API_SECRET", "")).strip()
-    passphrase = (OKX_PASSPHRASE or os.getenv("OKX_PASSPHRASE", "")).strip()
-    base_url = os.getenv("OKX_BASE_URL", "https://www.okx.com").strip()
-    ccy = os.getenv("OKX_CCY", "").strip()
-    if not (key and secret and passphrase):
-        raise SystemExit("Need OKX_API_KEY / OKX_API_SECRET / OKX_PASSPHRASE")
+    key = get_required_environment("OKX_API_KEY")
+    secret = get_required_environment("OKX_API_SECRET")
+    passphrase = get_required_environment("OKX_PASSPHRASE")
+    base_url = os.getenv("OKX_BASE_URL", "https://www.okx.com").rstrip("/")
+    currency = os.getenv("OKX_CCY", "").strip()
 
-    api = "/api/v5/account/balance"  # same as OkexAuxiliary.url_balance in okex_restful.py
-    params = {"ccy": ccy} if ccy else {}
-    ts = okx_ts()
-    path = api + (("?" + "&".join([f"{k}={v}" for k, v in params.items()])) if params else "")
-    msg = f"{ts}GET{path}"
-    sign = base64.b64encode(hmac.new(secret.encode(), msg.encode(), hashlib.sha256).digest()).decode()
+    api_path = "/api/v5/account/balance"
+    params = {"ccy": currency} if currency else {}
+    timestamp = get_okx_timestamp()
+    request_path = api_path
+    if params:
+        request_path = f"{api_path}?{urlencode(params)}"
+    message = f"{timestamp}GET{request_path}"
+    signature = base64.b64encode(
+        hmac.new(
+            secret.encode("utf-8"),
+            message.encode("utf-8"),
+            hashlib.sha256,
+        ).digest()
+    ).decode("ascii")
 
     headers = {
         "OK-ACCESS-KEY": key,
-        "OK-ACCESS-SIGN": sign,
-        "OK-ACCESS-TIMESTAMP": ts,
+        "OK-ACCESS-SIGN": signature,
+        "OK-ACCESS-TIMESTAMP": timestamp,
         "OK-ACCESS-PASSPHRASE": passphrase,
         "Content-Type": "application/json",
     }
-
-    r = requests.get(base_url + api, headers=headers, params=params, timeout=15)
-    try:
-        data = r.json()
-    except Exception:
-        data = {"http_status": r.status_code, "raw": r.text}
-    print(json.dumps(data, ensure_ascii=False, indent=2))
+    response = requests.get(
+        f"{base_url}{api_path}",
+        headers=headers,
+        params=params,
+        timeout=REQUEST_TIMEOUT_SECONDS,
+    )
+    response.raise_for_status()
+    print(json.dumps(response.json(), ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":
     main()
-
-

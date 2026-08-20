@@ -3,12 +3,21 @@ import hashlib
 from decimal import Decimal
 import hmac
 import base64
+from typing import Any, Optional
 from urllib.parse import urlencode
 import requests
 from pytradekit.utils.time_handler import get_ok_timestamp
-from pytradekit.utils.dynamic_types import HttpMmthod, OkexAuxiliary, InstCodeType
+from pytradekit.utils.dynamic_types import (
+    HttpMmthod,
+    InstCodeType,
+    OkexAuxiliary,
+    OkexInstrumentType,
+)
 from pytradekit.utils.static_types import FeeStructureKey
 from pytradekit.utils.exceptions import ExchangeException
+
+
+SYNC_HTTP_TIMEOUT = (5, 30)
 
 
 class OkexClient:
@@ -53,9 +62,18 @@ class OkexClient:
             if method == HttpMmthod.GET.name:
                 if params:
                     url = f'{url}?{urlencode(params)}'
-                resp = self.session.get(url, headers=headers)
+                resp = self.session.get(
+                    url,
+                    headers=headers,
+                    timeout=SYNC_HTTP_TIMEOUT,
+                )
             elif method == HttpMmthod.POST.name:
-                resp = self.session.post(url, json=params, headers=headers)
+                resp = self.session.post(
+                    url,
+                    json=params,
+                    headers=headers,
+                    timeout=SYNC_HTTP_TIMEOUT,
+                )
             else:
                 raise ExchangeException(f'method {method} not support')
             if resp.status_code != 200:
@@ -80,13 +98,13 @@ class OkexClient:
         datas = self._send_request(url, method=HttpMmthod.GET.name, params=params)
         return datas
 
-    def get_ticker_24hr(self, inst_type=InstCodeType.SPOT.name):
+    def get_ticker_24hr(self, inst_type=OkexInstrumentType.SPOT.value):
         params = {'instType': inst_type}
         url = OkexAuxiliary.url_ticker.value
         datas = self._send_request(url, method=HttpMmthod.GET.name, params=params, use_sign=False)
         return datas
 
-    def get_exchange_information(self, inst_type=InstCodeType.SPOT.name):
+    def get_exchange_information(self, inst_type=OkexInstrumentType.SPOT.value):
         params = {'instType': inst_type}
         url = OkexAuxiliary.url_exchange.value
         datas = self._send_request(url, method=HttpMmthod.GET.name, params=params, use_sign=False)
@@ -98,6 +116,21 @@ class OkexClient:
         url = OkexAuxiliary.url_orderbook.value
         datas = self._send_request(url, method=HttpMmthod.GET.name, params=params, use_sign=False)
         return datas
+
+    def get_orderbook_l2(
+            self,
+            symbol: Optional[str] = None,
+            limit: int = 100,
+    ) -> Any:
+        """Return the standard OKX L2 snapshot (up to 400 levels)."""
+        params = {'instId': symbol, 'sz': limit}
+        url = OkexAuxiliary.url_orderbook_l2.value
+        return self._send_request(
+            url,
+            method=HttpMmthod.GET.name,
+            params=params,
+            use_sign=False,
+        )
 
     def get_balances(self):
         url = OkexAuxiliary.url_balance.value
