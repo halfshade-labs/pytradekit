@@ -1,12 +1,9 @@
-import os
-
 from pandas import DataFrame
 
 from slack_sdk import WebClient
 
 from pytradekit.utils.exceptions import DependencyException
 from pytradekit.utils.tools import save_report_df_csv
-from pytradekit.utils.dynamic_types import SlackUser
 
 
 class AtUser:

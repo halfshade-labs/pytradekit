@@ -8,7 +8,6 @@ import requests
 from pytradekit.utils.dynamic_types import BinanceAuxiliary, BinanceWebSocket, WebsocketStatus
 from pytradekit.gateway.websocket.ws_manager import WsManager
 from pytradekit.utils.time_handler import get_timestamp_ms, get_timestamp_s, get_millisecond_str, get_datetime, TimeSpan
-from pytradekit.utils.dynamic_types import SlackUser
 from pytradekit.ws.save_restful_bn_deposit_withdraw import HandleRestfulDepositWithdraw
 from pytradekit.ws.bn_add_missing_orders import get_binance_trade
 from pytradekit.utils.tools import get_redis
