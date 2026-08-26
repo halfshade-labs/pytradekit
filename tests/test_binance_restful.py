@@ -85,6 +85,25 @@ def test_get_perp_user_trades_builds_params():
     assert out[0]["commissionAsset"] == "USDT"
 
 
+def test_get_perp_open_orders_builds_symbol_scoped_params():
+    client = _make_client()
+    captured = {}
+
+    def fake_make_private_url(url_path, params, **kwargs):
+        captured["url_path"] = url_path
+        captured["params"] = dict(params)
+        return f"https://fapi.binance.com{url_path}", params, 0
+
+    client._make_private_url = fake_make_private_url
+    client.request = Mock(return_value=[])
+
+    assert client.get_perp_open_orders("ENAUSDT") == []
+    assert captured == {
+        "url_path": "/fapi/v1/openOrders",
+        "params": {"symbol": "ENAUSDT"},
+    }
+
+
 def test_get_perp_klines_builds_public_url():
     client = _make_client()
     client._url = "https://fapi.binance.com"

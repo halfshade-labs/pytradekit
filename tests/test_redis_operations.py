@@ -174,6 +174,42 @@ class TestTradeContext:
         )
 
 
+class TestLiqHedge:
+    def test_returns_mapping(self, redis_ops):
+        ops, client, _ = redis_ops
+        client.get.return_value = '{"exchange_id": "BN", "order_id": "123"}'
+
+        assert ops.get_liq_hedge("perp-1") == {
+            "exchange_id": "BN",
+            "order_id": "123",
+        }
+        client.get.assert_called_once_with("liq_hedge:perp-1")
+
+    def test_returns_none_when_key_missing(self, redis_ops):
+        ops, client, _ = redis_ops
+        client.get.return_value = None
+
+        assert ops.get_liq_hedge("perp-1") is None
+
+    @pytest.mark.parametrize("raw", ["not-json", "[]"])
+    def test_rejects_malformed_metadata(self, redis_ops, raw):
+        ops, client, _ = redis_ops
+        client.get.return_value = raw
+
+        with pytest.raises(DataTypeException):
+            ops.get_liq_hedge("perp-1")
+
+    def test_client_failure_wraps_as_dependency_exception(self, redis_ops):
+        assert_wraps_as_dependency_exception(
+            redis_ops,
+            FailureSpec(
+                client_attr="get",
+                op_name="get_liq_hedge",
+                op_args=("perp-1",),
+            ),
+        )
+
+
 class TestSetPortfolios:
     """CEA#472: the stored key must accumulate symbols (merge), publish only the
     delta, and carry a TTL so a quiet market cannot serve an eternal snapshot."""

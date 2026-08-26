@@ -498,6 +498,17 @@ class BinanceClient:
         datas = self.request(HttpMmthod.GET.name, url, params=params)
         return datas
 
+    def get_perp_open_orders(self, symbol=None):
+        """Return currently open USD-M futures orders, optionally by symbol."""
+        params = {}
+        if symbol:
+            params['symbol'] = symbol
+        url, params, _ = self._make_private_url(
+            url_path=BinanceAuxiliary.url_perp_open_order.value,
+            params=params,
+        )
+        return self.request(HttpMmthod.GET.name, url, params=params)
+
     def get_perp_klines(self, symbol, interval, start_time=None, end_time=None, limit=None):
         """Public perp klines (/fapi/v1/klines). Times are epoch milliseconds.
 
