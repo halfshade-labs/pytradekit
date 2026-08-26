@@ -412,11 +412,48 @@ class RedisOperations:
             return None
         return self._decode_trade_context(raw, key)
 
+    def get_liq_hedge(self, trade_id: str):
+        """Return liquidation-hedge metadata for one trade, if present."""
+        key = self._liq_hedge_key(trade_id)
+        lock = self.get_lock_for_resource(key)
+        try:
+            with lock:
+                raw = self.client.get(key)
+        except Exception as e:
+            self.logger.debug(
+                f"Failed to get liquidation hedge for {trade_id}: {e}",
+                exc_info=True,
+            )
+            raise DependencyException(
+                f"Failed to get liquidation hedge for {trade_id}"
+            ) from e
+        if raw is None:
+            return None
+        try:
+            decoded = json.loads(raw)
+        except (json.JSONDecodeError, TypeError) as e:
+            raise DataTypeException(
+                f"Invalid liquidation hedge JSON for {key}"
+            ) from e
+        if not isinstance(decoded, dict):
+            raise DataTypeException(
+                f"Liquidation hedge for {key} must be a JSON object"
+            )
+        return decoded
+
     @staticmethod
     def _trade_context_key(trade_id: str) -> str:
         if not isinstance(trade_id, str) or not trade_id.strip():
             raise DataTypeException("Trade context id must be a non-empty string")
         return f"{RedisFields.trade_context.name}:{trade_id}"
+
+    @staticmethod
+    def _liq_hedge_key(trade_id: str) -> str:
+        if not isinstance(trade_id, str) or not trade_id.strip():
+            raise DataTypeException(
+                "Liquidation hedge trade id must be a non-empty string"
+            )
+        return f"{RedisFields.liq_hedge.name}:{trade_id}"
 
     @staticmethod
     def _decode_trade_context(raw, key: str) -> dict:
