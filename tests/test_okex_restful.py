@@ -68,3 +68,20 @@ def test_public_get_has_bounded_timeout():
     )
 
     assert client.session.get.call_args.kwargs["timeout"] == SYNC_HTTP_TIMEOUT
+
+
+def test_spot_market_order_can_explicitly_target_base_currency():
+    client = _make_client()
+    client._send_request = Mock(return_value={"code": "0", "data": []})
+
+    client.place_spot_market_order(
+        inst_id="BTC-USDT",
+        side="buy",
+        size="0.005",
+        client_order_id="sltest1",
+        target_currency="base_ccy",
+    )
+
+    params = client._send_request.call_args.kwargs["params"]
+    assert params["sz"] == "0.005"
+    assert params["tgtCcy"] == "base_ccy"

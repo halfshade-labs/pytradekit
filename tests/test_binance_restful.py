@@ -1,10 +1,15 @@
 import asyncio
 
 import pytest
-from unittest.mock import Mock, AsyncMock
+from unittest.mock import AsyncMock, Mock, patch
 
-from pytradekit.restful.binance_restful import BinanceClient
-from pytradekit.utils.exceptions import MinNotionalException, LotSizeException
+from pytradekit.restful.binance_restful import BinanceClient, BinancePerpClient
+from pytradekit.utils.exceptions import (
+    ExchangeException,
+    InsufficientBalanceException,
+    LotSizeException,
+    MinNotionalException,
+)
 
 
 class FakeResp:
@@ -64,6 +69,173 @@ def test_bn_1013_other_filter_surfaces_raw_msg():
     assert err not in (MinNotionalException.__name__, LotSizeException.__name__)
 
 
+def test_bn_2010_balance_rejection_is_classified():
+    client = _make_client()
+    client.requests_result = AsyncMock(return_value=FakeResp({
+        'code': -2010,
+        'msg': 'Account has insufficient balance for requested action.',
+    }))
+
+    data, err = _run_request(client)
+
+    assert data is None
+    assert err == InsufficientBalanceException.__name__
+
+
+def test_bn_2010_duplicate_order_preserves_ambiguous_error():
+    client = _make_client()
+    client.requests_result = AsyncMock(return_value=FakeResp({
+        'code': -2010,
+        'msg': 'Duplicate order sent.',
+    }))
+
+    data, err = _run_request(client)
+
+    assert data is None
+    assert 'Duplicate order sent.' in err
+    assert err != InsufficientBalanceException.__name__
+
+
+def test_async_request_keeps_retry_for_safe_get_transport_failure():
+    client = _make_client()
+    client.requests_result = AsyncMock(side_effect=[
+        TimeoutError("temporary read failure"),
+        FakeResp({"status": "ok"}),
+    ])
+
+    with patch(
+        "pytradekit.utils.tools.asyncio.sleep",
+        new_callable=AsyncMock,
+    ):
+        result = asyncio.run(client.async_request(
+            "GET",
+            "http://example/order",
+            http_client=object(),
+        ))
+
+    assert result == ({"status": "ok"}, None)
+    assert client.requests_result.await_count == 2
+
+
+def test_place_market_order_requests_full_response():
+    client = _make_client()
+    captured = {}
+
+    def fake_make_private_url(url_path, params, **kwargs):
+        captured["url_path"] = url_path
+        captured["signed_params"] = dict(params)
+        return f"https://api.binance.com{url_path}", params, 123
+
+    async def fake_async_request_once(method, url, **kwargs):
+        captured["method"] = method
+        captured["request_params"] = dict(kwargs["params"])
+        return {"status": "FILLED", "fills": []}, None
+
+    client._make_private_url = fake_make_private_url
+    client.async_request_once = fake_async_request_once
+
+    data, err, timestamp = asyncio.run(client.place_market_order(
+        "ENAUSDT",
+        "spot-entry-1",
+        "BUY",
+        "1538",
+    ))
+
+    expected_params = {
+        "symbol": "ENAUSDT",
+        "side": "BUY",
+        "type": "MARKET",
+        "quantity": "1538",
+        "newClientOrderId": "spot-entry-1",
+        "selfTradePreventionMode": "EXPIRE_MAKER",
+        "newOrderRespType": "FULL",
+    }
+    assert captured == {
+        "url_path": "/api/v3/order",
+        "signed_params": expected_params,
+        "method": "POST",
+        "request_params": expected_params,
+    }
+    assert (data, err, timestamp) == (
+        {"status": "FILLED", "fills": []},
+        None,
+        123,
+    )
+
+
+def test_place_market_order_never_replays_transport_failure():
+    client = _make_client()
+    client._make_private_url = Mock(return_value=(
+        "https://api.binance.com/api/v3/order",
+        {"signed": "params"},
+        123,
+    ))
+    client.requests_result = AsyncMock(
+        side_effect=TimeoutError("response lost after submit")
+    )
+
+    with pytest.raises(ExchangeException):
+        asyncio.run(client.place_market_order(
+            "ENAUSDT",
+            "spot-entry-lost-response",
+            "BUY",
+            "1538",
+            http_client=object(),
+        ))
+
+    assert client.requests_result.await_count == 1
+
+
+@pytest.mark.parametrize(
+    "lookup_kwargs,expected_lookup",
+    [
+        ({"order_id": 123456}, {"orderId": 123456}),
+        (
+            {"client_order_id": "spot-entry-1"},
+            {"origClientOrderId": "spot-entry-1"},
+        ),
+    ],
+)
+def test_get_spot_order_builds_single_order_query(lookup_kwargs, expected_lookup):
+    client = _make_client()
+    captured = {}
+
+    def fake_make_private_url(url_path, params, **kwargs):
+        captured["url_path"] = url_path
+        captured["signed_params"] = dict(params)
+        return f"https://api.binance.com{url_path}", params, 0
+
+    def fake_request(method, url, params=None, use_sign=True):
+        captured["method"] = method
+        captured["url"] = url
+        captured["request_params"] = dict(params or {})
+        captured["use_sign"] = use_sign
+        return {"status": "FILLED"}
+
+    client._make_private_url = fake_make_private_url
+    client.request = fake_request
+
+    result = client.get_spot_order("ENAUSDT", **lookup_kwargs)
+
+    expected_params = {"symbol": "ENAUSDT", **expected_lookup}
+    assert captured == {
+        "url_path": "/api/v3/order",
+        "signed_params": expected_params,
+        "method": "GET",
+        "url": "https://api.binance.com/api/v3/order",
+        "request_params": expected_params,
+        "use_sign": True,
+    }
+    assert result == {"status": "FILLED"}
+
+
+def test_get_spot_order_requires_order_identity():
+    client = _make_client()
+
+    with pytest.raises(ValueError, match="order_id or client_order_id is required"):
+        client.get_spot_order("ENAUSDT")
+
+
 def test_get_perp_user_trades_builds_params():
     client = _make_client()
     captured = {}
@@ -102,6 +274,96 @@ def test_get_perp_open_orders_builds_symbol_scoped_params():
         "url_path": "/fapi/v1/openOrders",
         "params": {"symbol": "ENAUSDT"},
     }
+
+
+def test_place_perp_market_order_requests_result_response():
+    client = BinancePerpClient.__new__(BinancePerpClient)
+    client.logger = Mock()
+    client.api_key = "test-api-key"
+    captured = {}
+
+    def fake_make_private_url(url_path, params, **kwargs):
+        captured["signed_params"] = dict(params)
+        return f"https://fapi.binance.com{url_path}", params, 123
+
+    async def fake_async_request_once(method, url, **kwargs):
+        captured["request_params"] = dict(kwargs["params"])
+        return {"status": "FILLED"}, None
+
+    client._make_private_url = fake_make_private_url
+    client.async_request_once = fake_async_request_once
+
+    data, err, timestamp = asyncio.run(
+        client.place_perp_market_order(
+            "ENAUSDT", "market-entry-1", "SELL", "1538"
+        )
+    )
+
+    expected_params = {
+        "symbol": "ENAUSDT",
+        "side": "SELL",
+        "type": "MARKET",
+        "quantity": "1538",
+        "newClientOrderId": "market-entry-1",
+        "newOrderRespType": "RESULT",
+    }
+    assert captured["signed_params"] == expected_params
+    assert captured["request_params"] == expected_params
+    assert (data, err, timestamp) == ({"status": "FILLED"}, None, 123)
+
+
+def test_place_perp_market_order_never_replays_transport_failure():
+    client = BinancePerpClient.__new__(BinancePerpClient)
+    client.logger = Mock()
+    client.api_key = "test-api-key"
+    client._make_private_url = Mock(return_value=(
+        "https://fapi.binance.com/fapi/v1/order",
+        {"signed": "params"},
+        123,
+    ))
+    client.requests_result = AsyncMock(
+        side_effect=TimeoutError("response lost after submit")
+    )
+
+    with pytest.raises(ExchangeException):
+        asyncio.run(client.place_perp_market_order(
+            "ENAUSDT",
+            "market-entry-lost-response",
+            "SELL",
+            "1538",
+            http_client=object(),
+        ))
+
+    assert client.requests_result.await_count == 1
+
+
+def test_place_perp_market_order_sends_reduce_only_for_close():
+    client = BinancePerpClient.__new__(BinancePerpClient)
+    client.logger = Mock()
+    client.api_key = "test-api-key"
+    captured = {}
+
+    def fake_make_private_url(url_path, params, **kwargs):
+        captured["signed_params"] = dict(params)
+        return f"https://fapi.binance.com{url_path}", params, 123
+
+    async def fake_async_request_once(method, url, **kwargs):
+        captured["request_params"] = dict(kwargs["params"])
+        return {"status": "FILLED"}, None
+
+    client._make_private_url = fake_make_private_url
+    client.async_request_once = fake_async_request_once
+
+    asyncio.run(client.place_perp_market_order(
+        "ENAUSDT",
+        "market-close-1",
+        "BUY",
+        "1538",
+        reduce_only=True,
+    ))
+
+    assert captured["signed_params"]["reduceOnly"] == "true"
+    assert captured["request_params"]["reduceOnly"] == "true"
 
 
 def test_get_perp_klines_builds_public_url():

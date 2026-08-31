@@ -121,6 +121,28 @@ class BinanceClient:
 
     @async_retry_decorator(max_retries=RETRY_TIMES, wait_time=RETRY_INTERVAL)
     async def async_request(self, method, url, use_sign=True, http_client=None, params=None):
+        return await self.async_request_once(
+            method,
+            url,
+            use_sign=use_sign,
+            http_client=http_client,
+            params=params,
+        )
+
+    async def async_request_once(
+        self,
+        method,
+        url,
+        use_sign=True,
+        http_client=None,
+        params=None,
+    ):
+        """Send one HTTP attempt without transport-level replay.
+
+        Order POST callers use this path because a lost response does not prove
+        that Binance rejected the order. Replaying a MARKET POST can create a
+        second fill; the caller must reconcile the original client order ID.
+        """
         try:
             headers = {}
             if use_sign:
@@ -152,7 +174,17 @@ class BinanceClient:
                     self.logger.debug(f'BN -1013 filter failure (unclassified): {msg}')
                     return None, f'BN -1013 filter failure: {msg}' if msg else 'BN -1013 filter failure'
                 if result['code'] == -2010:
-                    return None, InsufficientBalanceException.__name__
+                    # -2010 is a generic NEW_ORDER_REJECTED code.  Only the
+                    # explicit balance message is safe to classify as a
+                    # confirmed rejection.  "Duplicate order sent" can mean a
+                    # prior POST with this client ID succeeded and its response
+                    # was lost; callers must reconcile that ID rather than
+                    # retrying the MARKET order.
+                    msg = str(result.get('msg') or '')
+                    upper = msg.upper()
+                    if 'INSUFFICIENT' in upper and 'BALANCE' in upper:
+                        return None, InsufficientBalanceException.__name__
+                    return None, f'BN -2010 order rejected: {msg}'
             if resp.status_code != 200:
                 return None, f'http err:{resp.status_code} result:{resp.content}'
             return result, None
@@ -627,12 +659,34 @@ class BinanceClient:
 
     async def place_market_order(self, symbol, client_order_id, side, volume, http_client=None):
         params = {'symbol': symbol, 'side': side, 'type': 'MARKET',
-                  'quantity': volume, 'newClientOrderId': client_order_id, 'selfTradePreventionMode': 'EXPIRE_MAKER'}
+                  'quantity': volume, 'newClientOrderId': client_order_id,
+                  'selfTradePreventionMode': 'EXPIRE_MAKER', 'newOrderRespType': 'FULL'}
 
         url, params, timestamp = self._make_private_url(url_path=BinanceAuxiliary.url_order.value,
                                                         params=params)
-        datas, err = await self.async_request(HttpMmthod.POST.name, url, http_client=http_client, params=params)
+        datas, err = await self.async_request_once(
+            HttpMmthod.POST.name,
+            url,
+            http_client=http_client,
+            params=params,
+        )
         return datas, err, timestamp
+
+    def get_spot_order(self, symbol, order_id=None, client_order_id=None):
+        """Return one spot order by Binance order ID or client order ID."""
+        if not order_id and not client_order_id:
+            raise ValueError("order_id or client_order_id is required")
+
+        params = {'symbol': symbol}
+        if order_id:
+            params['orderId'] = order_id
+        if client_order_id:
+            params['origClientOrderId'] = client_order_id
+        url, params, _ = self._make_private_url(
+            url_path=BinanceAuxiliary.url_order.value,
+            params=params,
+        )
+        return self.request(HttpMmthod.GET.name, url, params=params)
 
     async def place_maker_order(self, symbol, client_order_id, side, volume, price, http_client=None):
         params = {'symbol': symbol, 'side': side, 'type': 'LIMIT_MAKER', 'price': price,
@@ -880,7 +934,15 @@ class BinancePerpClient(BinanceClient):
         datas, err = await self.async_request(HttpMmthod.POST.name, url, http_client=http_client, params=params)
         return datas, err, timestamp
 
-    async def place_perp_market_order(self, symbol, client_order_id, side, volume, http_client=None):
+    async def place_perp_market_order(
+        self,
+        symbol,
+        client_order_id,
+        side,
+        volume,
+        http_client=None,
+        reduce_only=False,
+    ):
         """
         合约市价单（用于紧急平仓或快速开仓）
         API: POST /fapi/v1/order
@@ -891,6 +953,7 @@ class BinancePerpClient(BinanceClient):
             side: 'BUY' 或 'SELL'
             volume: 数量（币）
             http_client: HTTP客户端（可选）
+            reduce_only: 仅减仓；one-way mode 的平仓调用应设为 True
             
         Returns:
             (data, error, timestamp)
@@ -900,13 +963,21 @@ class BinancePerpClient(BinanceClient):
             'side': side,
             'type': 'MARKET',
             'quantity': volume,
-            'newClientOrderId': client_order_id
+            'newClientOrderId': client_order_id,
+            'newOrderRespType': 'RESULT'
         }
+        if reduce_only:
+            params['reduceOnly'] = 'true'
         url, params, timestamp = self._make_private_url(
             url_path=BinanceAuxiliary.url_perp_order.value,
             params=params
         )
-        datas, err = await self.async_request(HttpMmthod.POST.name, url, http_client=http_client, params=params)
+        datas, err = await self.async_request_once(
+            HttpMmthod.POST.name,
+            url,
+            http_client=http_client,
+            params=params,
+        )
         return datas, err, timestamp
 
 

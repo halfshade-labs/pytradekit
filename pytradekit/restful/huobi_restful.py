@@ -7,7 +7,11 @@ from urllib.parse import urlencode, urlparse
 import requests
 from pytradekit.utils.time_handler import get_now_time, DATETIME_FORMAT_HB
 from pytradekit.utils.dynamic_types import HttpMmthod, HuobiAuxiliary, HuobiRestful, InstCodeType
+from pytradekit.utils.exceptions import ExchangeException
 from pytradekit.utils.static_types import FeeStructureKey
+
+
+HTX_SYNC_HTTP_TIMEOUT = (5, 30)
 
 
 class HuobiClient:
@@ -63,18 +67,35 @@ class HuobiClient:
                     new_params = get_sign_params()
                     new_params['Signature'] = create_sign(new_params)
                     url = f'{url}?{urlencode(new_params)}'
-                resp = requests.post(url=url, data=json.dumps(params), headers=headers)
+                resp = requests.post(
+                    url=url,
+                    data=json.dumps(params),
+                    headers=headers,
+                    timeout=HTX_SYNC_HTTP_TIMEOUT,
+                )
             elif method == "GET":
                 if use_sign:
                     params.update(get_sign_params())
                     params['Signature'] = create_sign(params)
                 url = f'{url}?{urlencode(params)}'
-                resp = requests.get(url=url, headers=headers)
+                resp = requests.get(
+                    url=url,
+                    headers=headers,
+                    timeout=HTX_SYNC_HTTP_TIMEOUT,
+                )
             else:
-                return 'request method err'
+                raise ExchangeException(f'request method {method} not supported')
+            if getattr(resp, 'status_code', 200) != 200:
+                raise ExchangeException(
+                    f'http err:{resp.status_code} result:{resp.content}'
+                )
             return resp.json()
+        except ExchangeException:
+            raise
         except Exception as e:
-            return e
+            raise ExchangeException(
+                f'HTX request error {method} {api}: {e}'
+            ) from e
 
     def get_perp_position(self, symbol):
         params = {'contract_code': symbol}
