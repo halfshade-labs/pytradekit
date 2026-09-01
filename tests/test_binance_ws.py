@@ -21,6 +21,8 @@ def _make_manager(is_perp):
         mgr._api_secret = 'SECRET'
         mgr._listen_key = {}
         mgr._send_params = None
+        mgr._is_perp = is_perp
+        mgr._msg_count = 0
         mgr.ws = None
         mgr.status = WebsocketStatus.INIT.name
         if is_perp:
@@ -30,6 +32,14 @@ def _make_manager(is_perp):
             mgr._url = BinanceAuxiliary.url_ws.value
             mgr._listen_key_url = BinanceAuxiliary.url.value + BinanceAuxiliary.user_data_stream.value
         return mgr
+
+
+def _logged_messages(logger):
+    messages = []
+    for level in ('debug', 'info', 'warning', 'error', 'exception', 'critical'):
+        for call in getattr(logger, level).call_args_list:
+            messages.extend(str(arg) for arg in call.args)
+    return '\n'.join(messages)
 
 
 class TestSubscribePerp:
@@ -74,6 +84,31 @@ class TestSubscribePerp:
         # SUBSCRIBE method must NOT be sent for perp userDataStream, even on renewal.
         mgr.start_subscribe.assert_not_called()
 
+    def test_perp_private_url_is_never_logged(self, mocker):
+        mgr = _make_manager(is_perp=True)
+        listen_key = 'PERP_LK_TOKEN_DO_NOT_LOG'
+
+        def fake_post_listen_key(_api):
+            mgr._listen_key['PERP'] = listen_key
+
+        mocker.patch.object(mgr, 'post_listen_key', side_effect=fake_post_listen_key)
+        mocker.patch.object(mgr, 'connect')
+        mocker.patch.object(mgr, '_ping')
+        mocker.patch.object(mgr, 'reconnect')
+
+        mgr.subscribe()
+        private_url = mgr._url
+        mgr._on_open(None)
+        mgr._on_error(None, RuntimeError(f'failed to connect {private_url}'))
+        mgr._on_close(None, 1006, f'closing {private_url}')
+
+        logged = _logged_messages(mgr.logger)
+        assert listen_key not in logged
+        assert private_url not in logged
+        assert 'market=perp' in logged
+        assert f'listen_key_len={len(listen_key)}' in logged
+        assert 'error_type=RuntimeError' in logged
+
 
 class TestSubscribeSpot:
     def test_spot_keeps_subscribe_method_with_listen_key(self, mocker):
@@ -93,3 +128,55 @@ class TestSubscribeSpot:
         assert mgr._url == original_url
         mgr.start_subscribe.assert_called_once_with(['SPOT_LK_TOKEN'])
         mgr.connect.assert_not_called()
+
+    def test_spot_subscribe_params_are_never_logged(self, mocker):
+        mgr = _make_manager(is_perp=False)
+        listen_key = 'SPOT_LK_TOKEN_DO_NOT_LOG'
+
+        def fake_post_listen_key(_api):
+            mgr._listen_key['SPOT'] = listen_key
+
+        mocker.patch.object(mgr, 'post_listen_key', side_effect=fake_post_listen_key)
+        mocker.patch.object(mgr, 'start_subscribe')
+        mocker.patch.object(mgr, '_ping')
+
+        mgr.subscribe()
+
+        logged = _logged_messages(mgr.logger)
+        assert listen_key not in logged
+        assert 'market=spot' in logged
+        assert f'listen_key_len={len(listen_key)}' in logged
+
+    def test_subscribe_error_does_not_log_exception_secret(self, mocker):
+        mgr = _make_manager(is_perp=False)
+        listen_key = 'SPOT_LK_TOKEN_IN_EXCEPTION'
+        mocker.patch.object(
+            mgr,
+            'post_listen_key',
+            side_effect=RuntimeError(f'private URL ended with {listen_key}'),
+        )
+
+        mgr.subscribe()
+
+        logged = _logged_messages(mgr.logger)
+        assert listen_key not in logged
+        assert 'market=spot' in logged
+        assert 'error_type=RuntimeError' in logged
+
+    def test_start_subscribe_error_does_not_log_key_or_message(self, mocker):
+        mgr = _make_manager(is_perp=False)
+        listen_key = 'SPOT_LK_TOKEN_IN_SEND_ERROR'
+        mgr._listen_key['SPOT'] = listen_key
+        mocker.patch.object(
+            mgr,
+            'send_json',
+            side_effect=RuntimeError(f'failed to send params [{listen_key}]'),
+        )
+
+        mgr.start_subscribe([listen_key])
+
+        logged = _logged_messages(mgr.logger)
+        assert listen_key not in logged
+        assert 'market=spot' in logged
+        assert f'listen_key_len={len(listen_key)}' in logged
+        assert 'error_type=RuntimeError' in logged

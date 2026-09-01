@@ -79,6 +79,18 @@ class BinanceWsManager(WsManager):
     def _listen_key_kind(self):
         return 'SPOT' if self._is_spot() else 'PERP'
 
+    def _private_stream_log_context(self, kind=None):
+        """Return diagnostics that cannot disclose a Binance listen key."""
+        kind = kind or self._listen_key_kind()
+        listen_key = self._listen_key.get(kind)
+        listen_key_len = len(listen_key) if isinstance(listen_key, str) else 0
+        return f"market={kind.lower()} listen_key_len={listen_key_len}"
+
+    @staticmethod
+    def _error_type(error):
+        """Describe an error without logging its potentially sensitive message."""
+        return type(error).__name__
+
     def _ws_api_listen_key(self, method):
         """Use Binance WebSocket API to manage spot listen keys.
         Binance has deprecated the REST endpoint for spot userDataStream.
@@ -205,8 +217,8 @@ class BinanceWsManager(WsManager):
                 # in the URL path; the SUBSCRIBE method silently drops them on fstream.
                 self._url = f"{BinanceAuxiliary.url_perp_ws.value}/{listen_key}"
                 self.logger.debug(
-                    f"perp user data stream connect with listen_key in url path "
-                    f"(len={len(listen_key)})"
+                    "perp user data stream connect with listen_key in url path "
+                    f"({self._private_stream_log_context(kind)})"
                 )
                 self._reconnect_with_new_url()
                 self._ping(BinanceAuxiliary.ws_ping_sleep.value,
@@ -215,12 +227,20 @@ class BinanceWsManager(WsManager):
             params = [listen_key]
             if self._send_params:
                 params += self._send_params
-            self.logger.debug(f"subscribe: {params}, url: {self._url}, listen key url:{self._listen_key_url}")
+            self.logger.debug(
+                "spot user data stream subscribe "
+                f"({self._private_stream_log_context(kind)} "
+                f"additional_param_count={len(params) - 1})"
+            )
             self.start_subscribe(params)
             self._ping(BinanceAuxiliary.ws_ping_sleep.value,
                        reconnection_time=BinanceAuxiliary.reconnection_time_sleep.value)
         except Exception as e:
-            self.logger.debug(f"subscribe error: {e}", exc_info=True)
+            self.logger.debug(
+                "subscribe error: "
+                f"{self._private_stream_log_context()} "
+                f"error_type={self._error_type(e)}"
+            )
 
     def _reconnect_with_new_url(self):
         # Close any existing ws so connect() rebinds to the freshly built _url.
@@ -327,7 +347,11 @@ class BinanceWsManager(WsManager):
             self._subs = [msg]
             self.send_json(msg)
         except Exception as e:
-            self.logger.exception(e)
+            self.logger.debug(
+                "start_subscribe error: "
+                f"{self._private_stream_log_context()} "
+                f"error_type={self._error_type(e)}"
+            )
 
     def supplement_orders(self, times):
         if self.start_end_time_dict:
@@ -388,25 +412,26 @@ class BinanceWsManager(WsManager):
         return False
 
     def _on_open(self, ws, *args, **kwargs):
-        market = 'perp' if self._is_perp else 'spot'
-        url_preview = (self._url or '')[:80]
-        self.logger.debug(f"[bn_ws on_open] market={market} url={url_preview}")
+        self.logger.debug(
+            f"[bn_ws on_open] {self._private_stream_log_context()}"
+        )
 
     def _on_close(self, ws, *args, **kwargs):
         market = 'perp' if self._is_perp else 'spot'
+        close_code = args[0] if args and isinstance(args[0], int) else None
         self.logger.debug(
             f"[bn_ws on_close] market={market} msg_count_so_far={self._msg_count} "
-            f"close_args={args} close_kwargs={list(kwargs)}"
+            f"close_code={close_code} close_kwarg_names={list(kwargs)}"
         )
         # delegate to parent to trigger reconnect
         super()._on_close(ws, *args, **kwargs)
 
     def _on_error(self, ws, error, *args, **kwargs):
-        market = 'perp' if self._is_perp else 'spot'
         self.logger.debug(
-            f"[bn_ws on_error] market={market} error={error!r} msg_count_so_far={self._msg_count}"
+            f"[bn_ws on_error] {self._private_stream_log_context()} "
+            f"error_type={self._error_type(error)} msg_count_so_far={self._msg_count}"
         )
-        super()._on_error(ws, error, *args, **kwargs)
+        self.reconnect()
 
     def _on_message(self, _ws, message):
         msg = json.loads(message)
