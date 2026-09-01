@@ -252,6 +252,7 @@ class TestBookTickerReceiveTimestamp:
         mgr = _make_manager(is_perp=False)
         remote_receive_time_ms = 1_788_000_000_111
         local_receive_time_ms = 1_788_000_000_222
+        duplicate_receive_time_ms = 1_788_000_000_333
         payload = {
             'u': 789,
             's': 'SOLUSDT',
@@ -263,7 +264,7 @@ class TestBookTickerReceiveTimestamp:
         }
         timestamp = mocker.patch(
             'pytradekit.ws.binance_ws.get_timestamp_ms',
-            return_value=local_receive_time_ms,
+            side_effect=[local_receive_time_ms, duplicate_receive_time_ms],
         )
 
         mgr._on_message(None, json.dumps(payload))
@@ -276,4 +277,21 @@ class TestBookTickerReceiveTimestamp:
         }
         assert queued[BinanceWebSocket.run_time_ms.value] != remote_receive_time_ms
         assert mgr._queue.empty()
-        timestamp.assert_called_once_with()
+        assert timestamp.call_count == 2
+
+    def test_private_message_and_ack_do_not_capture_bookticker_receive_time(self, mocker):
+        mgr = _make_manager(is_perp=False)
+        private_payload = {
+            'e': 'executionReport',
+            's': 'BTCUSDT',
+            'X': 'FILLED',
+        }
+        ack_payload = {'result': None, 'id': 1}
+        timestamp = mocker.patch('pytradekit.ws.binance_ws.get_timestamp_ms')
+
+        mgr._on_message(None, json.dumps(private_payload))
+        mgr._on_message(None, json.dumps(ack_payload))
+
+        assert mgr._queue.get_nowait() == private_payload
+        assert mgr._queue.empty()
+        timestamp.assert_not_called()

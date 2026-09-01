@@ -435,6 +435,15 @@ class BinanceWsManager(WsManager):
 
     def _on_message(self, _ws, message):
         msg = json.loads(message)
+        bookticker_receive_time_ms = None
+        if (
+            isinstance(msg, dict)
+            and BinanceWebSocket.order_book_update_id.value in msg
+            and BinanceWebSocket.symbol.value in msg
+            and BinanceWebSocket.orderbook_asks.value in msg
+            and BinanceWebSocket.orderbook_bids.value in msg
+        ):
+            bookticker_receive_time_ms = get_timestamp_ms()
         # raw-msg trace: first N msgs are logged in full, rest are summarized by top-level keys.
         # Use to diagnose missing perp/spot event delivery when verify_* keeps returning False.
         self._msg_count += 1
@@ -468,7 +477,7 @@ class BinanceWsManager(WsManager):
                     self._queue.put_nowait(msg)
                     return
                 if self.verify_spot_bookticker_duplicate(msg):
-                    msg[BinanceWebSocket.run_time_ms.value] = get_timestamp_ms()
+                    msg[BinanceWebSocket.run_time_ms.value] = bookticker_receive_time_ms
                     self._queue.put_nowait(msg)
                     return
         except Exception as e:
