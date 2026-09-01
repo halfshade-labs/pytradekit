@@ -1483,7 +1483,7 @@ class MongodbOperations:
         return res.matched_count, res.modified_count
 
     def read_trade_records(self, status=None, strategy_type=None, strategy_id=None, coin=None,
-                           time_span=None, limit=0):
+                           time_span=None, limit=0, closed_time_span=None):
         params = {}
         if status:
             params[TradeRecordAttribute.status.name] = status
@@ -1498,6 +1498,11 @@ class MongodbOperations:
                 "$gte": time_span.start,
                 "$lte": time_span.end
             }
+        if closed_time_span:
+            params[TradeRecordAttribute.closed_time_ms.name] = {
+                "$gte": closed_time_span.start,
+                "$lte": closed_time_span.end,
+            }
         cursor = self.client[Database.arbitrage.name][Database.trade_records.name].find(params).sort(
             TradeRecordAttribute.created_time_ms.name, -1)
         if limit:
@@ -1509,6 +1514,15 @@ class MongodbOperations:
         params = {TradeRecordAttribute.trade_id.name: trade_id}
         res = self.client[Database.arbitrage.name][Database.trade_records.name].find_one(params)
         return res
+
+    def read_trade_record_by_perp_client_order_id(self, client_order_id):
+        """Return the durable arbitrage record linked to one perp client id."""
+        params = {
+            TradeRecordAttribute.perp_client_order_id.name: str(client_order_id)
+        }
+        return self.client[Database.arbitrage.name][Database.trade_records.name].find_one(
+            params
+        )
 
     # ====== Shadow Trades (paper trading ledger) ======
 

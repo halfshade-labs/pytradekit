@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from pytradekit.utils.dynamic_types import BinanceAuxiliary, BinanceWebSocket
@@ -217,3 +219,32 @@ def test_bookticker_update_keeps_old_state_when_addition_fails(mocker):
     assert manager._subs is original_subscriptions
     assert manager._bookticker_symbols == {"BTCUSDT", "XRPUSDT"}
     assert manager.send_json.call_count == 1
+
+
+@pytest.mark.parametrize(
+    "order_update, should_forward",
+    [
+        ({"state": "partially_filled", "fillSz": "0.25"}, True),
+        ({"state": "filled", "fillSz": "0"}, True),
+        ({"state": "canceled", "fillSz": "0"}, False),
+    ],
+)
+def test_okx_private_order_stream_forwards_real_partial_fills(
+    mocker,
+    order_update,
+    should_forward,
+):
+    manager = OkexWsManager.__new__(OkexWsManager)
+    manager._queue = mocker.Mock()
+    manager.logger = mocker.Mock()
+    message = {
+        "arg": {"channel": "orders"},
+        "data": [order_update],
+    }
+
+    manager._on_message(None, json.dumps(message))
+
+    if should_forward:
+        manager._queue.put_nowait.assert_called_once_with(order_update)
+    else:
+        manager._queue.put_nowait.assert_not_called()

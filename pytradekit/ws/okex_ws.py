@@ -2,6 +2,7 @@ import time
 import json
 import hmac
 import base64
+from decimal import Decimal
 from typing import Iterable, List
 
 from pytradekit.utils.dynamic_types import OkexAuxiliary, OkexWebSocket, WebsocketStatus
@@ -171,7 +172,16 @@ class OkexWsManager(WsManager):
                 if self._queue:
                     # OKX 数据通常是列表，取出来放入队列
                     for item in msg['data']:
-                        if "filled" == item['state']:
+                        # `fee` and `accFillSz` are cumulative per order, while
+                        # `fillSz` identifies a real execution update. Forward
+                        # partial fills as well as the terminal filled snapshot;
+                        # otherwise a partially-filled-then-cancelled order is
+                        # invisible to residual-close accounting.
+                        try:
+                            has_fill = Decimal(str(item.get('fillSz') or 0)) > 0
+                        except Exception:
+                            has_fill = False
+                        if "filled" == item.get('state') or has_fill:
                             self._queue.put_nowait(item)
 
         except Exception as e:
