@@ -5,6 +5,8 @@ in the WebSocket URL path; the SUBSCRIBE method silently drops events on fstream
 The fix (this branch) makes perp connect to wss://fstream.binance.com/ws/<listenKey>
 and skip SUBSCRIBE. Spot still uses the SUBSCRIBE-method path.
 """
+import json
+import queue
 from unittest.mock import MagicMock, patch
 
 from pytradekit.utils.dynamic_types import WebsocketStatus
@@ -23,6 +25,10 @@ def _make_manager(is_perp):
         mgr._send_params = None
         mgr._is_perp = is_perp
         mgr._msg_count = 0
+        mgr._msg_log_full_n = 0
+        mgr._queue = queue.Queue()
+        mgr._ticker_queue = None
+        mgr.verify_bookticker_duplicate = {}
         mgr.ws = None
         mgr.status = WebsocketStatus.INIT.name
         if is_perp:
@@ -180,3 +186,94 @@ class TestSubscribeSpot:
         assert 'market=spot' in logged
         assert f'listen_key_len={len(listen_key)}' in logged
         assert 'error_type=RuntimeError' in logged
+
+
+class TestBookTickerReceiveTimestamp:
+    def test_spot_bookticker_without_exchange_timestamps_gets_receive_time(self, mocker):
+        from pytradekit.utils.dynamic_types import BinanceWebSocket
+
+        mgr = _make_manager(is_perp=False)
+        payload = {
+            'u': 123,
+            's': 'BTCUSDT',
+            'b': '50000.1',
+            'B': '1.2',
+            'a': '50000.2',
+            'A': '1.3',
+        }
+        receive_time_ms = 1_788_000_000_123
+        mocker.patch(
+            'pytradekit.ws.binance_ws.get_timestamp_ms',
+            return_value=receive_time_ms,
+        )
+
+        mgr._on_message(None, json.dumps(payload))
+
+        queued = mgr._queue.get_nowait()
+        assert queued == {
+            **payload,
+            BinanceWebSocket.run_time_ms.value: receive_time_ms,
+        }
+        assert 'E' not in queued
+        assert 'T' not in queued
+
+    def test_perp_bookticker_preserves_exchange_fields_and_gets_receive_time(self, mocker):
+        from pytradekit.utils.dynamic_types import BinanceWebSocket
+
+        mgr = _make_manager(is_perp=True)
+        payload = {
+            'e': 'bookTicker',
+            'u': 456,
+            's': 'ETHUSDT',
+            'b': '4000.1',
+            'B': '2.2',
+            'a': '4000.2',
+            'A': '2.3',
+            'E': 1_788_000_000_100,
+            'T': 1_788_000_000_101,
+        }
+        receive_time_ms = 1_788_000_000_123
+        mocker.patch(
+            'pytradekit.ws.binance_ws.get_timestamp_ms',
+            return_value=receive_time_ms,
+        )
+
+        mgr._on_message(None, json.dumps(payload))
+
+        queued = mgr._queue.get_nowait()
+        assert queued == {
+            **payload,
+            BinanceWebSocket.run_time_ms.value: receive_time_ms,
+        }
+
+    def test_remote_receive_time_is_replaced_and_duplicate_filter_unchanged(self, mocker):
+        from pytradekit.utils.dynamic_types import BinanceWebSocket
+
+        mgr = _make_manager(is_perp=False)
+        remote_receive_time_ms = 1_788_000_000_111
+        local_receive_time_ms = 1_788_000_000_222
+        payload = {
+            'u': 789,
+            's': 'SOLUSDT',
+            'b': '200.1',
+            'B': '3.2',
+            'a': '200.2',
+            'A': '3.3',
+            BinanceWebSocket.run_time_ms.value: remote_receive_time_ms,
+        }
+        timestamp = mocker.patch(
+            'pytradekit.ws.binance_ws.get_timestamp_ms',
+            return_value=local_receive_time_ms,
+        )
+
+        mgr._on_message(None, json.dumps(payload))
+        mgr._on_message(None, json.dumps(payload))
+
+        queued = mgr._queue.get_nowait()
+        assert queued == {
+            **payload,
+            BinanceWebSocket.run_time_ms.value: local_receive_time_ms,
+        }
+        assert queued[BinanceWebSocket.run_time_ms.value] != remote_receive_time_ms
+        assert mgr._queue.empty()
+        timestamp.assert_called_once_with()

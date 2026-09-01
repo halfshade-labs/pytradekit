@@ -468,6 +468,7 @@ class BinanceWsManager(WsManager):
                     self._queue.put_nowait(msg)
                     return
                 if self.verify_spot_bookticker_duplicate(msg):
+                    msg[BinanceWebSocket.run_time_ms.value] = get_timestamp_ms()
                     self._queue.put_nowait(msg)
                     return
         except Exception as e:
