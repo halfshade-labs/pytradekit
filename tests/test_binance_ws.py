@@ -246,7 +246,7 @@ class TestBookTickerReceiveTimestamp:
             BinanceWebSocket.run_time_ms.value: receive_time_ms,
         }
 
-    def test_remote_receive_time_is_replaced_and_duplicate_filter_unchanged(self, mocker):
+    def test_remote_receive_time_is_replaced_and_same_update_is_deduplicated(self, mocker):
         from pytradekit.utils.dynamic_types import BinanceWebSocket
 
         mgr = _make_manager(is_perp=False)
@@ -278,6 +278,42 @@ class TestBookTickerReceiveTimestamp:
         assert queued[BinanceWebSocket.run_time_ms.value] != remote_receive_time_ms
         assert mgr._queue.empty()
         assert timestamp.call_count == 2
+
+    def test_new_update_id_refreshes_unchanged_book_prices(self, mocker):
+        from pytradekit.utils.dynamic_types import BinanceWebSocket
+
+        mgr = _make_manager(is_perp=False)
+        first_receive_time_ms = 1_788_000_000_111
+        second_receive_time_ms = 1_788_000_000_222
+        payload = {
+            'u': 789,
+            's': 'SOLUSDT',
+            'b': '200.1',
+            'B': '3.2',
+            'a': '200.2',
+            'A': '3.3',
+        }
+        mocker.patch(
+            'pytradekit.ws.binance_ws.get_timestamp_ms',
+            side_effect=[first_receive_time_ms, second_receive_time_ms],
+        )
+
+        mgr._on_message(None, json.dumps(payload))
+        mgr._on_message(None, json.dumps({
+            **payload,
+            'u': 790,
+            'B': '4.2',
+            'A': '4.3',
+        }))
+
+        first = mgr._queue.get_nowait()
+        second = mgr._queue.get_nowait()
+        assert first[BinanceWebSocket.run_time_ms.value] == first_receive_time_ms
+        assert second[BinanceWebSocket.run_time_ms.value] == second_receive_time_ms
+        assert first['b'] == second['b']
+        assert first['a'] == second['a']
+        assert first['u'] < second['u']
+        assert mgr._queue.empty()
 
     def test_private_message_and_ack_do_not_capture_bookticker_receive_time(self, mocker):
         mgr = _make_manager(is_perp=False)

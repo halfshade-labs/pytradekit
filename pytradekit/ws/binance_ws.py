@@ -381,22 +381,19 @@ class BinanceWsManager(WsManager):
                 self.start_end_time_dict['start_time'] = times
 
     def verify_spot_bookticker_duplicate(self, msg):
-        if BinanceWebSocket.order_book_update_id.value not in msg or BinanceWebSocket.symbol.value not in msg or BinanceWebSocket.orderbook_asks.value not in msg or BinanceWebSocket.orderbook_bids.value not in msg:
+        required_fields = (
+            BinanceWebSocket.order_book_update_id.value,
+            BinanceWebSocket.symbol.value,
+            BinanceWebSocket.orderbook_asks.value,
+            BinanceWebSocket.orderbook_bids.value,
+        )
+        if not all(field in msg for field in required_fields):
             return False
-        if msg[BinanceWebSocket.symbol.value] not in self.verify_bookticker_duplicate:
-            self.verify_bookticker_duplicate[msg[BinanceWebSocket.symbol.value]] = msg[
-                                                                                       BinanceWebSocket.orderbook_asks.value] + \
-                                                                                   msg[
-                                                                                       BinanceWebSocket.orderbook_bids.value]
-        else:
-            if self.verify_bookticker_duplicate[msg[BinanceWebSocket.symbol.value]] == msg[
-                BinanceWebSocket.orderbook_asks.value] + msg[BinanceWebSocket.orderbook_bids.value]:
-                return False
-            else:
-                self.verify_bookticker_duplicate[msg[BinanceWebSocket.symbol.value]] = msg[
-                                                                                           BinanceWebSocket.orderbook_asks.value] + \
-                                                                                       msg[
-                                                                                           BinanceWebSocket.orderbook_bids.value]
+        symbol = msg[BinanceWebSocket.symbol.value]
+        update_id = msg[BinanceWebSocket.order_book_update_id.value]
+        if self.verify_bookticker_duplicate.get(symbol) == update_id:
+            return False
+        self.verify_bookticker_duplicate[symbol] = update_id
         return True
 
     def verify_spot_order_trade(self, msg):
