@@ -19,6 +19,10 @@ from pytradekit.ws.subscription_update import (
 
 
 BINANCE_UNSUBSCRIBE_METHOD = "UNSUBSCRIBE"
+# Quantity-only book-ticker updates can arrive thousands of times per second.
+# Forward a bounded heartbeat for unchanged BBO prices so consumers can refresh
+# quote freshness without turning every size change into a premium calculation.
+BOOKTICKER_SAME_PRICE_REFRESH_INTERVAL_MS = 250
 
 
 class AtUser:
@@ -380,7 +384,8 @@ class BinanceWsManager(WsManager):
             elif connect_status is False:
                 self.start_end_time_dict['start_time'] = times
 
-    def verify_spot_bookticker_duplicate(self, msg):
+    def verify_spot_bookticker_duplicate(self, msg, receive_time_ms=None):
+        """Forward price changes immediately and sample same-price heartbeats."""
         required_fields = (
             BinanceWebSocket.order_book_update_id.value,
             BinanceWebSocket.symbol.value,
@@ -391,9 +396,33 @@ class BinanceWsManager(WsManager):
             return False
         symbol = msg[BinanceWebSocket.symbol.value]
         update_id = msg[BinanceWebSocket.order_book_update_id.value]
-        if self.verify_bookticker_duplicate.get(symbol) == update_id:
+        bid = msg[BinanceWebSocket.orderbook_bids.value]
+        ask = msg[BinanceWebSocket.orderbook_asks.value]
+        if isinstance(receive_time_ms, bool) or not isinstance(
+            receive_time_ms,
+            int,
+        ):
+            receive_time_ms = get_timestamp_ms()
+
+        previous = self.verify_bookticker_duplicate.get(symbol)
+        if previous and previous["update_id"] == update_id:
             return False
-        self.verify_bookticker_duplicate[symbol] = update_id
+        if (
+            previous
+            and previous["bid"] == bid
+            and previous["ask"] == ask
+            and receive_time_ms - previous["forwarded_at_ms"]
+            < BOOKTICKER_SAME_PRICE_REFRESH_INTERVAL_MS
+        ):
+            previous["update_id"] = update_id
+            return False
+
+        self.verify_bookticker_duplicate[symbol] = {
+            "update_id": update_id,
+            "bid": bid,
+            "ask": ask,
+            "forwarded_at_ms": receive_time_ms,
+        }
         return True
 
     def verify_spot_order_trade(self, msg):
@@ -473,7 +502,10 @@ class BinanceWsManager(WsManager):
                 if self.verify_spot_order_trade(msg):
                     self._queue.put_nowait(msg)
                     return
-                if self.verify_spot_bookticker_duplicate(msg):
+                if self.verify_spot_bookticker_duplicate(
+                    msg,
+                    bookticker_receive_time_ms,
+                ):
                     msg[BinanceWebSocket.run_time_ms.value] = bookticker_receive_time_ms
                     self._queue.put_nowait(msg)
                     return

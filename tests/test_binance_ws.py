@@ -284,7 +284,7 @@ class TestBookTickerReceiveTimestamp:
 
         mgr = _make_manager(is_perp=False)
         first_receive_time_ms = 1_788_000_000_111
-        second_receive_time_ms = 1_788_000_000_222
+        second_receive_time_ms = 1_788_000_000_444
         payload = {
             'u': 789,
             's': 'SOLUSDT',
@@ -313,6 +313,83 @@ class TestBookTickerReceiveTimestamp:
         assert first['b'] == second['b']
         assert first['a'] == second['a']
         assert first['u'] < second['u']
+        assert mgr._queue.empty()
+
+    def test_same_price_quantity_burst_is_rate_limited(self, mocker):
+        from pytradekit.utils.dynamic_types import BinanceWebSocket
+
+        mgr = _make_manager(is_perp=False)
+        first_receive_time_ms = 1_788_000_000_000
+        payload = {
+            'u': 789,
+            's': 'SOLUSDT',
+            'b': '200.1',
+            'B': '3.2',
+            'a': '200.2',
+            'A': '3.3',
+        }
+        mocker.patch(
+            'pytradekit.ws.binance_ws.get_timestamp_ms',
+            side_effect=[
+                first_receive_time_ms,
+                first_receive_time_ms + 100,
+                first_receive_time_ms + 249,
+                first_receive_time_ms + 250,
+            ],
+        )
+
+        for offset, update_id in enumerate((789, 790, 791, 792)):
+            mgr._on_message(None, json.dumps({
+                **payload,
+                'u': update_id,
+                'B': str(3.2 + offset),
+                'A': str(3.3 + offset),
+            }))
+
+        first = mgr._queue.get_nowait()
+        heartbeat = mgr._queue.get_nowait()
+        assert first['u'] == 789
+        assert heartbeat['u'] == 792
+        assert heartbeat[BinanceWebSocket.run_time_ms.value] == (
+            first_receive_time_ms + 250
+        )
+        assert mgr._queue.empty()
+
+    def test_price_change_is_forwarded_inside_refresh_interval(self, mocker):
+        from pytradekit.utils.dynamic_types import BinanceWebSocket
+
+        mgr = _make_manager(is_perp=False)
+        first_receive_time_ms = 1_788_000_000_000
+        second_receive_time_ms = first_receive_time_ms + 1
+        payload = {
+            'u': 789,
+            's': 'SOLUSDT',
+            'b': '200.1',
+            'B': '3.2',
+            'a': '200.2',
+            'A': '3.3',
+        }
+        mocker.patch(
+            'pytradekit.ws.binance_ws.get_timestamp_ms',
+            side_effect=[first_receive_time_ms, second_receive_time_ms],
+        )
+
+        mgr._on_message(None, json.dumps(payload))
+        mgr._on_message(None, json.dumps({
+            **payload,
+            'u': 790,
+            'b': '200.0',
+        }))
+
+        first = mgr._queue.get_nowait()
+        changed = mgr._queue.get_nowait()
+        assert first['u'] == 789
+        assert changed['u'] == 790
+        assert changed['b'] == '200.0'
+        assert (
+            changed[BinanceWebSocket.run_time_ms.value]
+            == second_receive_time_ms
+        )
         assert mgr._queue.empty()
 
     def test_private_message_and_ack_do_not_capture_bookticker_receive_time(self, mocker):
