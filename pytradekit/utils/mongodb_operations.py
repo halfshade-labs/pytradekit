@@ -1470,6 +1470,20 @@ class MongodbOperations:
         update = {'$set': self.get_correct_dict(update_data)}
         self.client[Database.arbitrage.name][Database.trade_records.name].update_one(params, update)
 
+    def update_trade_record_if_unchanged(self, expected, update_data):
+        """Compare-and-set an existing record, never upsert or change identity."""
+        trade_id = expected.get(TradeRecordAttribute.trade_id.name)
+        if not trade_id or expected.get('_id') != trade_id:
+            raise ValueError('An exact existing trade identity is required')
+        if any(key in update_data for key in ('_id', 'trade_id')):
+            raise ValueError('Trade identity cannot be changed')
+        result = self.client[Database.arbitrage.name][Database.trade_records.name].update_one(
+            self.get_correct_dict(expected),
+            {'$set': self.get_correct_dict(update_data)},
+            upsert=False,
+        )
+        return result.matched_count == 1
+
     def count_trade_records_by_status(self, status):
         return self.client[Database.arbitrage.name][Database.trade_records.name].count_documents(
             {TradeRecordAttribute.status.name: status})
