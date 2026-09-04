@@ -7,7 +7,10 @@ import requests
 
 from pytradekit.utils.dynamic_types import BinanceAuxiliary, BinanceWebSocket, WebsocketStatus
 from pytradekit.gateway.websocket.ws_manager import WsManager
-from pytradekit.utils.time_handler import get_timestamp_ms, get_timestamp_s, get_millisecond_str, get_datetime, TimeSpan
+from pytradekit.utils.time_handler import (
+    get_timestamp_ms, get_timestamp_s, get_millisecond_str, get_datetime,
+    get_monotonic_timestamp_ns, TimeSpan, sleep_min_time,
+)
 from pytradekit.ws.save_restful_bn_deposit_withdraw import HandleRestfulDepositWithdraw
 from pytradekit.ws.bn_add_missing_orders import get_binance_trade
 from pytradekit.utils.tools import get_redis
@@ -23,6 +26,9 @@ BINANCE_UNSUBSCRIBE_METHOD = "UNSUBSCRIBE"
 # Forward a bounded heartbeat for unchanged BBO prices so consumers can refresh
 # quote freshness without turning every size change into a premium calculation.
 BOOKTICKER_SAME_PRICE_REFRESH_INTERVAL_MS = 250
+RECONNECT_BASE_DELAY_MS = 1000
+RECONNECT_MAX_DELAY_MS = 30000
+RECONNECT_STABLE_CONNECTION_MS = 60000
 
 
 class AtUser:
@@ -70,6 +76,8 @@ class BinanceWsManager(WsManager):
         self._mm_symbol_list = mm_symbol_list
         self.verify_bookticker_duplicate = {}
         self._bookticker_symbols = frozenset()
+        self._connection_opened_ms = None
+        self._reconnect_attempt = 0
 
     def _get_api_url(self) -> str:
         return self._api_url
@@ -438,16 +446,49 @@ class BinanceWsManager(WsManager):
         return False
 
     def _on_open(self, ws, *args, **kwargs):
+        self._connection_opened_ms = get_monotonic_timestamp_ns() // 1_000_000
         self.logger.debug(
-            f"[bn_ws on_open] {self._private_stream_log_context()}"
+            f"[bn_ws on_open] {self._private_stream_log_context()} "
+            f"reconnect_attempt={getattr(self, '_reconnect_attempt', 0)}"
         )
+
+    def _connection_age_ms(self):
+        opened_ms = getattr(self, '_connection_opened_ms', None)
+        now_ms = get_monotonic_timestamp_ns() // 1_000_000
+        return max(0, now_ms - opened_ms) if opened_ms is not None else 0
+
+    def _recovery(self):
+        """Bound repeated disconnect retries without changing subscriptions."""
+        if self.status == WebsocketStatus.STOP.name:
+            return
+        age_ms = self._connection_age_ms()
+        attempt = getattr(self, '_reconnect_attempt', 0)
+        if age_ms >= RECONNECT_STABLE_CONNECTION_MS:
+            attempt = 0
+        self._reconnect_attempt = min(attempt + 1, 6)
+        delay_ms = min(
+            RECONNECT_BASE_DELAY_MS * 2 ** (self._reconnect_attempt - 1),
+            RECONNECT_MAX_DELAY_MS,
+        )
+        self.logger.debug(
+            f"[bn_ws recovery] {self._private_stream_log_context()} "
+            f"connection_age_ms={age_ms} attempt={self._reconnect_attempt} "
+            f"delay_ms={delay_ms}"
+        )
+        # Clear the previous lifetime before retrying: a failed handshake must
+        # not repeatedly reset the backoff based on an old stable connection.
+        self._connection_opened_ms = None
+        sleep_min_time(delay_ms / 1000)
+        if self.status != WebsocketStatus.STOP.name:
+            super()._recovery()
 
     def _on_close(self, ws, *args, **kwargs):
         market = 'perp' if self._is_perp else 'spot'
         close_code = args[0] if args and isinstance(args[0], int) else None
         self.logger.debug(
             f"[bn_ws on_close] market={market} msg_count_so_far={self._msg_count} "
-            f"close_code={close_code} close_kwarg_names={list(kwargs)}"
+            f"close_code={close_code} connection_age_ms={self._connection_age_ms()} "
+            f"close_kwarg_names={list(kwargs)}"
         )
         # delegate to parent to trigger reconnect
         super()._on_close(ws, *args, **kwargs)
