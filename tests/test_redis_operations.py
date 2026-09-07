@@ -226,8 +226,8 @@ class TestSetPortfolios:
         assert set(stored) == {"BTCUSDT", "REUSDT"}
         published = json.loads(client.publish.call_args.args[1])
         assert set(published) == {"REUSDT"}
-        client.expire.assert_called_once()
-        assert client.expire.call_args.args[1] == PORTFOLIOS_EXPIRE_TIME
+        client.expire.assert_not_called()
+        assert client.set.call_args.kwargs == {"ex": PORTFOLIOS_EXPIRE_TIME}
 
     def test_new_value_overwrites_same_symbol(self, redis_ops):
         import json
@@ -460,3 +460,98 @@ class TestDecimalEncoderConsistency:
         ops, client, _ = redis_ops
         ops.set_publish_inventory_close({"pnl": Decimal("-3.25")})
         assert json.loads(client.set.call_args.args[1]) == {"pnl": "-3.25"}
+
+
+class TestJsonOperations:
+    def test_decimal_and_ttl_are_written_atomically(self, redis_ops):
+        import json
+        ops, client, _ = redis_ops
+        ops.set_json_with_ttl('liq_hedge:synthetic', {'price': Decimal('0.1234567890123456789')}, 120)
+        assert json.loads(client.set.call_args.args[1]) == {'price': '0.1234567890123456789'}
+        assert client.set.call_args.kwargs == {'ex': 120}
+        client.expire.assert_not_called()
+
+    @pytest.mark.parametrize('raw', ['broken', '[]', 'null', '"value"'])
+    def test_corrupt_json_fails_closed(self, redis_ops, raw):
+        ops, client, _ = redis_ops
+        client.get.return_value = raw
+        with pytest.raises(DataTypeException):
+            ops.get_json('liq_hedge:synthetic')
+
+    def test_missing_json_is_distinct_from_failure(self, redis_ops):
+        ops, client, _ = redis_ops
+        client.get.return_value = None
+        assert ops.get_json('portfolios') is None
+        client.get.side_effect = OSError('offline')
+        with pytest.raises(DependencyException):
+            ops.get_json('portfolios')
+
+    @pytest.mark.parametrize('ttl', [0, -1, True, '120'])
+    def test_invalid_ttl_never_writes(self, redis_ops, ttl):
+        ops, client, _ = redis_ops
+        with pytest.raises(DataTypeException):
+            ops.set_json_with_ttl('key', {}, ttl)
+        client.set.assert_not_called()
+
+    def test_unacknowledged_write_fails_closed(self, redis_ops):
+        ops, client, _ = redis_ops
+        client.set.return_value = False
+        with pytest.raises(DependencyException):
+            ops.set_json_with_ttl('key', {}, 120)
+
+    def test_snapshot_merge_does_not_publish(self, redis_ops):
+        import json
+        ops, client, _ = redis_ops
+        client.get.return_value = '{"OLD": {"bid": "1"}}'
+        ops.merge_portfolios_snapshot({'NEW': {'ask': Decimal('2.2')}})
+        assert set(json.loads(client.set.call_args.args[1])) == {'OLD', 'NEW'}
+        client.publish.assert_not_called()
+        client.expire.assert_not_called()
+
+    @pytest.mark.parametrize('remaining', [None, 'still present'])
+    def test_delete_verifies_absence(self, redis_ops, remaining):
+        ops, client, _ = redis_ops
+        client.get.return_value = remaining
+        assert ops.delete_keys(('liq_hedge:synthetic', 'order_link:synthetic')) is (remaining is None)
+        client.delete.assert_called_once_with('liq_hedge:synthetic', 'order_link:synthetic')
+
+    def test_delete_failure_is_not_success(self, redis_ops):
+        ops, client, _ = redis_ops
+        client.delete.side_effect = OSError('offline')
+        with pytest.raises(DependencyException):
+            ops.delete_keys(('key',))
+
+    def test_concurrent_snapshot_and_signal_keep_both_symbols(self, redis_ops):
+        import json
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Event, Lock
+        ops, client, _ = redis_ops
+        lock = Lock()
+        ops.get_lock_for_resource = lambda key: lock
+        entered = Event()
+        release = Event()
+        state = {}
+        reads = []
+
+        def read(key):
+            if not reads:
+                reads.append(key)
+                entered.set()
+                assert release.wait(timeout=2)
+            return state.get(key)
+
+        def write(key, payload, **kwargs):
+            state[key] = payload
+            return True
+
+        client.get.side_effect = read
+        client.set.side_effect = write
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            snapshot = pool.submit(ops.merge_portfolios_snapshot, {'FIRST': {'bid': Decimal('1')}})
+            assert entered.wait(timeout=2)
+            signal = pool.submit(ops.set_portfolios, {'SECOND': {'bid': Decimal('2')}})
+            release.set()
+            snapshot.result(timeout=2)
+            signal.result(timeout=2)
+        assert set(json.loads(state['portfolios'])) == {'FIRST', 'SECOND'}
+        client.publish.assert_called_once()
