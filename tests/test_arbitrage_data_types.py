@@ -13,6 +13,7 @@ from pytradekit.utils.static_types import (
     PremiumSnapshot, FundingRateHistory,
 )
 from pytradekit.utils.mongodb_operations import MongodbOperations
+from pytradekit.utils.time_handler import TimeSpan
 
 
 # === Data Type Tests ===
@@ -135,6 +136,52 @@ class TestTradeRecordCRUD:
         result = mongo.read_trade_record_by_id("abc")
 
         client["arbitrage"]["trade_records"].find_one.assert_called_once_with({"trade_id": "abc"})
+        assert result["trade_id"] == "abc"
+
+    def test_read_trade_records_filters_created_and_closed_time_independently(self, mocker):
+        mongo, client = _make_mongo(mocker)
+        mock_cursor = MagicMock()
+        mock_cursor.sort.return_value = mock_cursor
+        mock_cursor.__iter__ = MagicMock(return_value=iter([]))
+        client["arbitrage"]["trade_records"].find.return_value = mock_cursor
+
+        mongo.read_trade_records(
+            status="closed",
+            time_span=TimeSpan(start=100, end=200),
+            closed_time_span=TimeSpan(start=300, end=400),
+        )
+
+        client["arbitrage"]["trade_records"].find.assert_called_once_with({
+            "status": "closed",
+            "created_time_ms": {"$gte": 100, "$lte": 200},
+            "closed_time_ms": {"$gte": 300, "$lte": 400},
+        })
+
+    def test_read_trade_records_keeps_positional_limit_compatible(self, mocker):
+        mongo, client = _make_mongo(mocker)
+        mock_cursor = MagicMock()
+        mock_cursor.sort.return_value = mock_cursor
+        mock_cursor.limit.return_value = mock_cursor
+        mock_cursor.__iter__ = MagicMock(return_value=iter([]))
+        client["arbitrage"]["trade_records"].find.return_value = mock_cursor
+
+        # The sixth positional argument has historically been ``limit``.
+        mongo.read_trade_records(None, None, None, None, None, 7)
+
+        mock_cursor.limit.assert_called_once_with(7)
+
+    def test_read_trade_record_by_perp_client_order_id(self, mocker):
+        mongo, client = _make_mongo(mocker)
+        client["arbitrage"]["trade_records"].find_one.return_value = {
+            "trade_id": "abc",
+            "perp_client_order_id": "123",
+        }
+
+        result = mongo.read_trade_record_by_perp_client_order_id(123)
+
+        client["arbitrage"]["trade_records"].find_one.assert_called_once_with({
+            "perp_client_order_id": "123",
+        })
         assert result["trade_id"] == "abc"
 
 

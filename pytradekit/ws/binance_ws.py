@@ -7,7 +7,10 @@ import requests
 
 from pytradekit.utils.dynamic_types import BinanceAuxiliary, BinanceWebSocket, WebsocketStatus
 from pytradekit.gateway.websocket.ws_manager import WsManager
-from pytradekit.utils.time_handler import get_timestamp_ms, get_timestamp_s, get_millisecond_str, get_datetime, TimeSpan
+from pytradekit.utils.time_handler import (
+    get_timestamp_ms, get_timestamp_s, get_millisecond_str, get_datetime,
+    get_monotonic_timestamp_ns, TimeSpan, sleep_min_time,
+)
 from pytradekit.ws.save_restful_bn_deposit_withdraw import HandleRestfulDepositWithdraw
 from pytradekit.ws.bn_add_missing_orders import get_binance_trade
 from pytradekit.utils.tools import get_redis
@@ -19,6 +22,13 @@ from pytradekit.ws.subscription_update import (
 
 
 BINANCE_UNSUBSCRIBE_METHOD = "UNSUBSCRIBE"
+# Quantity-only book-ticker updates can arrive thousands of times per second.
+# Forward a bounded heartbeat for unchanged BBO prices so consumers can refresh
+# quote freshness without turning every size change into a premium calculation.
+BOOKTICKER_SAME_PRICE_REFRESH_INTERVAL_MS = 250
+RECONNECT_BASE_DELAY_MS = 1000
+RECONNECT_MAX_DELAY_MS = 30000
+RECONNECT_STABLE_CONNECTION_MS = 60000
 
 
 class AtUser:
@@ -66,6 +76,8 @@ class BinanceWsManager(WsManager):
         self._mm_symbol_list = mm_symbol_list
         self.verify_bookticker_duplicate = {}
         self._bookticker_symbols = frozenset()
+        self._connection_opened_ms = None
+        self._reconnect_attempt = 0
 
     def _get_api_url(self) -> str:
         return self._api_url
@@ -78,6 +90,18 @@ class BinanceWsManager(WsManager):
 
     def _listen_key_kind(self):
         return 'SPOT' if self._is_spot() else 'PERP'
+
+    def _private_stream_log_context(self, kind=None):
+        """Return diagnostics that cannot disclose a Binance listen key."""
+        kind = kind or self._listen_key_kind()
+        listen_key = self._listen_key.get(kind)
+        listen_key_len = len(listen_key) if isinstance(listen_key, str) else 0
+        return f"market={kind.lower()} listen_key_len={listen_key_len}"
+
+    @staticmethod
+    def _error_type(error):
+        """Describe an error without logging its potentially sensitive message."""
+        return type(error).__name__
 
     def _ws_api_listen_key(self, method):
         """Use Binance WebSocket API to manage spot listen keys.
@@ -205,8 +229,8 @@ class BinanceWsManager(WsManager):
                 # in the URL path; the SUBSCRIBE method silently drops them on fstream.
                 self._url = f"{BinanceAuxiliary.url_perp_ws.value}/{listen_key}"
                 self.logger.debug(
-                    f"perp user data stream connect with listen_key in url path "
-                    f"(len={len(listen_key)})"
+                    "perp user data stream connect with listen_key in url path "
+                    f"({self._private_stream_log_context(kind)})"
                 )
                 self._reconnect_with_new_url()
                 self._ping(BinanceAuxiliary.ws_ping_sleep.value,
@@ -215,12 +239,20 @@ class BinanceWsManager(WsManager):
             params = [listen_key]
             if self._send_params:
                 params += self._send_params
-            self.logger.debug(f"subscribe: {params}, url: {self._url}, listen key url:{self._listen_key_url}")
+            self.logger.debug(
+                "spot user data stream subscribe "
+                f"({self._private_stream_log_context(kind)} "
+                f"additional_param_count={len(params) - 1})"
+            )
             self.start_subscribe(params)
             self._ping(BinanceAuxiliary.ws_ping_sleep.value,
                        reconnection_time=BinanceAuxiliary.reconnection_time_sleep.value)
         except Exception as e:
-            self.logger.debug(f"subscribe error: {e}", exc_info=True)
+            self.logger.debug(
+                "subscribe error: "
+                f"{self._private_stream_log_context()} "
+                f"error_type={self._error_type(e)}"
+            )
 
     def _reconnect_with_new_url(self):
         # Close any existing ws so connect() rebinds to the freshly built _url.
@@ -327,7 +359,11 @@ class BinanceWsManager(WsManager):
             self._subs = [msg]
             self.send_json(msg)
         except Exception as e:
-            self.logger.exception(e)
+            self.logger.debug(
+                "start_subscribe error: "
+                f"{self._private_stream_log_context()} "
+                f"error_type={self._error_type(e)}"
+            )
 
     def supplement_orders(self, times):
         if self.start_end_time_dict:
@@ -356,23 +392,45 @@ class BinanceWsManager(WsManager):
             elif connect_status is False:
                 self.start_end_time_dict['start_time'] = times
 
-    def verify_spot_bookticker_duplicate(self, msg):
-        if BinanceWebSocket.order_book_update_id.value not in msg or BinanceWebSocket.symbol.value not in msg or BinanceWebSocket.orderbook_asks.value not in msg or BinanceWebSocket.orderbook_bids.value not in msg:
+    def verify_spot_bookticker_duplicate(self, msg, receive_time_ms=None):
+        """Forward price changes immediately and sample same-price heartbeats."""
+        required_fields = (
+            BinanceWebSocket.order_book_update_id.value,
+            BinanceWebSocket.symbol.value,
+            BinanceWebSocket.orderbook_asks.value,
+            BinanceWebSocket.orderbook_bids.value,
+        )
+        if not all(field in msg for field in required_fields):
             return False
-        if msg[BinanceWebSocket.symbol.value] not in self.verify_bookticker_duplicate:
-            self.verify_bookticker_duplicate[msg[BinanceWebSocket.symbol.value]] = msg[
-                                                                                       BinanceWebSocket.orderbook_asks.value] + \
-                                                                                   msg[
-                                                                                       BinanceWebSocket.orderbook_bids.value]
-        else:
-            if self.verify_bookticker_duplicate[msg[BinanceWebSocket.symbol.value]] == msg[
-                BinanceWebSocket.orderbook_asks.value] + msg[BinanceWebSocket.orderbook_bids.value]:
-                return False
-            else:
-                self.verify_bookticker_duplicate[msg[BinanceWebSocket.symbol.value]] = msg[
-                                                                                           BinanceWebSocket.orderbook_asks.value] + \
-                                                                                       msg[
-                                                                                           BinanceWebSocket.orderbook_bids.value]
+        symbol = msg[BinanceWebSocket.symbol.value]
+        update_id = msg[BinanceWebSocket.order_book_update_id.value]
+        bid = msg[BinanceWebSocket.orderbook_bids.value]
+        ask = msg[BinanceWebSocket.orderbook_asks.value]
+        if isinstance(receive_time_ms, bool) or not isinstance(
+            receive_time_ms,
+            int,
+        ):
+            receive_time_ms = get_timestamp_ms()
+
+        previous = self.verify_bookticker_duplicate.get(symbol)
+        if previous and previous["update_id"] == update_id:
+            return False
+        if (
+            previous
+            and previous["bid"] == bid
+            and previous["ask"] == ask
+            and receive_time_ms - previous["forwarded_at_ms"]
+            < BOOKTICKER_SAME_PRICE_REFRESH_INTERVAL_MS
+        ):
+            previous["update_id"] = update_id
+            return False
+
+        self.verify_bookticker_duplicate[symbol] = {
+            "update_id": update_id,
+            "bid": bid,
+            "ask": ask,
+            "forwarded_at_ms": receive_time_ms,
+        }
         return True
 
     def verify_spot_order_trade(self, msg):
@@ -388,28 +446,71 @@ class BinanceWsManager(WsManager):
         return False
 
     def _on_open(self, ws, *args, **kwargs):
-        market = 'perp' if self._is_perp else 'spot'
-        url_preview = (self._url or '')[:80]
-        self.logger.debug(f"[bn_ws on_open] market={market} url={url_preview}")
+        self._connection_opened_ms = get_monotonic_timestamp_ns() // 1_000_000
+        self.logger.debug(
+            f"[bn_ws on_open] {self._private_stream_log_context()} "
+            f"reconnect_attempt={getattr(self, '_reconnect_attempt', 0)}"
+        )
+
+    def _connection_age_ms(self):
+        opened_ms = getattr(self, '_connection_opened_ms', None)
+        now_ms = get_monotonic_timestamp_ns() // 1_000_000
+        return max(0, now_ms - opened_ms) if opened_ms is not None else 0
+
+    def _recovery(self):
+        """Bound repeated disconnect retries without changing subscriptions."""
+        if self.status == WebsocketStatus.STOP.name:
+            return
+        age_ms = self._connection_age_ms()
+        attempt = getattr(self, '_reconnect_attempt', 0)
+        if age_ms >= RECONNECT_STABLE_CONNECTION_MS:
+            attempt = 0
+        self._reconnect_attempt = min(attempt + 1, 6)
+        delay_ms = min(
+            RECONNECT_BASE_DELAY_MS * 2 ** (self._reconnect_attempt - 1),
+            RECONNECT_MAX_DELAY_MS,
+        )
+        self.logger.debug(
+            f"[bn_ws recovery] {self._private_stream_log_context()} "
+            f"connection_age_ms={age_ms} attempt={self._reconnect_attempt} "
+            f"delay_ms={delay_ms}"
+        )
+        # Clear the previous lifetime before retrying: a failed handshake must
+        # not repeatedly reset the backoff based on an old stable connection.
+        self._connection_opened_ms = None
+        sleep_min_time(delay_ms / 1000)
+        if self.status != WebsocketStatus.STOP.name:
+            super()._recovery()
 
     def _on_close(self, ws, *args, **kwargs):
         market = 'perp' if self._is_perp else 'spot'
+        close_code = args[0] if args and isinstance(args[0], int) else None
         self.logger.debug(
             f"[bn_ws on_close] market={market} msg_count_so_far={self._msg_count} "
-            f"close_args={args} close_kwargs={list(kwargs)}"
+            f"close_code={close_code} connection_age_ms={self._connection_age_ms()} "
+            f"close_kwarg_names={list(kwargs)}"
         )
         # delegate to parent to trigger reconnect
         super()._on_close(ws, *args, **kwargs)
 
     def _on_error(self, ws, error, *args, **kwargs):
-        market = 'perp' if self._is_perp else 'spot'
         self.logger.debug(
-            f"[bn_ws on_error] market={market} error={error!r} msg_count_so_far={self._msg_count}"
+            f"[bn_ws on_error] {self._private_stream_log_context()} "
+            f"error_type={self._error_type(error)} msg_count_so_far={self._msg_count}"
         )
-        super()._on_error(ws, error, *args, **kwargs)
+        self.reconnect()
 
     def _on_message(self, _ws, message):
         msg = json.loads(message)
+        bookticker_receive_time_ms = None
+        if (
+            isinstance(msg, dict)
+            and BinanceWebSocket.order_book_update_id.value in msg
+            and BinanceWebSocket.symbol.value in msg
+            and BinanceWebSocket.orderbook_asks.value in msg
+            and BinanceWebSocket.orderbook_bids.value in msg
+        ):
+            bookticker_receive_time_ms = get_timestamp_ms()
         # raw-msg trace: first N msgs are logged in full, rest are summarized by top-level keys.
         # Use to diagnose missing perp/spot event delivery when verify_* keeps returning False.
         self._msg_count += 1
@@ -442,7 +543,11 @@ class BinanceWsManager(WsManager):
                 if self.verify_spot_order_trade(msg):
                     self._queue.put_nowait(msg)
                     return
-                if self.verify_spot_bookticker_duplicate(msg):
+                if self.verify_spot_bookticker_duplicate(
+                    msg,
+                    bookticker_receive_time_ms,
+                ):
+                    msg[BinanceWebSocket.run_time_ms.value] = bookticker_receive_time_ms
                     self._queue.put_nowait(msg)
                     return
         except Exception as e:

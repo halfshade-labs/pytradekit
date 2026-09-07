@@ -1,6 +1,7 @@
 import json
+from contextlib import ExitStack
 from decimal import Decimal, InvalidOperation
-from typing import Dict, Mapping
+from typing import Dict, Mapping, Tuple
 
 import redis
 from pytradekit.utils.dynamic_types import RedisFields
@@ -65,6 +66,81 @@ class RedisOperations:
         except Exception as e:
             self.logger.exception(e)
             raise DependencyException(f"Cannot acquire lock for resource: {key}") from e
+
+    def get_json(self, key: str):
+        """Read a JSON object; absence is None and corrupt values fail closed."""
+        self._validate_redis_key(key)
+        try:
+            with self.get_lock_for_resource(key):
+                raw = self.client.get(key)
+        except Exception as exc:
+            self.logger.debug("Redis JSON read failed", exc_info=True)
+            raise DependencyException("Redis JSON read failed") from exc
+        if raw is None:
+            return None
+        return self._decode_trade_context(raw, key)
+
+    def set_json_with_ttl(self, key: str, value: Mapping, ttl: int) -> None:
+        """Encode Decimal losslessly and apply expiry in the same SET command."""
+        self._validate_redis_key(key)
+        if not isinstance(value, Mapping):
+            raise DataTypeException("Redis JSON value must be a mapping")
+        if isinstance(ttl, bool) or not isinstance(ttl, int) or ttl <= 0:
+            raise DataTypeException("Redis TTL must be a positive integer")
+        payload = json.dumps(dict(value), cls=_DecimalEncoder, allow_nan=False)
+        try:
+            with self.get_lock_for_resource(key):
+                if not self.client.set(key, payload, ex=ttl):
+                    raise DependencyException("Redis SET was not acknowledged")
+        except Exception as exc:
+            self.logger.debug("Redis JSON write failed", exc_info=True)
+            raise DependencyException("Redis JSON write failed") from exc
+
+    def delete_keys(self, keys: Tuple[str, ...]) -> bool:
+        """Delete and verify keys under ordered locks shared with their writers."""
+        if not isinstance(keys, tuple) or not keys:
+            raise DataTypeException("Redis deletion requires a nonempty key tuple")
+        for key in keys:
+            self._validate_redis_key(key)
+        try:
+            with ExitStack() as stack:
+                for key in sorted(set(keys)):
+                    stack.enter_context(self.get_lock_for_resource(key))
+                self.client.delete(*keys)
+                return all(self.client.get(key) is None for key in keys)
+        except Exception as exc:
+            self.logger.debug("Redis key deletion failed", exc_info=True)
+            raise DependencyException("Redis key deletion failed") from exc
+
+    @staticmethod
+    def _validate_redis_key(key: str) -> None:
+        if not isinstance(key, str) or not key.strip():
+            raise DataTypeException("Redis key must be a nonempty string")
+
+    def merge_portfolios_snapshot(self, value: Mapping) -> None:
+        """Merge fresh quotes without publishing an entry signal."""
+        if not isinstance(value, Mapping):
+            raise DataTypeException("Portfolio snapshot must be a mapping")
+        key = RedisFields.portfolios.name
+        try:
+            with self.get_lock_for_resource(key):
+                self._merge_portfolios_snapshot(value)
+        except Exception as exc:
+            self.logger.debug("Portfolio snapshot write failed", exc_info=True)
+            raise DependencyException("Portfolio snapshot write failed") from exc
+
+    def _merge_portfolios_snapshot(self, value: Mapping) -> None:
+        key = RedisFields.portfolios.name
+        raw = self.client.get(key)
+        try:
+            merged = self._decode_trade_context(raw, key)
+        except DataTypeException:
+            # Only this fresh market-data writer may replace a corrupt cache.
+            merged = {}
+        merged.update(value)
+        payload = json.dumps(merged, cls=_DecimalEncoder, allow_nan=False)
+        if not self.client.set(key, payload, ex=PORTFOLIOS_EXPIRE_TIME):
+            raise DependencyException("Portfolio SET was not acknowledged")
 
     def set_ticker_price(self, exchange_id, value):
         key = exchange_id + "_" + RedisFields.ticker_price.name
@@ -335,16 +411,7 @@ class RedisOperations:
         lock = self.get_lock_for_resource(key)
         try:
             with lock:
-                existing_raw = self.client.get(key)
-                try:
-                    merged = json.loads(existing_raw) if existing_raw else {}
-                except (TypeError, ValueError):
-                    merged = {}
-                if not isinstance(merged, dict):
-                    merged = {}
-                merged.update(value)
-                self.client.set(key, json.dumps(merged, cls=_DecimalEncoder))
-                self.client.expire(key, PORTFOLIOS_EXPIRE_TIME)
+                self._merge_portfolios_snapshot(value)
                 self.client.publish(key, json.dumps(value, cls=_DecimalEncoder))
         except Exception as e:
             self.logger.exception(f"Failed to set portfolios for {key}: {e}")
