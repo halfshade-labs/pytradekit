@@ -74,7 +74,7 @@ class MongodbOperations:
 
         return decorator
 
-    def __init__(self, mongodb_url, logger=None):
+    def __init__(self, mongodb_url, logger=None, *, initialize_indexes=True):
         # Double-checked locking: guard the shared client creation so concurrent
         # callers don't each build a MongoClient (extra connection pools).
         if MongodbOperations._client is None:
@@ -83,10 +83,13 @@ class MongodbOperations:
                     MongodbOperations._client = self._create_client(mongodb_url)
         self.client = MongodbOperations._client
         self.logger = logger
-        with MongodbOperations._indexes_lock:
-            if not MongodbOperations._indexes_ensured:
-                self._ensure_indexes()
-                MongodbOperations._indexes_ensured = True
+        # Explicit migrations can limit writes to their displayed index plan.
+        # Skipping defaults must not mark them initialized for later callers.
+        if initialize_indexes:
+            with MongodbOperations._indexes_lock:
+                if not MongodbOperations._indexes_ensured:
+                    self._ensure_indexes()
+                    MongodbOperations._indexes_ensured = True
 
     def _ensure_indexes(self):
         """Create compound indexes for arbitrage and account collections (idempotent)."""

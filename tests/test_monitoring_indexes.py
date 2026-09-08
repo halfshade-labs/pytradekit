@@ -7,6 +7,29 @@ from pytradekit.utils.dynamic_types import ExchangeId
 from pytradekit.utils.mongodb_operations import MongodbOperations
 
 
+def test_explicit_index_opt_out_does_not_suppress_later_default_initialization(monkeypatch):
+    client = Mock()
+    create_client = Mock(return_value=client)
+    ensure_indexes = Mock()
+    monkeypatch.setattr(MongodbOperations, '_client', None)
+    monkeypatch.setattr(MongodbOperations, '_indexes_ensured', False)
+    monkeypatch.setattr(MongodbOperations, '_create_client', create_client)
+    monkeypatch.setattr(MongodbOperations, '_ensure_indexes', ensure_indexes)
+
+    migration = MongodbOperations('mongodb://localhost:27017/', initialize_indexes=False)
+    assert migration.client is client
+    ensure_indexes.assert_not_called()
+    assert MongodbOperations._indexes_ensured is False
+
+    default = MongodbOperations('mongodb://localhost:27017/')
+    assert default.client is client
+    create_client.assert_called_once()
+    ensure_indexes.assert_called_once()
+    assert MongodbOperations._indexes_ensured is True
+    MongodbOperations('mongodb://localhost:27017/')
+    ensure_indexes.assert_called_once()
+
+
 def test_monitor_plan_covers_account_sort_run_and_closed_window():
     specs = MongodbOperations.monitoring_index_specs((ExchangeId.BN, ExchangeId.OKX))
     keys = {(item['collection'], tuple(item['keys'])) for item in specs}

@@ -452,7 +452,7 @@ def unzip_to_df(zip_file_path: str):
         raise DependencyException(f'Cannot unzip to dataframe: {zip_file_path}') from e
 
 
-def get_mongo(config, logger, running_mode):
+def get_mongo(config, logger, running_mode, *, initialize_indexes=True):
     def get_mongodb_url(config, running_mode=RunningMode.testing_flag.name):
         mongo_host = config.private.get(Env.MONGO_HOST.name ) 
         mongo_port = config.private.get(Env.MONGO_PORT.name)
@@ -477,7 +477,7 @@ def get_mongo(config, logger, running_mode):
             return mongodb_url
 
     mongodb_url = get_mongodb_url(config, running_mode=running_mode)
-    mongo = MongodbOperations(mongodb_url, logger=logger)
+    mongo = MongodbOperations(mongodb_url, logger=logger, initialize_indexes=initialize_indexes)
     return mongo
 
 
