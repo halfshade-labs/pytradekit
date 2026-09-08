@@ -1,3 +1,4 @@
+import asyncio
 from decimal import Decimal
 from typing import Any, Dict, Optional
 from urllib.parse import urlencode
@@ -155,7 +156,7 @@ class BinanceClient:
             if resp.status_code in [418, 429]:
                 retry_after = int(resp.headers['Retry-After'])
                 self.logger.info(f'Request failed {resp.content} sleep:{retry_after}')
-                time.sleep(retry_after)
+                await asyncio.sleep(retry_after)
             result = resp.json()
             if 'code' in result:
                 if result['code'] == -1013:

@@ -6,6 +6,7 @@ import base64
 from typing import Any, Optional
 from urllib.parse import urlencode
 import requests
+import httpx
 from pytradekit.utils.time_handler import get_ok_timestamp
 from pytradekit.utils.dynamic_types import (
     HttpMmthod,
@@ -18,6 +19,7 @@ from pytradekit.utils.exceptions import ExchangeException
 
 
 SYNC_HTTP_TIMEOUT = (5, 30)
+ASYNC_HTTP_TIMEOUT = httpx.Timeout(30, connect=5)
 
 
 class OkexClient:
@@ -33,7 +35,8 @@ class OkexClient:
         else:
             self._url = OkexAuxiliary.url.value
 
-    def _send_request(self, api, method=HttpMmthod.GET.name, params=None, use_sign=True):
+    def _request_components(self, api, method, params, use_sign):
+        """Build one signature over exactly the query/body sent on the wire."""
         url = f'{self._url}{api}'
         headers = {}
         params = params or {}
@@ -58,10 +61,42 @@ class OkexClient:
             headers['OK-ACCESS-TIMESTAMP'] = timestamp
             headers['OK-ACCESS-PASSPHRASE'] = self.passphrase
 
+        if method == HttpMmthod.GET.name and params:
+            url = f'{url}?{urlencode(params)}'
+        return url, headers, body
+
+    async def async_send_request(self, api, method=HttpMmthod.GET.name,
+                                 params=None, use_sign=True, http_client=None):
+        """Send once without replay; cancellation propagates to the transport.
+
+        A lost order response is ambiguous. The caller must reconcile the same
+        client order ID instead of automatically retrying this POST.
+        """
+        url, headers, body = self._request_components(api, method, params, use_sign)
+        if method not in (HttpMmthod.GET.name, HttpMmthod.POST.name):
+            raise ExchangeException(f'method {method} not support')
+        try:
+            if http_client is None:
+                async with httpx.AsyncClient() as client:
+                    response = await client.request(method, url, headers=headers,
+                                                    content=body.encode(), timeout=ASYNC_HTTP_TIMEOUT)
+            else:
+                response = await http_client.request(method, url, headers=headers,
+                                                     content=body.encode(), timeout=ASYNC_HTTP_TIMEOUT)
+            if response.status_code != 200:
+                raise ExchangeException(f'http err:{response.status_code} result:{response.content}')
+            return response.json()
+        except ExchangeException:
+            raise
+        except Exception as exc:
+            raise ExchangeException(str(exc)) from exc
+
+    def _send_request(self, api, method=HttpMmthod.GET.name, params=None, use_sign=True):
+        url, headers, _ = self._request_components(api, method, params, use_sign)
+        params = params or {}
+
         try:
             if method == HttpMmthod.GET.name:
-                if params:
-                    url = f'{url}?{urlencode(params)}'
                 resp = self.session.get(
                     url,
                     headers=headers,
@@ -249,6 +284,12 @@ class OkexClient:
         Returns:
             API响应结果
         """
+        params = self._spot_market_params(inst_id, side, size, client_order_id, target_currency)
+        url = OkexAuxiliary.url_spot_order.value
+        return self._send_request(url, method=HttpMmthod.POST.name, params=params, use_sign=True)
+
+    @staticmethod
+    def _spot_market_params(inst_id, side, size, client_order_id, target_currency):
         params = {
             'instId': inst_id,
             'tdMode': 'cash',  # 现货模式
@@ -261,9 +302,15 @@ class OkexClient:
         if target_currency:
             params['tgtCcy'] = target_currency
         
-        url = OkexAuxiliary.url_spot_order.value
-        result = self._send_request(url, method=HttpMmthod.POST.name, params=params, use_sign=True)
-        return result
+        return params
+
+    async def async_place_spot_market_order(self, inst_id, side, size,
+                                            client_order_id=None, target_currency=None,
+                                            http_client=None):
+        """Single-attempt asynchronous variant with identical market sizing."""
+        params = self._spot_market_params(inst_id, side, size, client_order_id, target_currency)
+        return await self.async_send_request(OkexAuxiliary.url_spot_order.value,
+            method=HttpMmthod.POST.name, params=params, http_client=http_client)
 
     def place_spot_limit_order(self, inst_id, side, size, price, client_order_id=None):
         """
@@ -279,6 +326,12 @@ class OkexClient:
         Returns:
             API响应结果
         """
+        params = self._spot_limit_params(inst_id, side, size, price, client_order_id)
+        return self._send_request(OkexAuxiliary.url_spot_order.value,
+            method=HttpMmthod.POST.name, params=params, use_sign=True)
+
+    @staticmethod
+    def _spot_limit_params(inst_id, side, size, price, client_order_id):
         params = {
             'instId': inst_id,
             'tdMode': 'cash',
@@ -290,6 +343,11 @@ class OkexClient:
         if client_order_id:
             params['clOrdId'] = client_order_id
         
-        url = OkexAuxiliary.url_spot_order.value
-        result = self._send_request(url, method=HttpMmthod.POST.name, params=params, use_sign=True)
-        return result
+        return params
+
+    async def async_place_spot_limit_order(self, inst_id, side, size, price,
+                                           client_order_id=None, http_client=None):
+        """Single-attempt asynchronous variant of the spot LIMIT submission."""
+        params = self._spot_limit_params(inst_id, side, size, price, client_order_id)
+        return await self.async_send_request(OkexAuxiliary.url_spot_order.value,
+            method=HttpMmthod.POST.name, params=params, http_client=http_client)

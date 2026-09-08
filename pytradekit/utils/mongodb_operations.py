@@ -74,7 +74,7 @@ class MongodbOperations:
 
         return decorator
 
-    def __init__(self, mongodb_url, logger=None):
+    def __init__(self, mongodb_url, logger=None, *, initialize_indexes=True):
         # Double-checked locking: guard the shared client creation so concurrent
         # callers don't each build a MongoClient (extra connection pools).
         if MongodbOperations._client is None:
@@ -83,10 +83,13 @@ class MongodbOperations:
                     MongodbOperations._client = self._create_client(mongodb_url)
         self.client = MongodbOperations._client
         self.logger = logger
-        with MongodbOperations._indexes_lock:
-            if not MongodbOperations._indexes_ensured:
-                self._ensure_indexes()
-                MongodbOperations._indexes_ensured = True
+        # Explicit migrations can limit writes to their displayed index plan.
+        # Skipping defaults must not mark them initialized for later callers.
+        if initialize_indexes:
+            with MongodbOperations._indexes_lock:
+                if not MongodbOperations._indexes_ensured:
+                    self._ensure_indexes()
+                    MongodbOperations._indexes_ensured = True
 
     def _ensure_indexes(self):
         """Create compound indexes for arbitrage and account collections (idempotent)."""
@@ -121,6 +124,58 @@ class MongodbOperations:
             name="idx_account_inst_time",
             background=True,
         )
+
+    @staticmethod
+    def monitoring_index_specs(spot_exchanges):
+        """Plan non-unique indexes without opening a database connection."""
+        exchanges = tuple(spot_exchanges)
+        if any(not isinstance(exchange, ExchangeId) for exchange in exchanges):
+            raise ValueError('monitoring indexes require ExchangeId values')
+        collections = [Database.perp_position.name]
+        collections.extend(dict.fromkeys(
+            f'{exchange.name}_{Database.balance.name}' for exchange in exchanges
+        ))
+        specs = []
+        for collection in collections:
+            for prefix, name in (
+                ([(BalanceAttribute.account_id.name, 1)], 'idx_monitor_account_event_id'),
+                ([], 'idx_monitor_event_id'),
+            ):
+                specs.append({
+                    'database': Database.raw_accounts.name,
+                    'collection': collection,
+                    'keys': prefix + [(BalanceAttribute.event_time_ms.name, DESCENDING), ('_id', DESCENDING)],
+                    'name': name,
+                })
+        specs.extend([
+            {
+                'database': Database.raw_accounts.name,
+                'collection': Database.perp_position.name,
+                'keys': [(PerpPositionAttribute.account_id.name, 1), ('snapshot_run_id', 1)],
+                'name': 'idx_monitor_account_snapshot_run',
+            },
+            {
+                'database': Database.arbitrage.name,
+                'collection': Database.trade_records.name,
+                'keys': [(TradeRecordAttribute.status.name, 1), (TradeRecordAttribute.closed_time_ms.name, DESCENDING)],
+                'name': 'idx_monitor_status_closed_time',
+            },
+        ])
+        return specs
+
+    def ensure_monitoring_indexes(self, spot_exchanges):
+        """Apply a reviewed monitor plan; propagate failures to the operator.
+
+        This opt-in migration is deliberately outside startup and the read-only
+        UI. Stable names make repeat applications idempotent; existing indexes
+        are never dropped or converted to unique constraints.
+        """
+        specs = self.monitoring_index_specs(spot_exchanges)
+        for spec in specs:
+            self.client[spec['database']][spec['collection']].create_index(
+                spec['keys'], name=spec['name'], background=True,
+            )
+        return specs
 
     def _ensure_deposit_withdraw_index(self, collection, collection_name):
         with MongodbOperations._indexes_lock:
