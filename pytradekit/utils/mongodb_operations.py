@@ -122,6 +122,58 @@ class MongodbOperations:
             background=True,
         )
 
+    @staticmethod
+    def monitoring_index_specs(spot_exchanges):
+        """Plan non-unique indexes without opening a database connection."""
+        exchanges = tuple(spot_exchanges)
+        if any(not isinstance(exchange, ExchangeId) for exchange in exchanges):
+            raise ValueError('monitoring indexes require ExchangeId values')
+        collections = [Database.perp_position.name]
+        collections.extend(dict.fromkeys(
+            f'{exchange.name}_{Database.balance.name}' for exchange in exchanges
+        ))
+        specs = []
+        for collection in collections:
+            for prefix, name in (
+                ([(BalanceAttribute.account_id.name, 1)], 'idx_monitor_account_event_id'),
+                ([], 'idx_monitor_event_id'),
+            ):
+                specs.append({
+                    'database': Database.raw_accounts.name,
+                    'collection': collection,
+                    'keys': prefix + [(BalanceAttribute.event_time_ms.name, DESCENDING), ('_id', DESCENDING)],
+                    'name': name,
+                })
+        specs.extend([
+            {
+                'database': Database.raw_accounts.name,
+                'collection': Database.perp_position.name,
+                'keys': [(PerpPositionAttribute.account_id.name, 1), ('snapshot_run_id', 1)],
+                'name': 'idx_monitor_account_snapshot_run',
+            },
+            {
+                'database': Database.arbitrage.name,
+                'collection': Database.trade_records.name,
+                'keys': [(TradeRecordAttribute.status.name, 1), (TradeRecordAttribute.closed_time_ms.name, DESCENDING)],
+                'name': 'idx_monitor_status_closed_time',
+            },
+        ])
+        return specs
+
+    def ensure_monitoring_indexes(self, spot_exchanges):
+        """Apply a reviewed monitor plan; propagate failures to the operator.
+
+        This opt-in migration is deliberately outside startup and the read-only
+        UI. Stable names make repeat applications idempotent; existing indexes
+        are never dropped or converted to unique constraints.
+        """
+        specs = self.monitoring_index_specs(spot_exchanges)
+        for spec in specs:
+            self.client[spec['database']][spec['collection']].create_index(
+                spec['keys'], name=spec['name'], background=True,
+            )
+        return specs
+
     def _ensure_deposit_withdraw_index(self, collection, collection_name):
         with MongodbOperations._indexes_lock:
             if collection_name in MongodbOperations._deposit_withdraw_indexes_ensured:
