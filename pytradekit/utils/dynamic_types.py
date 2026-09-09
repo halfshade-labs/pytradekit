@@ -1063,7 +1063,7 @@ class OkexAuxiliary(Enum):
     url_spot_order = '/api/v5/trade/order'  # 现货下单API（包括市价单和限价单）
     url_commission_rate = '/api/v5/account/trade-fee'
     ws_orders = '/ws/v5/private'
-    ws_ping_sleep = 1800
+    ws_ping_sleep = 20
     reconnection_time_sleep = 60 * 60 * 2
 
 

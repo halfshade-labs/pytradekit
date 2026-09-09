@@ -1,4 +1,3 @@
-import time
 import json
 import hmac
 import base64
@@ -37,6 +36,10 @@ class OkexWsManager(WsManager):
         self._ws_connected = False
         self.logger = logger
         self._bookticker_symbols = frozenset()
+        self._is_public = is_public
+        self._logged_on = False
+        self._orders_subscribed = False
+        self._pending_pong_socket = None
 
     def get_signature(self, params):
         mac = hmac.new(bytes(self._api_secret, encoding='utf8'), bytes(params, encoding='utf-8'), digestmod='sha256')
@@ -64,19 +67,58 @@ class OkexWsManager(WsManager):
         self.send_json(_rqs_orders)
 
     def _ping(self, n_seconds, reconnection_time=None) -> None:
-        while True:
-            time.sleep(n_seconds)
-            if self.status in (WebsocketStatus.RECOVERY.name, WebsocketStatus.INIT.name):
+        # OKX requires an application-level string ping before its 30-second
+        # idle limit; WebSocket protocol ping frames do not replace this flow.
+        while not self._stop_event.wait(n_seconds):
+            if self.status != WebsocketStatus.ACTIVE.name:
                 continue
-            try:
-                self.send("ping")
-            except Exception as e:
-                self.logger.debug(f"okex heartbeat error: {e}")
-                if self.status == WebsocketStatus.ACTIVE.name:
-                    self.reconnect()
-                continue
+            self._send_heartbeat()
+
+    def _send_heartbeat(self):
+        ws = self.ws
+        if ws is None:
+            return
+        if self._pending_pong_socket is ws:
+            self.logger.debug("okx heartbeat pong timeout")
+            self.reconnect(ws)
+            return
+        # Set before send: a fast pong callback may run before send returns.
+        self._pending_pong_socket = ws
+        try:
+            self.send("ping")
+        except Exception as error:
+            self.logger.debug(f"okx heartbeat error_type={type(error).__name__}")
+            self.reconnect(ws)
+
+    def _on_open(self, ws, *args, **kwargs):
+        self._pending_pong_socket = None
+        self._logged_on = False
+        self._orders_subscribed = False
+
+    def _on_close(self, ws, *args, **kwargs):
+        self._logged_on = False
+        self._orders_subscribed = False
+        super()._on_close(ws, *args, **kwargs)
+
+    def _reconnect_streams(self):
+        if self._is_public:
+            super()._reconnect_streams()
+        else:
+            self._login()
+
+    def get_connection_health(self):
+        health = super().get_connection_health()
+        if not self._is_public:
+            health['logged_on'] = self._logged_on
+            health['subscribed'] = self._orders_subscribed
+            health['connected'] = bool(
+                health['connected'] and self._logged_on and self._orders_subscribed
+            )
+        return health
 
     def _login(self):
+        self._logged_on = False
+        self._orders_subscribed = False
         nonce = str(get_timestamp_s())
         params = nonce + 'GET' + '/users/self/verify' + ''
         sign = self.get_signature(params)
@@ -89,7 +131,7 @@ class OkexWsManager(WsManager):
                 "sign": sign.decode("utf-8")
             }]
         }
-        self.start_subscribe(login_params)
+        self.send_json(login_params)
 
     def start_bookticker_stream(self, symbol_list: Iterable[str]) -> None:
         target_symbols = normalize_subscription_targets(symbol_list)
@@ -136,6 +178,8 @@ class OkexWsManager(WsManager):
         return update
 
     def subscribe(self):
+        if self._stop_event.is_set():
+            return
         try:
             self._login()
             self._ping(OkexAuxiliary.ws_ping_sleep.value,
@@ -149,16 +193,42 @@ class OkexWsManager(WsManager):
         except Exception as e:
             self.logger.exception(e)
 
+    def _handle_session_event(self, ws, msg):
+        event = msg.get('event')
+        if event == 'login':
+            if msg.get('code') == '0':
+                self._logged_on = True
+                self._orders_subscribed = False
+                self._send_order()
+            else:
+                self._reset_private_session(ws)
+            return True
+        arg = msg.get('arg', {})
+        if event in ('subscribe', 'unsubscribe') and arg.get('channel') == 'orders':
+            self._orders_subscribed = bool(
+                event == 'subscribe' and self._logged_on
+                and arg.get('instType') == 'SPOT' and msg.get('code', '0') == '0'
+            )
+            return True
+        if event == 'error':
+            self._reset_private_session(ws)
+            return True
+        return False
+
+    def _reset_private_session(self, ws):
+        self._logged_on = False
+        self._orders_subscribed = False
+        self.reconnect(ws)
+
     def _on_message(self, _ws, message):
         try:
             if message == 'pong':
+                if self._pending_pong_socket is _ws:
+                    self._pending_pong_socket = None
                 return
             msg = json.loads(message)
-            if 'event' in msg and msg['event'] == 'login':
-                if msg['code'] == '0':
-                    self._send_order()
-            elif "code" in msg and msg['code'] == '60011':
-                self._login()
+            if self._handle_session_event(_ws, msg):
+                return
 
             #添加 Ticker 数据处理逻辑
             if 'arg' in msg and msg['arg']['channel'] == 'tickers' and "data" in msg:
@@ -184,6 +254,6 @@ class OkexWsManager(WsManager):
                         if "filled" == item.get('state') or has_fill:
                             self._queue.put_nowait(item)
 
-        except Exception as e:
-            self.logger.exception(e)
-            self.logger.debug(message)
+        except Exception as error:
+            self.logger.debug(f"okx message error_type={type(error).__name__}")
+            self.reconnect(_ws)
