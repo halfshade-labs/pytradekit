@@ -78,6 +78,9 @@ class BinanceWsManager(WsManager):
         self._bookticker_symbols = frozenset()
         self._connection_opened_ms = None
         self._reconnect_attempt = 0
+        self._reconnect_delay_s = 0
+        self._reconnect_base_delay_ms = RECONNECT_BASE_DELAY_MS
+        self._reconnect_max_delay_ms = RECONNECT_MAX_DELAY_MS
 
     def _get_api_url(self) -> str:
         return self._api_url
@@ -172,8 +175,11 @@ class BinanceWsManager(WsManager):
                 if resp.status_code in (410, 404, 400):
                     self.logger.info("put_listen_key: listenKey expired or endpoint gone, re-creating...")
                     self.post_listen_key('PERP')
-            except Exception as e:
-                self.logger.warning(f"put_listen_key error: {e}")
+                    self._connect_perp_private_stream()
+            except Exception as error:
+                self.logger.debug(
+                    f"put_listen_key error_type={self._error_type(error)}"
+                )
 
     def delete_listen_key(self):
         if self._is_spot():
@@ -194,20 +200,22 @@ class BinanceWsManager(WsManager):
 
     def _ping(self, n_seconds, is_listen_key=True, reconnection_time=None) -> None:
         now_times = get_timestamp_s()
-        while True:
+        while not self._stop_event.is_set():
             if is_listen_key:
                 try:
                     self.put_listen_key()
-                except Exception as e:
-                    self.logger.info(f"binance ws order trade listen key error: {e} {AtUser.debug}")
-                    time.sleep(BinanceAuxiliary.ws_listen_key_sleep.value)
+                except Exception as error:
+                    self.logger.debug(
+                        f"binance listen key error_type={self._error_type(error)}"
+                    )
+                    self._stop_event.wait(BinanceAuxiliary.ws_listen_key_sleep.value)
                     continue
             if reconnection_time:
                 if int(get_timestamp_s() - now_times) >= reconnection_time:
-                    # self._pong()
                     break
-            time.sleep(n_seconds)
-        self.subscribe()
+            self._stop_event.wait(n_seconds)
+        if not self._stop_event.is_set():
+            self.subscribe()
 
     def _ping_market(self, n_seconds, symbols) -> None:
         reconnect_timer = BinanceAuxiliary.ws_reconnect_interval.value
@@ -220,19 +228,14 @@ class BinanceWsManager(WsManager):
             time.sleep(n_seconds)
 
     def subscribe(self):
+        if self._stop_event.is_set():
+            return
         try:
             kind = self._listen_key_kind()
             self.post_listen_key(kind)
             listen_key = self._listen_key[kind]
             if not self._is_spot():
-                # Binance perp userDataStream only delivers events when listenKey is
-                # in the URL path; the SUBSCRIBE method silently drops them on fstream.
-                self._url = f"{BinanceAuxiliary.url_perp_ws.value}/{listen_key}"
-                self.logger.debug(
-                    "perp user data stream connect with listen_key in url path "
-                    f"({self._private_stream_log_context(kind)})"
-                )
-                self._reconnect_with_new_url()
+                self._connect_perp_private_stream()
                 self._ping(BinanceAuxiliary.ws_ping_sleep.value,
                            reconnection_time=BinanceAuxiliary.reconnection_time_sleep.value)
                 return
@@ -254,15 +257,21 @@ class BinanceWsManager(WsManager):
                 f"error_type={self._error_type(e)}"
             )
 
+    def _connect_perp_private_stream(self):
+        # fstream requires the listen key in the URL; a newly issued key must
+        # replace the expired URL immediately, including keepalive renewal.
+        self._url = f"{BinanceAuxiliary.url_perp_ws.value}/{self._listen_key['PERP']}"
+        self.logger.debug(
+            "perp user data stream connect with listen_key in url path "
+            f"({self._private_stream_log_context('PERP')})"
+        )
+        self._reconnect_with_new_url()
+
     def _reconnect_with_new_url(self):
-        # Close any existing ws so connect() rebinds to the freshly built _url.
-        if self.ws is not None:
-            try:
-                self.ws.close()
-            except Exception:
-                pass
-            self.ws = None
-        self.status = WebsocketStatus.INIT.name
+        # Only the lifecycle worker may retire or replace a socket. The URL
+        # assignment precedes this request so an in-flight reconnect will retry
+        # it without racing a second connect path.
+        self.reconnect()
         self.connect()
 
     def start_aggtrade_stream(self, symbols):
@@ -467,8 +476,8 @@ class BinanceWsManager(WsManager):
             attempt = 0
         self._reconnect_attempt = min(attempt + 1, 6)
         delay_ms = min(
-            RECONNECT_BASE_DELAY_MS * 2 ** (self._reconnect_attempt - 1),
-            RECONNECT_MAX_DELAY_MS,
+            self._reconnect_base_delay_ms * 2 ** (self._reconnect_attempt - 1),
+            self._reconnect_max_delay_ms,
         )
         self.logger.debug(
             f"[bn_ws recovery] {self._private_stream_log_context()} "
@@ -478,7 +487,7 @@ class BinanceWsManager(WsManager):
         # Clear the previous lifetime before retrying: a failed handshake must
         # not repeatedly reset the backoff based on an old stable connection.
         self._connection_opened_ms = None
-        sleep_min_time(delay_ms / 1000)
+        self._wait_reconnect_delay(delay_ms / 1000)
         if self.status != WebsocketStatus.STOP.name:
             super()._recovery()
 
@@ -498,7 +507,7 @@ class BinanceWsManager(WsManager):
             f"[bn_ws on_error] {self._private_stream_log_context()} "
             f"error_type={self._error_type(error)} msg_count_so_far={self._msg_count}"
         )
-        self.reconnect()
+        self.reconnect(ws)
 
     def _on_message(self, _ws, message):
         msg = json.loads(message)

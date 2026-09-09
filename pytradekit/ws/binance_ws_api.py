@@ -24,6 +24,7 @@ from cryptography.hazmat.primitives import serialization
 from nacl.signing import SigningKey
 from websocket import WebSocketApp
 
+from pytradekit.utils.dynamic_types import WebsocketStatus
 from pytradekit.utils.time_handler import get_timestamp_ms
 
 WS_API_URL = 'wss://ws-api.binance.com:443/ws-api/v3'
@@ -74,6 +75,8 @@ class BinanceWsApiUserData:
         self.event_counts = defaultdict(int)
         self.last_event_ms = None
         self.connected_since_ms = None
+        self._last_message_ms = None
+        self._generation = 0
 
     # ── signing ─────────────────────────────────────────────
 
@@ -123,6 +126,7 @@ class BinanceWsApiUserData:
         self._logon(ws)
 
     def _on_message(self, ws, message):
+        self._last_message_ms = get_timestamp_ms()
         try:
             msg = json.loads(message)
         except (TypeError, ValueError) as e:
@@ -194,6 +198,9 @@ class BinanceWsApiUserData:
 
     def _run(self):
         while self._running:
+            self._generation += 1
+            self._logged_on = False
+            self._subscribed = False
             self._ws = WebSocketApp(
                 self._url,
                 on_open=self._on_open,
@@ -227,6 +234,30 @@ class BinanceWsApiUserData:
                 self.logger.debug(f"bn ws-api close error: {e}")
 
     # ── observability ───────────────────────────────────────
+
+    def get_connection_health(self):
+        """Expose the single socket/recovery loop without inspecting payloads."""
+        thread = self._thread
+        thread_alive = bool(thread and thread.is_alive())
+        sock = getattr(self._ws, 'sock', None)
+        connected = bool(
+            self._running and thread_alive and sock and sock.connected
+            and self._logged_on and self._subscribed
+        )
+        status = WebsocketStatus.STOP.name
+        if self._running:
+            status = WebsocketStatus.ACTIVE.name if connected else WebsocketStatus.RECOVERY.name
+        return {
+            'status': status,
+            'connected': connected,
+            'monitor_alive': thread_alive,
+            'socket_thread_alive': thread_alive,
+            'generation': self._generation,
+            # run_forever owns this loop; it is not a polling monitor.
+            'monitor_heartbeat_ms': None,
+            'last_message_ms': self._last_message_ms,
+            'last_open_ms': self.connected_since_ms,
+        }
 
     def is_healthy(self):
         return self._logged_on and self._subscribed
