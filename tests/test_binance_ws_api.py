@@ -175,3 +175,40 @@ class TestRequestIdFormat:
         client._send(ws, 'userDataStream.subscribe')
         for sent in ws.sent:
             assert re.fullmatch(r'[a-zA-Z0-9-_]{1,36}', sent['id']), sent['id']
+
+
+class TestConnectionHealth:
+    def test_transport_and_worker_must_be_live_even_after_subscribe_ack(self):
+        from types import SimpleNamespace
+        client, _ = _make_client()
+        client._running = True
+        client._thread = Mock()
+        client._thread.is_alive.return_value = True
+        client._ws = SimpleNamespace(sock=SimpleNamespace(connected=True))
+        client._logged_on = True
+        client._subscribed = True
+        health = client.get_connection_health()
+        assert health['connected']
+        assert health['status'] == 'ACTIVE'
+        assert health['last_message_ms'] is None
+        assert health['monitor_heartbeat_ms'] is None
+        client._ws.sock.connected = False
+        assert not client.get_connection_health()['connected']
+        client._ws.sock.connected = True
+        client._thread.is_alive.return_value = False
+        health = client.get_connection_health()
+        assert not health['connected']
+        assert not health['monitor_alive']
+        assert not health['socket_thread_alive']
+        assert health['status'] == 'RECOVERY'
+
+    def test_last_message_tracks_ack_and_stop_overrides_session_flags(self, monkeypatch):
+        client, _ = _make_client()
+        monkeypatch.setattr('pytradekit.ws.binance_ws_api.get_timestamp_ms', lambda: 1788930000000)
+        client._on_message(FakeWs(), json.dumps({'id': 'unknown', 'status': 200}))
+        assert client.get_connection_health()['last_message_ms'] == 1788930000000
+        client._logged_on = True
+        client._subscribed = True
+        health = client.get_connection_health()
+        assert health['status'] == 'STOP'
+        assert not health['connected']

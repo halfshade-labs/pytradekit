@@ -13,31 +13,15 @@ from pytradekit.utils.dynamic_types import WebsocketStatus
 
 
 def _make_manager(is_perp):
-    """Build a BinanceWsManager without invoking the real WsManager __init__."""
-    with patch('pytradekit.ws.binance_ws.WsManager.__init__', return_value=None):
-        from pytradekit.ws.binance_ws import BinanceWsManager
-        from pytradekit.utils.dynamic_types import BinanceAuxiliary
-        mgr = BinanceWsManager.__new__(BinanceWsManager)
-        mgr.logger = MagicMock()
-        mgr._api_key = 'KEY'
-        mgr._api_secret = 'SECRET'
-        mgr._listen_key = {}
-        mgr._send_params = None
-        mgr._is_perp = is_perp
-        mgr._msg_count = 0
-        mgr._msg_log_full_n = 0
-        mgr._queue = queue.Queue()
-        mgr._ticker_queue = None
-        mgr.verify_bookticker_duplicate = {}
-        mgr.ws = None
-        mgr.status = WebsocketStatus.INIT.name
-        if is_perp:
-            mgr._url = BinanceAuxiliary.url_perp_ws.value
-            mgr._listen_key_url = BinanceAuxiliary.perp_url.value + BinanceAuxiliary.user_perp_data_stream.value
-        else:
-            mgr._url = BinanceAuxiliary.url_ws.value
-            mgr._listen_key_url = BinanceAuxiliary.url.value + BinanceAuxiliary.user_data_stream.value
-        return mgr
+    """Construct the client without starting any network or background work."""
+    from pytradekit.ws.binance_ws import BinanceWsManager
+    manager = BinanceWsManager(
+        MagicMock(), api_key='KEY', api_secret='SECRET',
+        is_perp=is_perp, queue=queue.Queue(),
+    )
+    manager._listen_key = {}
+    manager._msg_log_full_n = 0
+    return manager
 
 
 def _logged_messages(logger):
@@ -69,7 +53,7 @@ class TestSubscribePerp:
         # SUBSCRIBE method must NOT be sent for perp userDataStream.
         mgr.start_subscribe.assert_not_called()
 
-    def test_perp_renewal_closes_stale_ws_before_reconnect(self, mocker):
+    def test_perp_renewal_requests_recovery_without_mutating_current_socket(self, mocker):
         mgr = _make_manager(is_perp=True)
         stale_ws = MagicMock()
         mgr.ws = stale_ws
@@ -84,8 +68,10 @@ class TestSubscribePerp:
 
         mgr.subscribe()
 
-        stale_ws.close.assert_called_once()
-        assert mgr.status == WebsocketStatus.INIT.name
+        stale_ws.close.assert_not_called()
+        assert mgr.ws is stale_ws
+        assert mgr._needRecovery.is_set()
+        assert mgr.status == WebsocketStatus.ACTIVE.name
         mgr.connect.assert_called_once()
         # SUBSCRIBE method must NOT be sent for perp userDataStream, even on renewal.
         mgr.start_subscribe.assert_not_called()
@@ -408,3 +394,23 @@ class TestBookTickerReceiveTimestamp:
         assert mgr._queue.get_nowait() == private_payload
         assert mgr._queue.empty()
         timestamp.assert_not_called()
+
+
+class TestExpiredPerpListenKey:
+    def test_keepalive_recreation_updates_url_and_requests_recovery(self, mocker):
+        from types import SimpleNamespace
+        mgr = _make_manager(is_perp=True)
+        mgr._listen_key['PERP'] = 'OLD_TEST_KEY'
+        mgr._url = 'wss://example.invalid/OLD_TEST_KEY'
+        mocker.patch('pytradekit.ws.binance_ws.requests.put', return_value=SimpleNamespace(
+            status_code=400, text='expired',
+        ))
+        def recreate(kind):
+            mgr._listen_key[kind] = 'REPLACEMENT_TEST_KEY'
+        post = mocker.patch.object(mgr, 'post_listen_key', side_effect=recreate)
+        reconnect = mocker.patch.object(mgr, '_reconnect_with_new_url')
+        mgr.put_listen_key()
+        post.assert_called_once_with('PERP')
+        assert mgr._url.endswith('/REPLACEMENT_TEST_KEY')
+        reconnect.assert_called_once()
+        assert 'REPLACEMENT_TEST_KEY' not in _logged_messages(mgr.logger)
