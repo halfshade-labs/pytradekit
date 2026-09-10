@@ -63,3 +63,5 @@ private.cfg
 *.xml
 
 .claude/settings.local.json
+
+.DS_Store

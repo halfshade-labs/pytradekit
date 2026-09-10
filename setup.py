@@ -18,6 +18,7 @@ setuptools.setup(
         "pytest",
         "pytest-cov",
         "pytest-mock",
+        "pytest-asyncio",
         "freezegun",
         "concurrent-log-handler",
         "pycryptodome",

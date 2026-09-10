@@ -86,7 +86,7 @@ pip install pytradekit
 ```ini
 [exchange]
 api_key = your_api_key
-api_secret = your_api_secret
+api_secret = example-secret
 
 [log]
 log_name = my_trading_bot
@@ -98,7 +98,7 @@ watch_webhook = https://your-watch-webhook-url
 
 ```env
 API_KEY=your_api_key
-API_SECRET=your_api_secret
+API_SECRET=example-secret
 ```
 
 ### 2. 使用 RESTful API
@@ -119,7 +119,7 @@ logger = setup_logger(log_config)
 client = BinanceClient(
     logger=logger,
     key="your_api_key",
-    secret="your_api_secret"
+    secret="example-secret"
 )
 
 # 获取账户信息
@@ -279,7 +279,7 @@ WebSocket 实时数据流管理：
 # cfg/config.ini
 [exchange]
 api_key = your_api_key
-api_secret = your_api_secret
+api_secret = example-secret
 passphrase = your_passphrase  # 部分交易所需要
 
 [database]
@@ -301,6 +301,9 @@ max_reconnect_attempts = 10
 
 ## 🧪 测试
 
+邮件通知的发送地址通过 `SendMail(..., from_email=...)` 或环境变量
+`SMTP_FROM_EMAIL` 配置；库不再内置账户邮箱。未使用邮件模块的服务不受影响。
+
 项目使用 pytest 进行测试，运行测试：
 
 ```bash
@@ -317,7 +320,34 @@ pytest --cov=pytradekit --cov-report=html
 pytest -v
 ```
 
-测试配置位于 `cfg/pytest.ini`。
+默认测试配置位于根目录的 `pytest.ini`。先安装 `requirements.txt`；
+异步测试依赖 `pytest-asyncio`，缺少插件时 pytest 会直接失败，未执行的异步测试也会报错。
+
+GitHub Actions 在 PR 创建/更新和 push 到 `main` 时运行测试；普通分支没有 PR 时，
+push 不会触发该 workflow。
+
+本地提交使用 `scripts/commit_tests.py` 安装全量测试 hook：
+
+```bash
+python scripts/commit_tests.py install --repo . --project pytradekit
+python scripts/commit_tests.py install --repo ../cross-exchange-arbitrage --project cea
+```
+
+安装需要 Python 3.11 和运行中的 Docker。默认基础镜像为本机的
+`cea-okx-keepalive-test:20260909` 和 `node:20-bookworm-slim`，可通过
+`--base-image` / `--node-image` 指定已准备的 Python 3.11 / Node 20 镜像；
+Python 镜像须提供 pip 和 Git。首次运行及 requirements 变化后会联网构建依赖镜像。
+依赖版本和 CEA 的 PyTradeKit Git revision 均按暂存区校验。
+
+安装后，每次提交都在禁网 Docker 中对**暂存区完整快照**运行根目录 pytest；
+CEA 还运行全部 `tests/test_webui_frontend_*.js`。只缓存依赖环境，不缓存测试成功结果。
+测试失败、依赖缺失、Docker 不可用或测试过程中暂存区变化均阻止提交。
+原有 pytest 排除配置仍有效；需要真实账户或服务的测试不属于离线提交检查。
+
+hook 写入仓库公共 Git 目录，覆盖该仓库所有分支和 linked worktree，保留原有
+repository hook 和全局 `core.hooksPath`。使用 privacy guard 的机器必须保持其
+repository hook 链接启用，全量测试成功后仍执行原有隐私检查。新 clone 需要重新安装；
+更新脚本后也需重跑安装命令，刷新 Git 目录中的 runner。
 
 ## 📝 代码规范
 

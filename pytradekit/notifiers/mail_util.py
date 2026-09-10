@@ -1,17 +1,14 @@
+import os
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.application import MIMEApplication
 
 
-# FROM_EMAIL = "noreply@tronlab.cn"
-# SMTP_SERVER = "smtp.mxhichina.com"
-# SMTP_PORT = 587
-# SMTP_PASSWORD = "Tron!@#246"
 
 class SendMail:
-    def __init__(self, smtp_password):
-        self.FROM_EMAIL = "noreply100@tron.network"
+    def __init__(self, smtp_password, from_email=None):
+        self.FROM_EMAIL = from_email or os.environ["SMTP_FROM_EMAIL"]
         self.SMTP_SERVER = "smtp.gmail.com"
         self.SMTP_PORT = 587
         self.SMTP_PASSWORD = smtp_password

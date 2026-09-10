@@ -58,14 +58,14 @@ model: claude-3-5-sonnet-20241022
 
 <function_calls>
 <invoke name="LS">
-<parameter_name="path">/Users/ocean/Documents/Cryptocurrency/jwj_basis</parameter_name>
+<parameter_name="path">/Users/user/Documents/Cryptocurrency/jwj_basis</parameter_name>
 </invoke>
 </function_calls>
 
 <function_calls>
 <invoke name="Glob">
 <parameter_name="pattern">**/*.py</parameter_name>
-<parameter_name="path">/Users/ocean/Documents/Cryptocurrency/jwj_basis</parameter_name>
+<parameter_name="path">/Users/user/Documents/Cryptocurrency/jwj_basis</parameter_name>
 </invoke>
 </function_calls>
 

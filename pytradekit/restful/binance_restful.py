@@ -194,12 +194,19 @@ class BinanceClient:
             raise ExchangeException(f'request error {method} {url}') from e
 
     async def requests_result(self, method, url, headers, client, params=None):
+        # httpx versions differ on space encoding (+ versus %20). Preserve the
+        # same form encoding used by the signer and synchronous requests path.
+        if params:
+            request_url = httpx.URL(url)
+            query = urlencode(params, doseq=True).encode('ascii')
+            query = b'&'.join(filter(None, (request_url.query, query)))
+            url = request_url.copy_with(query=query)
         if method == 'GET':
-            resp = await client.get(url, params=params, headers=headers, timeout=5)
+            resp = await client.get(url, headers=headers, timeout=5)
         elif method == 'POST':
-            resp = await client.post(url, params=params, headers=headers, timeout=5)
+            resp = await client.post(url, headers=headers, timeout=5)
         elif method == 'DELETE':
-            resp = await client.delete(url, params=params, headers=headers, timeout=5)
+            resp = await client.delete(url, headers=headers, timeout=5)
         else:
             return None
         return resp
@@ -248,7 +255,9 @@ class BinanceClient:
             # per-request overrides possible.
             params.setdefault('recvWindow', RECVWINDOW)
         params['timestamp'] = timestamp1
-        payload = '&'.join([f'{param}={value}' for param, value in params.items()])
+        # Sign the encoded query/body bytes that requests and httpx send.
+        # Signing raw Unicode breaks authentication after HTTP percent-encoding.
+        payload = urlencode(params, doseq=True)
         if use_sign:
             signature = self._hashing(payload)
             params['signature'] = signature
