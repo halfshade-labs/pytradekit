@@ -1,6 +1,8 @@
 import os
 from unittest.mock import Mock, patch
 
+import pytest
+
 from pytradekit.restful import ceshi
 
 
@@ -29,3 +31,14 @@ def test_balance_check_omits_currency_filter_by_default():
 
     assert request_get.call_args.kwargs["params"] == {}
     response.raise_for_status.assert_called_once_with()
+
+
+@pytest.mark.parametrize("missing", ["OKX_API_KEY", "OKX_API_SECRET", "OKX_PASSPHRASE"])
+def test_missing_credentials_fail_before_any_request(missing, monkeypatch):
+    for name in ("OKX_API_KEY", "OKX_API_SECRET", "OKX_PASSPHRASE"):
+        monkeypatch.setenv(name, "test-placeholder")
+    monkeypatch.delenv(missing)
+    with patch.object(ceshi.requests, "get") as request:
+        with pytest.raises(SystemExit, match=missing):
+            ceshi.main()
+    request.assert_not_called()
