@@ -7,6 +7,11 @@ import pytest
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1] / "pytradekit"
+SOURCE_ROOTS = (PACKAGE_ROOT, PACKAGE_ROOT.parent / "process", PACKAGE_ROOT.parent / "scripts")
+WEBHOOK_PATTERN = re.compile(
+    r"https://(?:open\.)?(?:larksuite\.com|feishu\.cn)/"
+    r"open-apis/bot/v2/hook/[A-Za-z0-9_-]+"
+)
 SENSITIVE_TARGET_PATTERN = re.compile(
     r"(?:^|_)(?:api_(?:key|secret)|secret_key|passphrase|access_key|private_key)"
     r"(?:$|_)"
@@ -91,3 +96,19 @@ def test_placeholder_values_are_allowed(placeholder):
 
 def test_non_placeholder_literal_is_rejected():
     assert not _is_placeholder("opaque-production-value")
+
+
+def test_application_sources_have_no_literal_lark_webhooks():
+    findings = []
+    for root in SOURCE_ROOTS:
+        for path in root.rglob("*.py"):
+            for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                if WEBHOOK_PATTERN.search(line):
+                    findings.append(f"{path.relative_to(PACKAGE_ROOT.parent)}:{number}")
+    assert not findings, "Hardcoded webhook locations: " + ", ".join(findings)
+
+
+@pytest.mark.parametrize("domain", ["open.feishu.cn", "open.larksuite.com", "larksuite.com"])
+def test_lark_webhook_guard_detects_supported_domains(domain):
+    synthetic = "https://" + domain + "/open-apis/bot/v2/hook/" + "test-token"
+    assert WEBHOOK_PATTERN.search(synthetic)
