@@ -187,15 +187,34 @@ class OkexClient:
                 return [d for d in details if Decimal(str(d.get('availBal') or 0)) > 0]
         return []
 
-    def get_deposit_history(self):
-        url = OkexAuxiliary.url_deposit_history.value
-        datas = self._send_request(url, method=HttpMmthod.GET.name, use_sign=True)
-        return datas
+    def get_deposit_history(self, **page):
+        """after selects older timestamps; before selects newer timestamps."""
+        params = {key: value for key, value in page.items()
+                  if key in ('after', 'before', 'limit', 'ccy', 'state') and value is not None}
+        return self._send_request(OkexAuxiliary.url_deposit_history.value,
+                                  method=HttpMmthod.GET.name, params=params, use_sign=True)
 
-    def get_withdraw_history(self):
-        url = OkexAuxiliary.url_withdraw_history.value
-        datas = self._send_request(url, method=HttpMmthod.GET.name, use_sign=True)
-        return datas
+    def get_withdraw_history(self, **page):
+        """after selects older timestamps; before selects newer timestamps."""
+        params = {key: value for key, value in page.items()
+                  if key in ('after', 'before', 'limit', 'ccy', 'state') and value is not None}
+        return self._send_request(OkexAuxiliary.url_withdraw_history.value,
+                                  method=HttpMmthod.GET.name, params=params, use_sign=True)
+
+    def get_funding_bills_history(self, **page):
+        """Funding monetary evidence, paginated by billId (pagingType=2)."""
+        params = {'pagingType': '2', 'limit': 100, **page}
+        return self._send_request('/api/v5/asset/bills-history',
+                                 method=HttpMmthod.GET.name, params=params, use_sign=True)
+
+    def get_trading_bills_archive(self, **page):
+        return self._send_request('/api/v5/account/bills-archive',
+                                 method=HttpMmthod.GET.name, params=page, use_sign=True)
+
+    def get_fills_history(self, **page):
+        """Historical individual executions; never infer occurrence from avgPx."""
+        return self._send_request('/api/v5/trade/fills-history',
+                                 method=HttpMmthod.GET.name, params=page, use_sign=True)
 
     def get_transfer_history(self):
         url = OkexAuxiliary.url_transfer_history.value

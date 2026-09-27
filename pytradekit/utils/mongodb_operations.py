@@ -15,7 +15,7 @@ import pandas as pd
 from pandas import DataFrame
 import numpy as np
 from pymongo import MongoClient, DESCENDING, ReplaceOne, UpdateOne
-from pymongo.errors import ConnectionFailure, NetworkTimeout, OperationFailure, ServerSelectionTimeoutError
+from pymongo.errors import DuplicateKeyError, ConnectionFailure, NetworkTimeout, OperationFailure, ServerSelectionTimeoutError
 
 from pytradekit.utils.time_handler import DATETIME_FORMAT_DAY, get_yesterday_datetime, \
     get_timestamp_s, get_rounded_time_interval, TimeSpan
@@ -160,6 +160,13 @@ class MongodbOperations:
                 'keys': [(TradeRecordAttribute.status.name, 1), (TradeRecordAttribute.closed_time_ms.name, DESCENDING)],
                 'name': 'idx_monitor_status_closed_time',
             },
+        ])
+        specs.extend([
+            {'database': Database.arbitrage.name, 'collection': 'balance_pnl_snapshots',
+             'keys': [('scope_id', 1), ('created_ms', -1)], 'name': 'idx_equity_scope_time'},
+            {'database': Database.arbitrage.name, 'collection': 'account_cashflow_batches',
+             'keys': [('scope_id', 1), ('window_start_ms', 1), ('window_end_ms', 1), ('collected_ms', -1)],
+             'name': 'idx_cashflow_scope_window'},
         ])
         return specs
 
@@ -1532,8 +1539,12 @@ class MongodbOperations:
             raise ValueError('An exact existing trade identity is required')
         if any(key in update_data for key in ('_id', 'trade_id')):
             raise ValueError('Trade identity cannot be changed')
+        expected = self.get_correct_dict(expected)
+        for key in update_data:
+            if key not in expected:
+                expected[key] = {'$exists': False}
         result = self.client[Database.arbitrage.name][Database.trade_records.name].update_one(
-            self.get_correct_dict(expected),
+            expected,
             {'$set': self.get_correct_dict(update_data)},
             upsert=False,
         )
@@ -1578,6 +1589,59 @@ class MongodbOperations:
             cursor = cursor.limit(limit)
         res = list(cursor)
         return res
+
+    def read_accounting_candidates(self, start_ms, limit=500, order='recent'):
+        """Bounded discovery includes old open/blocked records, with truncation."""
+        if not 1 <= limit <= 5000:
+            raise ValueError('Accounting discovery limit must be 1..5000')
+        query = {'$or': [{'created_time_ms': {'$gte': start_ms}},
+                         {'closed_time_ms': {'$gte': start_ms}},
+                         {'status': {'$ne': 'closed'}}]}
+        if order not in ('recent', 'attempt'):
+            raise ValueError('Unsupported accounting discovery order')
+        ordering = [('accounting.last_attempt_ms', 1), ('_id', 1)] if order == 'attempt' else [('created_time_ms', -1)]
+        rows = list(self.client[Database.arbitrage.name][Database.trade_records.name]
+                    .find(query).sort(ordering).limit(limit + 1))
+        return {'records': rows[:limit], 'truncated': len(rows) > limit}
+
+    def insert_document_once(self, collection_path, identity, document):
+        """Atomically insert immutable evidence; reject same-ID content conflicts."""
+        document = self.get_correct_dict(document)
+        document['_id'] = identity
+        collection = self.client[collection_path.db_name][collection_path.collection_name]
+        try:
+            result = collection.update_one({'_id': identity}, {'$setOnInsert': document}, upsert=True)
+        except DuplicateKeyError:
+            result = None  # A simultaneous same-ID upsert still needs content verification.
+        if result is not None and result.upserted_id is not None:
+            return 'inserted'
+        if collection.find_one({'_id': identity}) != document:
+            raise ValueError('Immutable document identity conflict')
+        return 'unchanged'
+
+    def read_accounting_documents(self, collection_name, query, limit=1000):
+        """Restricted, bounded read helper for accounting producers and previews."""
+        if collection_name not in ('balance_pnl_snapshots', 'account_cashflow_batches'):
+            raise ValueError('Unsupported accounting collection')
+        if not 1 <= limit <= 5000:
+            raise ValueError('Accounting read limit must be 1..5000')
+        return list(self.client[Database.arbitrage.name][collection_name].find(query)
+                    .sort('created_ms', -1).limit(limit))
+
+    def read_cashflow_retry_windows(self, scope_id, since_ms, limit=2):
+        """Oldest attempted partial window first; newer complete revisions retire it."""
+        if not 1 <= limit <= 20:
+            raise ValueError('Cashflow retry limit must be 1..20')
+        pipeline = [
+            {'$match': {'scope_id': scope_id, 'window_end_ms': {'$gte': since_ms}}},
+            {'$sort': {'collected_ms': -1, '_id': -1}},
+            {'$group': {'_id': {'start': '$window_start_ms', 'end': '$window_end_ms'}, 'batch': {'$first': '$$ROOT'}}},
+            {'$replaceRoot': {'newRoot': '$batch'}},
+            {'$match': {'status': 'partial'}},
+            {'$sort': {'collected_ms': 1, '_id': 1}},
+            {'$limit': limit},
+        ]
+        return list(self.client[Database.arbitrage.name]['account_cashflow_batches'].aggregate(pipeline))
 
     def read_trade_record_by_id(self, trade_id):
         params = {TradeRecordAttribute.trade_id.name: trade_id}
