@@ -403,17 +403,61 @@ class BinanceClient:
         balances = self.request(HttpMmthod.GET.name, url, params=params)
         return balances
 
-    def get_deposit_history(self):
-        url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_deposit_history.value,
-                                                params={'limit': 10})
-        datas = self.request(HttpMmthod.GET.name, url, params=params)
-        return datas
+    def get_deposit_history(self, start_time=None, end_time=None, offset=None, limit=10):
+        """Capital history; fixed inclusive window and explicit offset pagination."""
+        params = {'limit': limit}
+        params.update({key: value for key, value in (
+            ('startTime', start_time), ('endTime', end_time), ('offset', offset)
+        ) if value is not None})
+        url, params, _ = self._make_private_url(
+            url_path=BinanceAuxiliary.url_deposit_history.value, params=params)
+        return self.request(HttpMmthod.GET.name, url, params=params)
 
-    def get_withdraw_history(self):
-        url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_withdraw_history.value,
-                                                params={'limit': 10})
-        datas = self.request(HttpMmthod.GET.name, url, params=params)
-        return datas
+    def get_withdraw_history(self, start_time=None, end_time=None, offset=None, limit=10):
+        """Capital history; fixed inclusive window and explicit offset pagination."""
+        params = {'limit': limit}
+        params.update({key: value for key, value in (
+            ('startTime', start_time), ('endTime', end_time), ('offset', offset)
+        ) if value is not None})
+        url, params, _ = self._make_private_url(
+            url_path=BinanceAuxiliary.url_withdraw_history.value, params=params)
+        return self.request(HttpMmthod.GET.name, url, params=params)
+
+    def _get_account_history(self, path, params):
+        url, params, _ = self._make_private_url(url_path=path, params=params)
+        return self.request(HttpMmthod.GET.name, url, params=params)
+
+    def get_wallet_universal_transfer_history(self, transfer_type, **page):
+        """GET wallet universal transfer history; never replaces legacy history."""
+        params = {'type': transfer_type, 'current': page.get('current', 1),
+                  'size': page.get('size', 100)}
+        params.update({key: page[name] for key, name in (
+            ('startTime', 'start_time'), ('endTime', 'end_time')) if name in page})
+        return self._get_account_history('/sapi/v1/asset/transfer', params)
+
+    def get_subaccount_transfer_history(self, direction, **window):
+        """Sub-account's own transfer history. Saturation needs time splitting."""
+        if direction not in (1, 2):
+            raise ValueError('Explicit incoming/outgoing direction is required')
+        params = {'type': direction, 'limit': window.get('limit', 100)}
+        params.update({key: window[name] for key, name in (
+            ('startTime', 'start_time'), ('endTime', 'end_time')) if name in window})
+        return self._get_account_history('/sapi/v1/sub-account/transfer/subUserHistory', params)
+
+    def get_master_universal_transfer_history(self, **page):
+        """Master history for an explicitly verified sub-account scope."""
+        params = {'page': page.get('page', 1), 'limit': page.get('limit', 100)}
+        params.update({key: page[name] for key, name in (
+            ('startTime', 'start_time'), ('endTime', 'end_time'),
+            ('fromEmail', 'from_email'), ('toEmail', 'to_email')) if name in page})
+        return self._get_account_history('/sapi/v1/sub-account/universalTransfer', params)
+
+    def get_master_spot_transfer_history(self, **page):
+        params = {'limit': page.get('limit', 100)}
+        params.update({key: page[name] for key, name in (
+            ('startTime', 'start_time'), ('endTime', 'end_time'),
+            ('fromEmail', 'from_email'), ('toEmail', 'to_email')) if name in page})
+        return self._get_account_history('/sapi/v1/sub-account/sub/transfer/history', params)
 
     def get_transfer_history(self):
         url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_transfer_history.value,
@@ -570,11 +614,13 @@ class BinanceClient:
         datas = self.request(HttpMmthod.GET.name, url, use_sign=False)
         return datas
 
-    def get_perp_user_trades(self, symbol, order_id=None, start_time=None, end_time=None, limit=None):
+    def get_perp_user_trades(self, symbol, order_id=None, start_time=None, end_time=None, limit=None, from_id=None):
         """Account trade list (/fapi/v1/userTrades): per-fill records including
         `commission` / `commissionAsset`, which allOrders does not return."""
         params = {}
         params['symbol'] = symbol
+        if from_id is not None:
+            params['fromId'] = from_id
         if order_id:
             params['orderId'] = order_id
         if limit:
@@ -613,7 +659,7 @@ class BinanceClient:
         datas = self.request(HttpMmthod.GET.name, url, params=params)
         return datas
 
-    def get_perp_income(self, symbol=None, start_time=None, end_time=None, income_type='FUNDING_FEE'):
+    def get_perp_income(self, symbol=None, start_time=None, end_time=None, income_type='FUNDING_FEE', page=None, limit=None):
         params = {}
         if symbol:
             params['symbol'] = symbol
@@ -622,6 +668,10 @@ class BinanceClient:
         if end_time:
             params['endTime'] = end_time
         params['incomeType'] = income_type
+        if page is not None:
+            params['page'] = page
+        if limit is not None:
+            params['limit'] = limit
         url, params, _ = self._make_private_url(url_path=BinanceAuxiliary.url_perp_income.value,
                                                 params=params)
         datas = self.request(HttpMmthod.GET.name, url, params=params)
