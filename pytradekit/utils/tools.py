@@ -8,6 +8,7 @@ import time
 import subprocess
 import zipfile
 import importlib
+from decimal import Decimal
 from urllib.parse import quote_plus
 
 from cryptography.fernet import Fernet
@@ -502,26 +503,28 @@ def get_redis(logger, config, running_mode):
     return RedisOperations(logger, redis_url)
 
 
-def get_coin_price(logger, coin, exchange_ticker_price, exchange_id):
+def get_coin_price(logger, coin, exchange_ticker_price, exchange_id, *, as_decimal=False):
+    """Resolve a quote price; Decimal mode preserves raw ticker precision."""
+    number = (lambda value: Decimal(str(value))) if as_decimal else float
     if coin in ['USDT', 'USD']:
-        return 1.
+        return number("1")
     tickers = [f'{coin}USDT', f'{coin}USD', f'USDT{coin}', f'USD{coin}']
     for ticker in tickers:
         if ticker in exchange_ticker_price:
             price = exchange_ticker_price[ticker]
-            price_float = float(price)
-            if price_float == 0:
+            quote_price = number(price)
+            if quote_price == 0:
                 logger.debug(f'{coin} price is 0 in {exchange_id} ticker_price')
                 return None
-            return price_float if ticker.startswith(coin) else 1 / price_float
+            return quote_price if ticker.startswith(coin) else 1 / quote_price
     try:
         if exchange_id == ExchangeId.MCO.name:
             if coin in ['MBRL']:
                 return None
-            return float(exchange_ticker_price[f'{coin}BRL']) / float(exchange_ticker_price['USDTBRL'])
+            return number(exchange_ticker_price[f'{coin}BRL']) / number(exchange_ticker_price['USDTBRL'])
         elif exchange_id == ExchangeId.BMT.name:
-            return float(exchange_ticker_price[f'{coin}USDC']) * float(exchange_ticker_price['USDCUSDT'])
-        return float(exchange_ticker_price['BTCUSDT']) / float(exchange_ticker_price[f'BTC{coin}'])
+            return number(exchange_ticker_price[f'{coin}USDC']) * number(exchange_ticker_price['USDCUSDT'])
+        return number(exchange_ticker_price['BTCUSDT']) / number(exchange_ticker_price[f'BTC{coin}'])
     except KeyError:
         logger.debug(f'{coin} can not get price in {exchange_id} ticker_price')
         return None

@@ -790,7 +790,10 @@ class MongodbOperations:
         last_orderbook_list = list(last_orderbook)
         if len(last_orderbook_list) == 0:
             raise NoDataException(f'No last order book found for inst_code {inst_code}')
-        return last_orderbook_list[0]
+        result = dict(last_orderbook_list[0])
+        for side in (OrderBookAttribute.bids.name, OrderBookAttribute.asks.name):
+            result[side] = [[Decimal(str(price)), Decimal(str(size))] for price, size in result[side]]
+        return result
 
     def read_orderbook(self, time_span, inst_code=None, exchange_id=None, is_df=False):
         if not exchange_id:
@@ -839,6 +842,11 @@ class MongodbOperations:
         res = list(res)
         if len(res) == 0:
             raise NoDataException(f'No order depth ratio found for inst_code {inst_code}')
+        self._restore_decimal_fields(res, (
+            OrderDepthRatioAttribute.order_bid, OrderDepthRatioAttribute.order_ask,
+            OrderDepthRatioAttribute.bid_ratio, OrderDepthRatioAttribute.ask_ratio,
+            OrderDepthRatioAttribute.depth_ratio,
+        ))
         if is_df:
             return DataFrame(res)
         else:
@@ -1188,26 +1196,33 @@ class MongodbOperations:
         else:
             return res
 
+    @staticmethod
+    def _restore_decimal_fields(records, fields):
+        """Restore financial values from current strings and legacy numeric BSON."""
+        for record in records:
+            for field in fields:
+                if field.name in record and record[field.name] is not None:
+                    record[field.name] = Decimal(str(record[field.name]))
+        return records
+
     def read_depth(self, time_span=None, inst_code=None, limit=1, is_df=False):
         params = {}
-        if not time_span and not inst_code:
-            return list(
-                self.client[Database.raw_metrics.name][Database.depth.name].find().sort(DepthAttribute.hour.name,
-                                                                                        -1).limit(limit))
-        params[DepthAttribute.hour.name] = {
-            "$gte": time_span.start,
-            "$lte": time_span.end
-        }
+        if time_span:
+            params[DepthAttribute.hour.name] = {"$gte": time_span.start, "$lte": time_span.end}
         if inst_code:
             params[DepthAttribute.inst_code.name] = inst_code
-        res = self.client[Database.raw_metrics.name][Database.depth.name].find(params)
-        res = list(res)
-        if len(res) == 0:
-            raise NoDataException(f'No depth data for {time_span.start} to {time_span.end}')
-        if is_df:
-            return DataFrame(res)
-        else:
-            return res
+        cursor = self.client[Database.raw_metrics.name][Database.depth.name].find(params)
+        if not time_span:
+            cursor = cursor.sort(DepthAttribute.hour.name, -1).limit(limit)
+        res = list(cursor)
+        if not res and (time_span or inst_code):
+            raise NoDataException(f'No depth data for inst_code {inst_code}')
+        self._restore_decimal_fields(res, (
+            DepthAttribute.bid_volume,
+            DepthAttribute.ask_volume, DepthAttribute.spread, DepthAttribute.tick_pct,
+            DepthAttribute.price_lower, DepthAttribute.price_upper,
+        ))
+        return DataFrame(res) if is_df else res
 
     def read_pnl(self, day: (str, list) = None, inst_code: (str, list) = None, strategy_id=None, is_df=False):
         params = {}

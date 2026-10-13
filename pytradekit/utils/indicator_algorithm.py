@@ -1,8 +1,10 @@
 from decimal import Decimal
 
+from pytradekit.utils.custom_types import InstCode, Pair
+from pytradekit.utils.dynamic_types import ExchangeId, InstCodeType
 from pytradekit.utils.number_tools import handle_pcs_decimal
 from pytradekit.utils.static_types import OrderBookAttribute
-from pytradekit.utils.number_tools import convert_to_decimal, convert_decimal_to_str
+from pytradekit.utils.number_tools import convert_to_decimal
 from pytradekit.utils.tools import get_coin_price
 from pytradekit.utils.exceptions import DataTypeException
 
@@ -91,8 +93,14 @@ def compute_bid_ask_for_bn_bttcusdt(bids, asks, tick_size, bid_amount, ask_amoun
 
 def compute_depth(logger, pair, orderbook, tick_size, depth_pct, ticker_price, exchange_id):
     try:
-        bids = orderbook[OrderBookAttribute.bids.name]
-        asks = orderbook[OrderBookAttribute.asks.name]
+        bids = [[convert_to_decimal(price), convert_to_decimal(size)]
+                for price, size in orderbook[OrderBookAttribute.bids.name]]
+        asks = [[convert_to_decimal(price), convert_to_decimal(size)]
+                for price, size in orderbook[OrderBookAttribute.asks.name]]
+        tick_size = convert_to_decimal(tick_size)
+        depth_pct = convert_to_decimal(depth_pct)
+        instrument = InstCode.from_string(orderbook[OrderBookAttribute.inst_code.name])
+        pair_parts = Pair.from_string(instrument.pair.replace("-", "_"))
         tick_pct, spread, median_price = get_tick_pct_spread(bids[0][0], asks[0][0], tick_size)
         if tick_pct > spread:
             logger.info(
@@ -101,7 +109,8 @@ def compute_depth(logger, pair, orderbook, tick_size, depth_pct, ticker_price, e
         ask_amount = 0
         bid_volume = 0
         ask_volume = 0
-        if orderbook[OrderBookAttribute.inst_code.name] == 'BTTCUSDT_BN.SPOT':
+        if (instrument.exchange_id == ExchangeId.BN.name
+                and instrument.category == InstCodeType.SPOT.name and instrument.pair == "BTTC-USDT"):
             bid_amount, ask_amount, bid_volume, ask_volume, depth_upper, depth_lower \
                 = compute_bid_ask_for_bn_bttcusdt(bids, asks, tick_size, bid_amount, ask_amount, bid_volume, ask_volume)
         elif tick_pct <= depth_pct:
@@ -123,11 +132,11 @@ def compute_depth(logger, pair, orderbook, tick_size, depth_pct, ticker_price, e
                 ask_amount = asks[0][1] * asks[0][0]
                 bid_volume = bids[0][1]
                 ask_volume = asks[0][1]
-        quote = pair.split('_')[1]
-        quote_price = get_coin_price(logger, quote, ticker_price, exchange_id)
+        quote_price = get_coin_price(logger, pair_parts.quote, ticker_price, exchange_id, as_decimal=True)
+        if quote_price is None or not quote_price.is_finite() or quote_price <= 0:
+            raise DataTypeException("A positive quote price is required for depth valuation")
         bid_depth = int(bid_amount * quote_price)
         ask_depth = int(ask_amount * quote_price)
-        return bid_depth, ask_depth, bid_volume, ask_volume, spread, tick_pct, float(
-            convert_decimal_to_str(depth_lower)), float(convert_decimal_to_str(depth_upper))
+        return bid_depth, ask_depth, bid_volume, ask_volume, spread, tick_pct, depth_lower, depth_upper
     except Exception as e:
         raise DataTypeException('compute_depth error') from e
