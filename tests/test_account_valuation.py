@@ -148,3 +148,17 @@ def test_unicode_asset_quote_wallet_inventory_and_duplicate_detection(monkeypatc
         normalize_wallet("BN", "spot", {"balances": [
             {"asset": asset, "free": "1", "locked": "0"},
             {"asset": asset, "free": "2", "locked": "0"}]})
+
+
+def test_legacy_balance_mapping_serializer_preserves_exact_numbers_and_scope():
+    import json
+    from pytradekit.utils.account_valuation import serialize_balance_value
+
+    amount = Decimal("-0.1234567890123456789012345678")
+    data = serialize_balance_value({"BTC": {"volume": amount, "price": Decimal("2"), "value_in_u": amount * 2}})
+    result = json.loads(data, parse_float=Decimal)
+    assert result["BTC"]["volume"] == amount
+    assert result["BTC"]["value_in_u"] == amount * 2
+    assert "scope_version" not in result["BTC"]
+    with pytest.raises(ValuationError):
+        serialize_balance_value({"BTC": {"volume": Decimal("NaN")}})

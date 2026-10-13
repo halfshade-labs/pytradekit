@@ -355,7 +355,11 @@ def load_quote_statuses(redis, now_ms):
 
 def serialize_legacy_balance(snapshot):
     """Emit exact JSON numbers for existing consumers without a float round-trip."""
-    result = legacy_balance_value(snapshot)
+    return serialize_balance_value(legacy_balance_value(snapshot))
+
+
+def serialize_balance_value(result):
+    """Serialize a legacy asset balance mapping without changing its scope or precision."""
     numeric = {"volume", "price", "value_in_u"}
     return "{" + ",".join(
         json.dumps(asset) + ":{" + ",".join(
