@@ -4,7 +4,7 @@ from typing import Tuple
 
 import pytest
 from pytradekit.utils.redis_operations import RedisOperations
-from pytradekit.utils.dynamic_types import ExchangeId
+from pytradekit.utils.dynamic_types import ExchangeId, StrategyId
 from pytradekit.utils.custom_types import InstCode
 from pytradekit.utils.exceptions import DataTypeException, DependencyException
 
@@ -352,7 +352,7 @@ class TestSetOrders:
     def test_decimal_fields_serialize_as_str(self, redis_ops):
         import json
         ops, client, _ = redis_ops
-        ops.set_orders("strat_x", {"price": Decimal("1.5"), "qty": Decimal("0.001")})
+        ops.set_orders(StrategyId.TEST, {"price": Decimal("1.5"), "qty": Decimal("0.001")})
         member = json.loads(client.sadd.call_args.args[1])
         assert member == {"price": "1.5", "qty": "0.001"}
 
