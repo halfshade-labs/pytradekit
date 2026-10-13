@@ -59,12 +59,14 @@ def test_depth_and_ratio_readers_restore_legacy_and_decimal_records(mocker, is_d
     ops = MongodbOperations("mongodb://localhost:27017")
     span = TimeSpan(1, 2)
     client["raw_metrics"]["depth"].find.return_value = [
-        {"spread": "0.15", "bid_volume": "2.01"}, {"spread": 0.2, "bid_volume": 3}]
+        {"spread": "0.15", "bid_volume": "2.01", "bid_depth": 201}, {"spread": 0.2, "bid_volume": 3, "bid_depth": 300}]
     read = ops.read_depth(time_span=span, is_df=is_df)
     records = read.to_dict("records") if is_df else read
     assert [r["spread"] for r in records] == [Decimal("0.15"), Decimal("0.2")]
     assert sum(r["bid_volume"] for r in records) == Decimal("5.01")
-    client["metrics_order_depth"]["BN_order_depth_ratio"].find.return_value = [{"bid_ratio": "0.1"}, {"bid_ratio": 0.2}]
+    assert all(isinstance(r["bid_depth"], int) for r in records)
+    client["metrics_order_depth"]["BN_order_depth_ratio"].find.return_value = [{"bid_ratio": "0.1", "depth_bid": 201}, {"bid_ratio": 0.2, "depth_bid": 300}]
     read = ops.read_order_depth_ratio(span, ExchangeId.BN.name, is_df=is_df)
     records = read.to_dict("records") if is_df else read
     assert [r["bid_ratio"] for r in records] == [Decimal("0.1"), Decimal("0.2")]
+    assert all(isinstance(r["depth_bid"], int) for r in records)

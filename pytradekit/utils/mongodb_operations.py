@@ -843,7 +843,6 @@ class MongodbOperations:
         if len(res) == 0:
             raise NoDataException(f'No order depth ratio found for inst_code {inst_code}')
         self._restore_decimal_fields(res, (
-            OrderDepthRatioAttribute.depth_bid, OrderDepthRatioAttribute.depth_ask,
             OrderDepthRatioAttribute.order_bid, OrderDepthRatioAttribute.order_ask,
             OrderDepthRatioAttribute.bid_ratio, OrderDepthRatioAttribute.ask_ratio,
             OrderDepthRatioAttribute.depth_ratio,
@@ -1219,7 +1218,7 @@ class MongodbOperations:
         if not res and (time_span or inst_code):
             raise NoDataException(f'No depth data for inst_code {inst_code}')
         self._restore_decimal_fields(res, (
-            DepthAttribute.bid_depth, DepthAttribute.ask_depth, DepthAttribute.bid_volume,
+            DepthAttribute.bid_volume,
             DepthAttribute.ask_volume, DepthAttribute.spread, DepthAttribute.tick_pct,
             DepthAttribute.price_lower, DepthAttribute.price_upper,
         ))
