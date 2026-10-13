@@ -288,6 +288,8 @@ class RedisOperations:
             raise DependencyException(f"Failed to get trading proposal for {key}") from e
 
     def push_book_ticker(self, exchange_id, value):
+        # Pub/sub channels do not mutate Redis keys, even with the same name.
+        # Hash locks are therefore unnecessary for this notification-only path.
         key = f"{RedisFields.book_ticker.name}:{exchange_id}"
         try:
             self.client.publish(key, json.dumps(value, cls=_DecimalEncoder))

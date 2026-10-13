@@ -334,3 +334,31 @@ class TestGetBalanceTimeSpanNoData:
         mocker.patch.object(ops, 'read_balance', return_value=[])
         with pytest.raises(NoDataException):
             ops.get_balance_time_span('BN_000', TimeSpan(start=0, end=1))
+
+
+class TestAccountLookupValidation:
+    @pytest.fixture
+    def ops(self, mocker):
+        mocker.patch.object(MongodbOperations, "_client", None)
+        mocker.patch.object(MongodbOperations, "_indexes_ensured", False)
+        mocker.patch("pytradekit.utils.mongodb_operations.MongoClient", return_value=mocker.MagicMock())
+        mocker.patch.object(MongodbOperations, "_ensure_indexes")
+        return MongodbOperations("mongodb://localhost:27017")
+
+    def test_unsupported_user_type_is_data_error(self, ops):
+        from pytradekit.utils.exceptions import DataTypeException
+        with pytest.raises(DataTypeException):
+            ops.read_exchanges(user=42)
+
+    def test_missing_exchange_is_data_error(self, ops):
+        from pytradekit.utils.exceptions import DataTypeException
+        with pytest.raises(DataTypeException):
+            ops.read_coin_inst_code(["BTC"])
+
+    def test_comma_separated_users_keep_query_contract(self, ops):
+        from pytradekit.utils.dynamic_types import ExchangeId
+        collection = ops.client["raw_accounts"]["all_accounts"]
+        collection.find.return_value = [{"exchange_id": ExchangeId.BN.name}]
+        assert ops.read_exchanges(user="first, second") == [ExchangeId.BN.name]
+        collection.find.assert_called_once_with(
+            {"is_mm": 1, "user": {"$in": ["first", "second"]}}, {"_id": 0, "exchange_id": 1})

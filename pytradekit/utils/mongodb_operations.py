@@ -19,7 +19,7 @@ from pymongo.errors import DuplicateKeyError, ConnectionFailure, NetworkTimeout,
 
 from pytradekit.utils.time_handler import DATETIME_FORMAT_DAY, get_yesterday_datetime, \
     get_timestamp_s, get_rounded_time_interval, TimeSpan
-from pytradekit.utils.static_types import Database, OrderAttribute, TradeAttribute, AccountAttribute, \
+from pytradekit.utils.static_types import KlineAttribute, Database, OrderAttribute, TradeAttribute, AccountAttribute, \
     LastAggtradeAttribute, InstcodeBasicAttribute, \
     OrderBookAttribute, OrderDepthRatioAttribute, RankAttribute, BalanceAttribute, DepositWithdrawAttribute, \
     InventoryAttribute, DepthAttribute, PnlAttribute, VolumeFeeAttribute, BudgetAttribute, UserLoanAttribute, \
@@ -27,7 +27,7 @@ from pytradekit.utils.static_types import Database, OrderAttribute, TradeAttribu
     TradeRecordAttribute, PremiumSnapshotAttribute, FundingRateHistoryAttribute
 from pytradekit.utils.dynamic_types import DepositWithdrawAuxiliary, DuplicateFields, ExchangeId
 from pytradekit.utils.custom_types import InstCode
-from pytradekit.utils.exceptions import NoDataException
+from pytradekit.utils.exceptions import NoDataException, DataTypeException
 
 SLOW_QUERY_THRESHOLD = 60
 BATCH_SIZE = 1_000_000
@@ -315,38 +315,13 @@ class MongodbOperations:
                     f"No documents deleted from {collection_path.db_name}_{collection_path.collection_name} between {time_span.start} and {time_span.end}.")
             return 0
 
-    # def delete_timeseries_batch(self, logs_list, collection_path, time_span, batch_size=BATCH_SIZE,
-    #                             columns=OrderAttribute.event_time_ms.name):
     def delete_timeseries_batch(self, logs_list, collection_path, time_span, columns=OrderAttribute.event_time_ms.name):
+        """Legacy entry point for a single server-side range deletion."""
         collection = self.client[collection_path.db_name][collection_path.collection_name]
-        query = {
-            columns: {
-                "$gte": time_span.start,
-                "$lte": time_span.end
-            }
-        }
-
-        # total_deleted = 0
-        collection.delete_many(query)
-        # while True:
-        #     documents = collection.find(query).sort(columns, 1).limit(batch_size)
-        #     ids_to_delete = [doc['_id'] for doc in documents]
-        #
-        #     # 如果没有要删除的文档，跳出循环
-        #     if not ids_to_delete:
-        #         break
-        #
-        #     # 删除找到的文档
-        #     result = collection.delete_many({"_id": {"$in": ids_to_delete}})
-        #     deleted_count = result.deleted_count
-        #     total_deleted += deleted_count
-        #
-        #     logs_list.append(
-        #         f"delete_timeseries_batch from {collection_path.db_name}_{collection_path.collection_name} deleted {deleted_count} data.")
-        #
+        result = collection.delete_many({columns: {"$gte": time_span.start, "$lte": time_span.end}})
         logs_list.append(
-            f"delete_timeseries_batch total_deleted {collection_path.db_name}_{collection_path.collection_name} data.")
-
+            f"delete_timeseries_batch {collection_path.db_name}_{collection_path.collection_name} "
+            f"deleted {result.deleted_count} documents.")
         return logs_list
 
     def delete_inst_code_basic(self, exchange_id, inst_code=None):
@@ -363,7 +338,7 @@ class MongodbOperations:
             return None
 
         collection = self.client[Database.raw_market.name][f'{exchange_id}_{Database.inst_code_basic.name}']
-        result = collection.delete_many({'inst_code': inst_code})
+        result = collection.delete_many({InstcodeBasicAttribute.inst_code.name: inst_code})
         return result
 
     def insert_data_if_not_exists(self, data, collection_path):
@@ -556,7 +531,7 @@ class MongodbOperations:
 
     def insert_inst_code_basic(self, data, exchange_id=None):
         if not exchange_id:
-            exchange_id = InstCode.from_string(data['inst_code']).exchange_id
+            exchange_id = InstCode.from_string(data[InstcodeBasicAttribute.inst_code.name]).exchange_id
         collection_path = CollectionPath(db_name=Database.raw_market.name,
                                          collection_name=f'{exchange_id}_{Database.inst_code_basic.name}')
         self.insert_data(data, collection_path)
@@ -608,7 +583,8 @@ class MongodbOperations:
     def check_duplicate_open_time(self, inst_code, interval, open_time_s):
         coll_name = f'{inst_code}_{interval}'
         duplicate_count = self.client[Database.raw_kline.name][coll_name].count_documents(
-            {'inst_code': inst_code, 'frame': interval, 'open_time_s': open_time_s})
+            {KlineAttribute.inst_code.name: inst_code, KlineAttribute.frame.name: interval,
+             KlineAttribute.open_time_s.name: open_time_s})
         return duplicate_count > 0
 
     @staticmethod
@@ -679,22 +655,22 @@ class MongodbOperations:
         return res
 
     def read_exchanges(self, user=None):
-        query = {"is_mm": 1}
+        query = {AccountAttribute.is_mm.name: 1}
         if user:
             if isinstance(user, str):
                 user_list = [u.strip() for u in user.split(",") if u.strip()]
             elif isinstance(user, (list, tuple)):
                 user_list = list(user)
             else:
-                raise ValueError(f"Unsupported user type: {type(user)}")
+                raise DataTypeException(f"Unsupported user type: {type(user)}")
 
             if len(user_list) == 1:
-                query["user"] = user_list[0]
+                query[AccountAttribute.user.name] = user_list[0]
             else:
-                query["user"] = {"$in": user_list}
+                query[AccountAttribute.user.name] = {"$in": user_list}
 
-        cursor = self.client["raw_accounts"]["all_accounts"].find(query, {"_id": 0, "exchange_id": 1})
-        exchange_ids = list({doc["exchange_id"] for doc in cursor})
+        cursor = self.client[Database.raw_accounts.name][Database.all_accounts.name].find(query, {"_id": 0, AccountAttribute.exchange_id.name: 1})
+        exchange_ids = list({doc[AccountAttribute.exchange_id.name] for doc in cursor})
         return exchange_ids
 
     def read_inst_code_basic(self, inst_code=None, exchange_id=None):
@@ -719,16 +695,16 @@ class MongodbOperations:
             exchange_id = InstCode.from_string(inst_code_list[0]).exchange_id
         params = {}
         params[InstcodeBasicAttribute.inst_code.name] = {"$in": inst_code_list}
-        res = self.client[Database.raw_market.name][f'{exchange_id}_inst_code_basic'].find(params)
+        res = self.client[Database.raw_market.name][f'{exchange_id}_{Database.inst_code_basic.name}'].find(params)
         res = list(res)
-        res = [i['pair'] for i in res]
+        res = [i[InstcodeBasicAttribute.pair.name] for i in res]
         if len(res) == 0:
             raise NoDataException(f'No pairs found for exchange_id {exchange_id}')
         return res
 
     def read_coin_inst_code(self, coin: list, exchange_id=None) -> list:
         if not exchange_id:
-            raise ValueError("exchange_id is required but not provided")
+            raise DataTypeException("exchange_id is required but not provided")
 
         params = {
             "$or": [

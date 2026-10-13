@@ -4,6 +4,8 @@ from typing import Tuple
 
 import pytest
 from pytradekit.utils.redis_operations import RedisOperations
+from pytradekit.utils.dynamic_types import ExchangeId
+from pytradekit.utils.custom_types import InstCode
 from pytradekit.utils.exceptions import DataTypeException, DependencyException
 
 
@@ -388,13 +390,13 @@ class TestGetNewBookTicker:
     def test_returns_none_on_cache_miss(self, redis_ops):
         ops, client, _ = redis_ops
         client.get.return_value = None
-        assert ops.get_new_book_ticker("BN") is None
+        assert ops.get_new_book_ticker(ExchangeId.BN.name) is None
 
     def test_parses_value_when_present(self, redis_ops):
         import json
         ops, client, _ = redis_ops
         client.get.return_value = json.dumps({"bid": "1", "ask": "2"})
-        assert ops.get_new_book_ticker("BN") == {"bid": "1", "ask": "2"}
+        assert ops.get_new_book_ticker(ExchangeId.BN.name) == {"bid": "1", "ask": "2"}
 
 
 class TestGetOrderLink:
@@ -418,14 +420,14 @@ class TestHashWritesUseHset:
 
     def test_set_ticker_price_uses_hset_mapping(self, redis_ops):
         ops, client, _ = redis_ops
-        ops.set_ticker_price("BN", {"BTCUSDT": "1"})
+        ops.set_ticker_price(ExchangeId.BN.name, {"BTCUSDT": "1"})
         client.hset.assert_called_once()
         assert client.hset.call_args.kwargs["mapping"] == {"BTCUSDT": "1"}
         client.hmset.assert_not_called()
 
     def test_set_book_ticker_uses_hset_mapping(self, redis_ops):
         ops, client, _ = redis_ops
-        ops.set_book_ticker("BTC-USDT_BN.SPOT", {"bid": "1", "ask": "2"})
+        ops.set_book_ticker(str(InstCode.from_string("BTC-USDT_BN.SPOT")), {"bid": "1", "ask": "2"})
         client.hset.assert_called_once()
         assert client.hset.call_args.kwargs["mapping"] == {"bid": "1", "ask": "2"}
         client.hmset.assert_not_called()
@@ -439,19 +441,19 @@ class TestDecimalEncoderConsistency:
     def test_set_new_book_ticker_encodes_decimal(self, redis_ops):
         import json
         ops, client, _ = redis_ops
-        ops.set_new_book_ticker("BN", {"bid": Decimal("1.5"), "ask": Decimal("1.6")})
+        ops.set_new_book_ticker(ExchangeId.BN.name, {"bid": Decimal("1.5"), "ask": Decimal("1.6")})
         assert json.loads(client.set.call_args.args[1]) == {"bid": "1.5", "ask": "1.6"}
 
     def test_push_book_ticker_encodes_decimal(self, redis_ops):
         import json
         ops, client, _ = redis_ops
-        ops.push_book_ticker("BN", {"bid": Decimal("1.5")})
+        ops.push_book_ticker(ExchangeId.BN.name, {"bid": Decimal("1.5")})
         assert json.loads(client.publish.call_args.args[1]) == {"bid": "1.5"}
 
     def test_set_depth_order_theoretical_encodes_decimal(self, redis_ops):
         import json
         ops, client, _ = redis_ops
-        ops.set_depth_order_theoretical("BN", {"px": Decimal("2.5")})
+        ops.set_depth_order_theoretical(ExchangeId.BN.name, {"px": Decimal("2.5")})
         assert json.loads(client.set.call_args.args[1]) == {"px": "2.5"}
         assert json.loads(client.publish.call_args.args[1]) == {"px": "2.5"}
 
