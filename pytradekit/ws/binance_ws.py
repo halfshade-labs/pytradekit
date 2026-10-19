@@ -1,6 +1,6 @@
 import time
 import json
-from threading import Thread
+from threading import Lock, Thread, current_thread
 from typing import Iterable, List
 
 import requests
@@ -13,6 +13,7 @@ from pytradekit.utils.time_handler import (
 )
 from pytradekit.ws.save_restful_bn_deposit_withdraw import HandleRestfulDepositWithdraw
 from pytradekit.ws.bn_add_missing_orders import get_binance_trade
+from pytradekit.ws.bookticker_health import BookTickerHealth
 from pytradekit.utils.tools import get_redis
 from pytradekit.ws.subscription_update import (
     SubscriptionUpdate,
@@ -76,6 +77,9 @@ class BinanceWsManager(WsManager):
         self._mm_symbol_list = mm_symbol_list
         self.verify_bookticker_duplicate = {}
         self._bookticker_symbols = frozenset()
+        self._public_bookticker = False
+        self._bookticker_health = BookTickerHealth()
+        self._subscription_lock = Lock()
         self._connection_opened_ms = None
         self._reconnect_attempt = 0
         self._reconnect_delay_s = 0
@@ -84,6 +88,91 @@ class BinanceWsManager(WsManager):
 
     def _get_api_url(self) -> str:
         return self._api_url
+
+    def _accept_public_socket(self, ws):
+        return (
+            not self._stop_event.is_set() and ws is self.ws
+            and self._bookticker_health.retired_generation != self._generation
+        )
+
+    def is_current_bookticker_message(self, message):
+        """Reject an IPC quote from a retired connection or replaced manager."""
+        with self._state_lock:
+            return (
+                self._accept_public_socket(self.ws) and self._is_connected(self.ws)
+                and message.get(BinanceWebSocket.connection_id.value)
+                == self._bookticker_health.stream_id
+                and message.get(BinanceWebSocket.connection_generation.value)
+                == self._generation
+            )
+
+    def get_public_feed_state(self):
+        """Constant-time generation gate for queue consumers, without coverage scans."""
+        with self._state_lock:
+            return {
+                'stream_id': self._bookticker_health.stream_id,
+                'generation': self._generation,
+                'connected': self._accept_public_socket(self.ws) and self._is_connected(self.ws),
+            }
+
+    def get_public_feed_health(self, max_age_ms=1000):
+        with self._state_lock:
+            return self._public_feed_snapshot(max_age_ms)
+
+    def _public_feed_snapshot(self, max_age_ms=1000):
+        self._bookticker_health.prepare_generation(self._generation)
+        connected = self._accept_public_socket(self.ws) and self._is_connected(self.ws)
+        snapshot = self._bookticker_health.snapshot(
+            self._bookticker_symbols, get_timestamp_ms(), max_age_ms, connected,
+        )
+        snapshot.update(
+            stream_kind='public_bookticker',
+            market='perp' if self._is_perp else 'spot',
+            timestamp_basis='exchange' if self._is_perp else 'exchange_or_local_receive',
+            generation=self._generation,
+            reconnect_attempt=self._reconnect_attempt,
+        )
+        return snapshot
+
+    def _log_public_feed_event(self, event, snapshot):
+        self.logger.debug(f"bn_public_feed event={event} {json.dumps(snapshot, sort_keys=True)}")
+
+    def reconnect(self, ws=None, *, reason='connection_recovery'):
+        if not self._public_bookticker:
+            return super().reconnect(ws)
+        retired = False
+        with self._state_lock:
+            if not self._stop_event.is_set() and (ws is None or ws is self.ws):
+                retired = self._bookticker_health.retire(
+                    self._generation, get_timestamp_ms(), reason,
+                )
+                # Publish retirement and the recovery request in one critical
+                # section; a concurrent replacement must not split them.
+                self._ready.clear()
+                self._needRecovery.set()
+                if retired:
+                    snapshot = self._public_feed_snapshot()
+        if retired:
+            self._log_public_feed_event('disconnected', snapshot)
+
+    def send_json(self, message):
+        if not self._public_bookticker:
+            return super().send_json(message)
+        # First connect must not hold the replay lock: the monitor can replay
+        # subscriptions while the initial caller is waiting for its handshake.
+        if (self.status == WebsocketStatus.INIT.name
+                and current_thread() is not self._monitorThread):
+            self.connect()
+        public_subscription = message.get('method') == BinanceWebSocket.subscribe.value
+        with self._subscription_lock:
+            if public_subscription:
+                with self._state_lock:
+                    self._bookticker_health.prepare_generation(self._generation)
+                    self._bookticker_health.subscription_sent(self._cur_id, get_timestamp_ms())
+                    snapshot = self._public_feed_snapshot()
+            super().send_json(message)
+        if public_subscription:
+            self._log_public_feed_event('subscription_sent', snapshot)
 
     def _get_url(self) -> str:
         return self._url
@@ -99,7 +188,10 @@ class BinanceWsManager(WsManager):
         kind = kind or self._listen_key_kind()
         listen_key = self._listen_key.get(kind)
         listen_key_len = len(listen_key) if isinstance(listen_key, str) else 0
-        return f"market={kind.lower()} listen_key_len={listen_key_len}"
+        stream_kind = 'public_bookticker' if self._public_bookticker else (
+            'private_user_data' if self._api_key else 'unspecified'
+        )
+        return f"market={kind.lower()} stream_kind={stream_kind} listen_key_len={listen_key_len}"
 
     @staticmethod
     def _error_type(error):
@@ -271,7 +363,8 @@ class BinanceWsManager(WsManager):
         # Only the lifecycle worker may retire or replace a socket. The URL
         # assignment precedes this request so an in-flight reconnect will retry
         # it without racing a second connect path.
-        self.reconnect()
+        self.logger.debug(f"binance url rotation {self._private_stream_log_context()}")
+        self.reconnect(reason='url_rotation')
         self.connect()
 
     def start_aggtrade_stream(self, symbols):
@@ -312,7 +405,7 @@ class BinanceWsManager(WsManager):
     def start_bookticker_stream(self, symbols: Iterable[str]) -> None:
         target_symbols = normalize_subscription_targets(symbols)
         params = self._build_bookticker_params(target_symbols)
-        self._bookticker_symbols = target_symbols
+        self._set_bookticker_symbols(target_symbols)
         if params:
             self.start_subscribe(params)
         else:
@@ -325,6 +418,19 @@ class BinanceWsManager(WsManager):
             f"{symbol.lower()}{BinanceAuxiliary.ws_book_ticker.value}"
             for symbol in sorted(symbols)
         ]
+
+    def _set_bookticker_symbols(self, symbols):
+        with self._state_lock:
+            self._public_bookticker = True
+            self._bookticker_symbols = symbols
+            self._bookticker_health.quotes = {
+                symbol: stamp for symbol, stamp in self._bookticker_health.quotes.items()
+                if symbol in symbols
+            }
+            self.verify_bookticker_duplicate = {
+                symbol: quote for symbol, quote in self.verify_bookticker_duplicate.items()
+                if symbol in symbols
+            }
 
     def update_bookticker_stream(
         self,
@@ -346,7 +452,7 @@ class BinanceWsManager(WsManager):
                 "method": BINANCE_UNSUBSCRIBE_METHOD,
                 "params": self._build_bookticker_params(update.removed),
             })
-        self._bookticker_symbols = target_symbols
+        self._set_bookticker_symbols(target_symbols)
         self._subs = []
         if target_symbols:
             self._subs = [{
@@ -455,7 +561,17 @@ class BinanceWsManager(WsManager):
         return False
 
     def _on_open(self, ws, *args, **kwargs):
-        self._connection_opened_ms = get_monotonic_timestamp_ns() // 1_000_000
+        if self._public_bookticker:
+            with self._state_lock:
+                if not self._accept_public_socket(ws):
+                    return
+                self._connection_opened_ms = get_monotonic_timestamp_ns() // 1_000_000
+                self.verify_bookticker_duplicate.clear()
+                self._bookticker_health.opened(self._generation, get_timestamp_ms())
+                snapshot = self._public_feed_snapshot()
+            self._log_public_feed_event('opened', snapshot)
+        else:
+            self._connection_opened_ms = get_monotonic_timestamp_ns() // 1_000_000
         self.logger.debug(
             f"[bn_ws on_open] {self._private_stream_log_context()} "
             f"reconnect_attempt={getattr(self, '_reconnect_attempt', 0)}"
@@ -494,22 +610,54 @@ class BinanceWsManager(WsManager):
     def _on_close(self, ws, *args, **kwargs):
         market = 'perp' if self._is_perp else 'spot'
         close_code = args[0] if args and isinstance(args[0], int) else None
+        if self._public_bookticker:
+            with self._state_lock:
+                if ws is not self.ws:
+                    return
+                self._bookticker_health.last_close_code = close_code
         self.logger.debug(
             f"[bn_ws on_close] market={market} msg_count_so_far={self._msg_count} "
             f"close_code={close_code} connection_age_ms={self._connection_age_ms()} "
             f"close_kwarg_names={list(kwargs)}"
         )
-        # delegate to parent to trigger reconnect
-        super()._on_close(ws, *args, **kwargs)
+        self.reconnect(ws, reason='socket_close')
 
     def _on_error(self, ws, error, *args, **kwargs):
+        if self._public_bookticker:
+            with self._state_lock:
+                if ws is not self.ws:
+                    return
+                self._bookticker_health.last_error_type = self._error_type(error)
         self.logger.debug(
             f"[bn_ws on_error] {self._private_stream_log_context()} "
             f"error_type={self._error_type(error)} msg_count_so_far={self._msg_count}"
         )
-        self.reconnect(ws)
+        self.reconnect(ws, reason='socket_error')
+
+    def _publish_public_bookticker(self, ws, message, received_ms):
+        first_quote = False
+        with self._state_lock:
+            if (not self._accept_public_socket(ws)
+                    or message.get('s') not in self._bookticker_symbols
+                    or not self._bookticker_health.valid_prices(message)):
+                return
+            if not self.verify_spot_bookticker_duplicate(message, received_ms):
+                return
+            message[BinanceWebSocket.run_time_ms.value] = received_ms
+            message[BinanceWebSocket.connection_id.value] = self._bookticker_health.stream_id
+            message[BinanceWebSocket.connection_generation.value] = self._generation
+            self._queue.put_nowait(message)
+            first_quote = self._bookticker_health.quote(message, received_ms, self._is_perp)
+            if first_quote:
+                snapshot = self._public_feed_snapshot()
+        if first_quote:
+            self._log_public_feed_event('first_valid_quote', snapshot)
 
     def _on_message(self, _ws, message):
+        if self._public_bookticker:
+            with self._state_lock:
+                if not self._accept_public_socket(_ws):
+                    return
         msg = json.loads(message)
         bookticker_receive_time_ms = None
         if (
@@ -520,16 +668,28 @@ class BinanceWsManager(WsManager):
             and BinanceWebSocket.orderbook_bids.value in msg
         ):
             bookticker_receive_time_ms = get_timestamp_ms()
-        # raw-msg trace: first N msgs are logged in full, rest are summarized by top-level keys.
-        # Use to diagnose missing perp/spot event delivery when verify_* keeps returning False.
+        # Log schema only: private events and exchange errors may contain secrets.
         self._msg_count += 1
         market = 'perp' if self._is_perp else 'spot'
         if self._msg_count <= self._msg_log_full_n:
-            preview = str(message)[:400]
+            preview = sorted(msg) if isinstance(msg, dict) else []
             self.logger.debug(
-                f"[bn_ws raw #{self._msg_count}] market={market} type={type(msg).__name__} raw={preview}"
+                f"[bn_ws raw #{self._msg_count}] market={market} type={type(msg).__name__} keys={preview}"
             )
         try:
+            if self._public_bookticker and isinstance(msg, dict):
+                if bookticker_receive_time_ms is not None:
+                    self._publish_public_bookticker(_ws, msg, bookticker_receive_time_ms)
+                else:
+                    acknowledged = False
+                    with self._state_lock:
+                        if self._accept_public_socket(_ws):
+                            acknowledged = self._bookticker_health.acknowledge(msg, get_timestamp_ms())
+                            if acknowledged:
+                                snapshot = self._public_feed_snapshot()
+                    if acknowledged:
+                        self._log_public_feed_event('subscription_response', snapshot)
+                return
             # Ticker data from !ticker@arr is a list
             if isinstance(msg, list) and self._ticker_queue:
                 self._ticker_queue.put_nowait(msg)
@@ -560,5 +720,8 @@ class BinanceWsManager(WsManager):
                     self._queue.put_nowait(msg)
                     return
         except Exception as e:
+            if self._public_bookticker:
+                self.logger.debug(f"binance public message error_type={self._error_type(e)}")
+                return
             self.logger.exception(e)
             self.logger.debug(f"binance message error {msg}")

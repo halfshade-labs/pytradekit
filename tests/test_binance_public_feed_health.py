@@ -1,0 +1,258 @@
+"""Public-feed recovery must require current-generation, usable quotations."""
+
+import json
+from queue import Queue
+from threading import Event, Thread
+from types import SimpleNamespace
+from unittest.mock import Mock
+
+import pytest
+
+from pytradekit.utils.dynamic_types import WebsocketStatus
+from pytradekit.ws.binance_ws import BinanceWsManager
+
+
+NOW = 1_800_000_000_000
+
+
+def book(update_id=1, **changes):
+    return dict({
+        'e': 'bookTicker', 's': 'BTCUSDT', 'u': update_id,
+        'b': '100', 'a': '101', 'B': '2', 'A': '2', 'E': NOW, 'T': NOW,
+    }, **changes)
+
+
+@pytest.fixture
+def manager(monkeypatch):
+    monkeypatch.setattr('pytradekit.ws.binance_ws.get_timestamp_ms', lambda: NOW)
+    value = BinanceWsManager(Mock(), queue=Queue(), is_perp=True)
+    # Keep the fixture compatible with the pre-fix manager so the two stale
+    # callback tests can replay against the immutable baseline revision.
+    value._bookticker_symbols = frozenset({'BTCUSDT', 'ETHUSDT'})
+    value._public_bookticker = True
+    value._generation = 1
+    value.ws = SimpleNamespace(sock=SimpleNamespace(connected=True), send=Mock())
+    value.status = WebsocketStatus.ACTIVE.name
+    value._on_open(value.ws)
+    return value
+
+
+def test_retired_socket_cannot_deliver_buffered_quotes_during_backoff(manager):
+    old_socket = manager.ws
+    manager.reconnect(old_socket)
+    # The lifecycle worker clears the request before starting Binance backoff.
+    manager._needRecovery.clear()
+    manager.status = WebsocketStatus.RECOVERY.name
+    manager._wrap_callback(manager._on_message, 'message')(old_socket, json.dumps(book()))
+    assert manager._queue.empty()
+
+
+def test_inflight_callback_cannot_publish_after_reconnect_request(manager, monkeypatch):
+    original = json.loads
+
+    def retire_during_parse(*args):
+        result = original(*args)
+        manager.reconnect(manager.ws)
+        return result
+
+    monkeypatch.setattr('pytradekit.ws.binance_ws.json.loads', retire_during_parse)
+    manager._on_message(manager.ws, json.dumps(book()))
+    assert manager._queue.empty()
+
+
+def test_open_and_subscription_ack_are_not_valid_quotes(manager):
+    manager.start_subscribe(['btcusdt@bookTicker', 'ethusdt@bookTicker'])
+    manager._on_message(manager.ws, json.dumps({'id': 0, 'result': None}))
+    health = manager.get_public_feed_health()
+    assert health['connected']
+    assert health['subscription_ack_ms'] == NOW
+    assert health['first_valid_quote_ms'] is None
+    assert health['first_valid_quote_delay_ms'] is None
+    assert health['fresh_symbol_count'] == 0
+    assert health['unavailable_symbols_sample'] == ['BTCUSDT', 'ETHUSDT']
+
+
+def test_spot_without_exchange_clock_reports_local_receive_basis(manager):
+    manager._is_perp = False
+    message = book()
+    del message['E']
+    del message['T']
+    manager._on_message(manager.ws, json.dumps(message))
+    health = manager.get_public_feed_health()
+    assert health['first_valid_quote_timestamp_basis'] == 'local_receive'
+    assert health['local_receive_symbol_count'] == 1
+
+
+@pytest.mark.parametrize('changes', [
+    {'b': 'NaN'}, {'a': '99'}, {'B': '0'}, {'E': NOW - 1001}, {'E': NOW + 1},
+])
+def test_invalid_or_stale_quote_does_not_claim_recovery(manager, changes):
+    manager._on_message(manager.ws, json.dumps(book(**changes)))
+    assert manager.get_public_feed_health()['first_valid_quote_ms'] is None
+
+
+def test_reconnect_clears_quote_coverage_and_rejects_already_queued_generation(manager):
+    manager._on_message(manager.ws, json.dumps(book()))
+    queued = manager._queue.get_nowait()
+    health = manager.get_public_feed_health()
+    assert health['first_valid_quote_ms'] == NOW
+    assert health['fresh_symbol_count'] == 1
+    assert manager.is_current_bookticker_message(queued)
+    manager._on_error(manager.ws, RuntimeError('private URL must not be logged'))
+    manager._on_close(manager.ws, 1006, 'private close reason')
+    assert not manager.is_current_bookticker_message(queued)
+    assert manager.get_public_feed_health()['disconnect_count'] == 1
+    manager._generation += 1
+    manager.ws = SimpleNamespace(sock=SimpleNamespace(connected=True), send=Mock())
+    manager._needRecovery.clear()
+    manager._on_open(manager.ws)
+    health = manager.get_public_feed_health()
+    assert health['first_valid_quote_ms'] is None
+    assert health['fresh_symbol_count'] == 0
+    assert not manager.is_current_bookticker_message(queued)
+    # Same BBO and update ID on the new connection must not inherit dedup state.
+    manager._on_message(manager.ws, json.dumps(book()))
+    assert manager.is_current_bookticker_message(manager._queue.get_nowait())
+
+
+def test_private_message_delivery_is_not_changed_by_public_quote_retirement(manager):
+    manager._bookticker_symbols = frozenset()
+    manager._public_bookticker = False
+    manager.reconnect(manager.ws)
+    payload = {'e': 'ORDER_TRADE_UPDATE', 'o': {'s': 'BTCUSDT'}}
+    manager._on_message(manager.ws, json.dumps(payload))
+    assert manager._queue.get_nowait() == payload
+
+
+def test_wrong_subscription_ack_cannot_certify_replay(manager):
+    manager.start_subscribe(['btcusdt@bookTicker'])
+    manager._on_message(manager.ws, json.dumps({'id': 999, 'result': None}))
+    assert manager.get_public_feed_health()['subscription_ack_ms'] is None
+
+
+def test_on_open_does_not_erase_a_subscription_sent_after_transport_connect(manager):
+    manager._generation += 1
+    manager.ws = SimpleNamespace(sock=SimpleNamespace(connected=True), send=Mock())
+    manager.send_json({'method': 'SUBSCRIBE', 'params': ['btcusdt@bookTicker']})
+    manager._on_open(manager.ws)
+    manager._on_message(manager.ws, json.dumps({'id': 0, 'result': None}))
+    assert manager.get_public_feed_health()['subscription_ack_ms'] == NOW
+
+
+def test_health_contains_no_payload_error_or_account_identifiers(manager):
+    secret = 'TEST_PRIVATE_DETAIL_NEVER_LOG'
+    manager._on_error(manager.ws, RuntimeError(secret))
+    manager._on_close(manager.ws, 1006, secret)
+    text = str(manager.get_public_feed_health()) + str(manager.logger.mock_calls)
+    assert secret not in text
+    assert 'RuntimeError' in text
+
+
+def test_recovery_latency_uses_monotonic_time_and_stays_unknown_without_quotes(manager, monkeypatch):
+    clock = [1_000_000_000]
+    monkeypatch.setattr('pytradekit.ws.bookticker_health.get_monotonic_timestamp_ns', lambda: clock[0])
+    manager.reconnect(manager.ws)
+    clock[0] += 2_000_000
+    manager._generation += 1
+    manager.ws = SimpleNamespace(sock=SimpleNamespace(connected=True), send=Mock())
+    manager._on_open(manager.ws)
+    health = manager.get_public_feed_health()
+    assert health['socket_rebuild_ms'] == 2
+    assert health['recovery_to_quote_ms'] is None
+    clock[0] += 3_000_000
+    manager._on_message(manager.ws, json.dumps(book()))
+    health = manager.get_public_feed_health()
+    assert health['first_valid_quote_delay_ms'] == 3
+    assert health['recovery_to_quote_ms'] == 5
+
+
+def test_empty_subscription_does_not_reenable_delivery_of_untracked_quotes(manager):
+    manager.update_bookticker_stream([])
+    manager._on_message(manager.ws, json.dumps(book()))
+    assert manager._queue.empty()
+    assert manager.get_public_feed_health()['expected_symbol_count'] == 0
+
+
+def test_removed_targets_are_pruned_and_coverage_samples_are_bounded(manager):
+    manager._on_message(manager.ws, json.dumps(book()))
+    manager._set_bookticker_symbols(frozenset(f'SYNTHETIC{index}USDT' for index in range(100)))
+    health = manager.get_public_feed_health()
+    assert health['observed_symbol_count'] == 0
+    assert health['unavailable_symbol_count'] == 100
+    assert len(health['unavailable_symbols_sample']) == 50
+    assert health['unavailable_symbols_truncated']
+    assert not manager._bookticker_health.quotes
+
+
+def test_missing_subscription_responses_have_bounded_state_and_never_claim_ack(manager):
+    for _ in range(70):
+        manager.send_json({'method': 'SUBSCRIBE', 'params': ['btcusdt@bookTicker']})
+    manager._on_message(manager.ws, json.dumps({'id': 69, 'result': None}))
+    health = manager.get_public_feed_health()
+    assert health['subscription_tracking_lost']
+    assert health['subscription_ack_ms'] is None
+    assert len(manager._bookticker_health._subscription_ids) <= 64
+
+
+@pytest.mark.parametrize('event_name, callback_name, args', [
+    ('open', '_on_open', ()),
+    ('', '_on_error', (RuntimeError('obsolete error'),)),
+    ('', '_on_close', (1006, 'obsolete close')),
+])
+def test_callback_retired_after_wrapper_guard_cannot_mutate_new_generation(
+    manager, event_name, callback_name, args,
+):
+    entered, release = Event(), Event()
+    original_callback = getattr(manager, callback_name)
+
+    def paused_callback(ws, *values):
+        entered.set()
+        assert release.wait(1)
+        original_callback(ws, *values)
+
+    wrapped = manager._wrap_callback(paused_callback, event_name)
+    callback_thread = Thread(target=wrapped, args=(manager.ws, *args))
+    callback_thread.start()
+    try:
+        assert entered.wait(1)
+        manager._generation += 1
+        manager.ws = SimpleNamespace(sock=SimpleNamespace(connected=True), send=Mock())
+        manager._on_open(manager.ws)
+        manager._on_message(manager.ws, json.dumps(book()))
+        opened_ms = manager._connection_opened_ms
+        current_health = manager.get_public_feed_health()
+        release.set()
+        callback_thread.join(timeout=1)
+        assert not callback_thread.is_alive()
+        assert manager.get_public_feed_health() == current_health
+        assert manager._connection_opened_ms == opened_ms
+        assert not manager._needRecovery.is_set()
+    finally:
+        release.set()
+        callback_thread.join(timeout=1)
+
+
+def test_failed_handshake_does_not_count_as_established_socket_disconnect(manager):
+    manager._generation += 1
+    manager.ws = SimpleNamespace(sock=None, send=Mock())
+    manager.reconnect(manager.ws)
+    health = manager.get_public_feed_health()
+    assert health['retired_generation_count'] == 1
+    assert health['disconnect_count'] == 0
+    assert health['last_open_ms'] is None
+    assert health['first_valid_quote_ms'] is None
+
+
+def test_late_open_of_retired_current_socket_preserves_health_and_connection_age(manager, monkeypatch):
+    manager.reconnect(manager.ws)
+    retired_health = manager.get_public_feed_health()
+    opened_ms = manager._connection_opened_ms
+    monkeypatch.setattr(
+        'pytradekit.ws.binance_ws.get_monotonic_timestamp_ns',
+        lambda: (opened_ms + 60_000) * 1_000_000,
+    )
+    late_open = manager._wrap_callback(manager._on_open, 'open')
+    late_open(manager.ws)
+    assert manager.get_public_feed_health() == retired_health
+    assert manager._connection_opened_ms == opened_ms
+    assert manager._connection_age_ms() == 60_000

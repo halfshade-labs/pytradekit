@@ -142,6 +142,8 @@ class BinanceWebSocket(Enum):
     subscribe = 'SUBSCRIBE'
     request = 'REQUEST'
     run_time_ms = 'run_time_ms'
+    connection_generation = '_ptk_connection_generation'
+    connection_id = '_ptk_connection_id'
     deposit_withraw = 'deposit_withraw'
     agg_trade = 'aggTrade'
     kline_raw = 'kline'
