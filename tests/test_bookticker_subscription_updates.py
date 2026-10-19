@@ -10,7 +10,7 @@ from pytradekit.ws.subscription_update import SubscriptionUpdate
 
 
 def _make_binance_manager(mocker):
-    manager = BinanceWsManager.__new__(BinanceWsManager)
+    manager = BinanceWsManager(mocker.Mock())
     manager._bookticker_symbols = {"BTCUSDT", "XRPUSDT"}
     manager._subs = [
         {
