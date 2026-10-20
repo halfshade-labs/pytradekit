@@ -1,6 +1,6 @@
 import time
 import json
-from threading import Lock, Thread, current_thread
+from threading import RLock, Thread, current_thread
 from typing import Iterable, List
 
 import requests
@@ -79,7 +79,7 @@ class BinanceWsManager(WsManager):
         self._bookticker_symbols = frozenset()
         self._public_bookticker = False
         self._bookticker_health = BookTickerHealth()
-        self._subscription_lock = Lock()
+        self._subscription_lock = RLock()
         self._connection_opened_ms = None
         self._reconnect_attempt = 0
         self._reconnect_delay_s = 0
@@ -436,8 +436,19 @@ class BinanceWsManager(WsManager):
         self,
         symbols: Iterable[str],
     ) -> SubscriptionUpdate:
-        """Update a live book-ticker stream without reconnecting it."""
+        """Update targets atomically with respect to reconnect subscription replay."""
         target_symbols = normalize_subscription_targets(symbols)
+        if target_symbols == self._bookticker_symbols:
+            return calculate_subscription_update(target_symbols, target_symbols)
+        # A failed first handshake may require the monitor to replay before
+        # connect() returns. Never wait for it while holding the replay lock.
+        if (self.status == WebsocketStatus.INIT.name
+                and current_thread() is not self._monitorThread):
+            self.connect()
+        with self._subscription_lock:
+            return self._update_bookticker_stream(target_symbols)
+
+    def _update_bookticker_stream(self, target_symbols):
         current_symbols = getattr(self, "_bookticker_symbols", frozenset())
         update = calculate_subscription_update(current_symbols, target_symbols)
         if not update.added and not update.removed:
@@ -460,6 +471,14 @@ class BinanceWsManager(WsManager):
                 "params": self._build_bookticker_params(target_symbols),
             }]
         return update
+
+    def _reconnect_streams(self):
+        if not self._public_bookticker:
+            return super()._reconnect_streams()
+        # A replacement can open while an update is sending on the old socket.
+        # Replay only after that update has published its final desired set.
+        with self._subscription_lock:
+            super()._reconnect_streams()
 
     def start_perp_lastprice_stream(self, symbols):
         params = []

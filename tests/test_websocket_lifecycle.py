@@ -324,3 +324,79 @@ def test_failed_handshake_then_short_connection_cannot_deadlock_subscription_rep
     finally:
         manager.close()
         caller.join(timeout=1)
+
+
+@pytest.mark.parametrize('target_symbols', [['ETHUSDT'], []])
+def test_initial_public_target_update_after_failed_handshake_does_not_deadlock(
+    manager, monkeypatch, sockets, target_symbols,
+):
+    factory = __import__(
+        'pytradekit.gateway.websocket.base_ws_manager', fromlist=['WebSocketApp'],
+    ).WebSocketApp
+
+    def fail_first(*args, **kwargs):
+        socket = factory(*args, **kwargs)
+        socket.raise_on_run = len(sockets) == 1
+        return socket
+
+    monkeypatch.setattr('pytradekit.gateway.websocket.base_ws_manager.WebSocketApp', fail_first)
+    manager._set_bookticker_symbols(frozenset({'BTCUSDT'}))
+    manager._subs = [{'method': 'SUBSCRIBE', 'params': ['btcusdt@bookTicker']}]
+    errors = []
+
+    def update_targets():
+        try:
+            manager.update_bookticker_stream(target_symbols)
+        except Exception as error:
+            errors.append(error)
+
+    caller = Thread(target=update_targets, daemon=True)
+    caller.start()
+    try:
+        caller.join(timeout=1)
+        assert not caller.is_alive(), 'initial update blocked recovery subscription replay'
+        assert not errors
+        assert manager.get_connection_health()['connected']
+        assert manager._bookticker_symbols == frozenset(target_symbols)
+        assert sockets[-1].sent
+    finally:
+        manager.close()
+        caller.join(timeout=1)
+
+
+def test_stop_releases_initial_public_target_update_without_opening_another_socket(
+    manager, monkeypatch, sockets,
+):
+    factory = __import__(
+        'pytradekit.gateway.websocket.base_ws_manager', fromlist=['WebSocketApp'],
+    ).WebSocketApp
+
+    def hold_handshake(*args, **kwargs):
+        socket = factory(*args, **kwargs)
+        socket.open_gate.clear()
+        return socket
+
+    monkeypatch.setattr('pytradekit.gateway.websocket.base_ws_manager.WebSocketApp', hold_handshake)
+    manager._set_bookticker_symbols(frozenset())
+    errors = []
+
+    def update_targets():
+        try:
+            manager.update_bookticker_stream(['ETHUSDT'])
+        except Exception as error:
+            errors.append(error)
+
+    caller = Thread(target=update_targets, daemon=True)
+    caller.start()
+    try:
+        wait_for(lambda: sockets and sockets[0].started.is_set())
+        manager.close()
+        caller.join(timeout=1)
+        assert not caller.is_alive()
+        assert len(errors) == 1
+        assert manager.status == WebsocketStatus.STOP.name
+        assert len(sockets) == 1
+        assert manager._bookticker_symbols == frozenset()
+    finally:
+        manager.close()
+        caller.join(timeout=1)

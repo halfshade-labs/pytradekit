@@ -1619,20 +1619,25 @@ class MongodbOperations:
         return list(self.client[Database.arbitrage.name][collection_name].find(query)
                     .sort('created_ms', -1).limit(limit))
 
-    def read_cashflow_retry_windows(self, scope_id, since_ms, limit=2):
+    def read_cashflow_retry_windows(self, scope_id, since_ms, limit=2, *, profile_digest=None):
         """Oldest attempted partial window first; newer complete revisions retire it."""
         if not 1 <= limit <= 20:
             raise ValueError('Cashflow retry limit must be 1..20')
+        pending = {'status': 'partial'}
+        if profile_digest is not None:
+            pending['$nor'] = [{'retry_on_profile_change_only': True,
+                               'profile_digest': profile_digest}]
         pipeline = [
             {'$match': {'scope_id': scope_id, 'window_end_ms': {'$gte': since_ms}}},
             {'$sort': {'collected_ms': -1, '_id': -1}},
             {'$group': {'_id': {'start': '$window_start_ms', 'end': '$window_end_ms'}, 'batch': {'$first': '$$ROOT'}}},
             {'$replaceRoot': {'newRoot': '$batch'}},
-            {'$match': {'status': 'partial'}},
+            {'$match': pending},
             {'$sort': {'collected_ms': 1, '_id': 1}},
             {'$limit': limit},
         ]
-        return list(self.client[Database.arbitrage.name]['account_cashflow_batches'].aggregate(pipeline))
+        return list(self.client[Database.arbitrage.name]['account_cashflow_batches'].aggregate(
+            pipeline, maxTimeMS=5000))
 
     def read_trade_record_by_id(self, trade_id):
         params = {TradeRecordAttribute.trade_id.name: trade_id}

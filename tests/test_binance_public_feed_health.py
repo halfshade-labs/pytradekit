@@ -256,3 +256,118 @@ def test_late_open_of_retired_current_socket_preserves_health_and_connection_age
     assert manager.get_public_feed_health() == retired_health
     assert manager._connection_opened_ms == opened_ms
     assert manager._connection_age_ms() == 60_000
+
+
+def test_subscription_update_during_replacement_replays_the_final_target_set(manager):
+    """An added symbol sent on the old socket must be replayed on its replacement."""
+    manager._set_bookticker_symbols(frozenset({'BTCUSDT'}))
+    manager._subs = [{'method': 'SUBSCRIBE', 'params': ['btcusdt@bookTicker']}]
+    old_socket = manager.ws
+    added_on_old, release_update, replay_started, replay_done = (Event() for _ in range(4))
+    replacement = SimpleNamespace(sock=SimpleNamespace(connected=True), send=Mock())
+    original_send = old_socket.send
+    errors = []
+
+    def pause_after_old_send(message, **kwargs):
+        original_send(message, **kwargs)
+        if json.loads(message)['method'] == 'SUBSCRIBE':
+            added_on_old.set()
+            assert release_update.wait(2)
+
+    old_socket.send = pause_after_old_send
+
+    def update_targets():
+        try:
+            manager.update_bookticker_stream(['ETHUSDT'])
+        except Exception as error:
+            errors.append(error)
+
+    def replay_replacement():
+        try:
+            with manager._state_lock:
+                manager._generation += 1
+                manager.ws = replacement
+            manager._on_open(replacement)
+            replay_started.set()
+            manager._reconnect_streams()
+        except Exception as error:
+            errors.append(error)
+        finally:
+            replay_done.set()
+
+    updater, replay = Thread(target=update_targets), Thread(target=replay_replacement)
+    updater.start()
+    try:
+        assert added_on_old.wait(1)
+        replay.start()
+        assert replay_started.wait(1)
+        # On the buggy implementation replay can finish with the obsolete set.
+        # The repaired implementation keeps replay behind the target update.
+        replay_done.wait(0.1)
+    finally:
+        release_update.set()
+        updater.join(timeout=2)
+        if replay.ident is not None:
+            replay.join(timeout=2)
+    assert not updater.is_alive() and not replay.is_alive()
+    assert not errors
+    subscriptions = set()
+    for call in replacement.send.call_args_list:
+        message = json.loads(call.args[0])
+        if message['method'] == 'SUBSCRIBE':
+            subscriptions.update(message['params'])
+        else:
+            subscriptions.difference_update(message['params'])
+    assert subscriptions == {'ethusdt@bookTicker'}
+    manager._on_message(replacement, json.dumps(book(s='ETHUSDT')))
+    health = manager.get_public_feed_health()
+    assert health['expected_symbol_count'] == health['fresh_symbol_count'] == 1
+    assert health['first_valid_quote_ms'] == NOW
+
+
+def test_concurrent_target_updates_leave_only_the_final_subscriptions(manager):
+    manager._set_bookticker_symbols(frozenset({'BTCUSDT'}))
+    manager._subs = [{'method': 'SUBSCRIBE', 'params': ['btcusdt@bookTicker']}]
+    subscriptions = {'btcusdt@bookTicker'}
+    first_added, release_first, second_started, second_done = (Event() for _ in range(4))
+    errors = []
+
+    def broker_send(raw, **kwargs):
+        message = json.loads(raw)
+        if message['method'] == 'SUBSCRIBE':
+            subscriptions.update(message['params'])
+        else:
+            subscriptions.difference_update(message['params'])
+        if message['params'] == ['ethusdt@bookTicker'] and message['method'] == 'SUBSCRIBE':
+            first_added.set()
+            assert release_first.wait(2)
+
+    manager.ws.send = broker_send
+
+    def update(target, completed):
+        try:
+            if target == 'SOLUSDT':
+                second_started.set()
+            manager.update_bookticker_stream([target])
+        except Exception as error:
+            errors.append(error)
+        finally:
+            completed.set()
+
+    first = Thread(target=update, args=('ETHUSDT', Event()))
+    second = Thread(target=update, args=('SOLUSDT', second_done))
+    first.start()
+    try:
+        assert first_added.wait(1)
+        second.start()
+        assert second_started.wait(1)
+        second_done.wait(0.1)
+    finally:
+        release_first.set()
+        first.join(timeout=2)
+        if second.ident is not None:
+            second.join(timeout=2)
+    assert not first.is_alive() and not second.is_alive()
+    assert not errors
+    assert subscriptions == set(manager._subs[0]['params'])
+    assert subscriptions == {'solusdt@bookTicker'}
