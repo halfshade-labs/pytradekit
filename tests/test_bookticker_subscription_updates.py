@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from pytradekit.utils.dynamic_types import BinanceAuxiliary, BinanceWebSocket
+from pytradekit.utils.dynamic_types import BinanceAuxiliary, BinanceWebSocket, WebsocketStatus
 from pytradekit.ws.binance_ws import BinanceWsManager
 from pytradekit.ws.huobi_ws import HuobiWsManager
 from pytradekit.ws.okex_ws import OkexWsManager
@@ -11,6 +11,7 @@ from pytradekit.ws.subscription_update import SubscriptionUpdate
 
 def _make_binance_manager(mocker):
     manager = BinanceWsManager(mocker.Mock())
+    manager.status = WebsocketStatus.ACTIVE.name
     manager._bookticker_symbols = {"BTCUSDT", "XRPUSDT"}
     manager._subs = [
         {

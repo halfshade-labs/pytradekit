@@ -3,11 +3,13 @@ import hashlib
 from decimal import Decimal
 import hmac
 import base64
+import threading
+import time
 from typing import Any, Optional
 from urllib.parse import urlencode
 import requests
 import httpx
-from pytradekit.utils.time_handler import get_ok_timestamp
+from pytradekit.utils.time_handler import get_ok_timestamp, get_monotonic_timestamp_ns
 from pytradekit.utils.dynamic_types import (
     HttpMmthod,
     InstCodeType,
@@ -20,6 +22,45 @@ from pytradekit.utils.exceptions import ExchangeException
 
 SYNC_HTTP_TIMEOUT = (5, 30)
 ASYNC_HTTP_TIMEOUT = httpx.Timeout(30, connect=5)
+_FUNDING_BILLS_INTERVAL_S = 1.0
+_funding_bills_gates = {}
+_funding_bills_registry_lock = threading.Lock()
+
+
+def _funding_monotonic():
+    return get_monotonic_timestamp_ns() / 1_000_000_000
+
+
+class _FundingBillsGate:
+    """Serialize this process's account reads with the endpoint's 1/s limit."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.ready_at = 0
+
+    def request(self, fetch, deadline):
+        remaining = None if deadline is None else deadline - _funding_monotonic()
+        if remaining is not None and remaining <= 0:
+            raise TimeoutError('Funding bills request deadline exhausted')
+        acquired = self.lock.acquire() if remaining is None else self.lock.acquire(timeout=remaining)
+        if not acquired:
+            raise TimeoutError('Funding bills request deadline exhausted')
+        try:
+            delay = max(0, self.ready_at - _funding_monotonic())
+            if deadline is not None and _funding_monotonic() + delay >= deadline:
+                raise TimeoutError('Funding bills request deadline exhausted')
+            if delay:
+                time.sleep(delay)
+            if deadline is not None and _funding_monotonic() >= deadline:
+                raise TimeoutError('Funding bills request deadline exhausted')
+            try:
+                return fetch()
+            finally:
+                # Failed requests also consume the exchange quota. Waiting from
+                # completion avoids variable network latency shortening arrivals.
+                self.ready_at = _funding_monotonic() + _FUNDING_BILLS_INTERVAL_S
+        finally:
+            self.lock.release()
 
 
 class OkexClient:
@@ -201,11 +242,18 @@ class OkexClient:
         return self._send_request(OkexAuxiliary.url_withdraw_history.value,
                                   method=HttpMmthod.GET.name, params=params, use_sign=True)
 
-    def get_funding_bills_history(self, **page):
-        """Funding monetary evidence, paginated by billId (pagingType=2)."""
+    def get_funding_bills_history(self, *, deadline_monotonic=None, **page):
+        """GET billId pages at 1/s per account in this process; never replay.
+
+        The optional monotonic deadline bounds admission, not an in-flight HTTP
+        request. Other processes still share the exchange's user-ID quota.
+        """
         params = {'pagingType': '2', 'limit': 100, **page}
-        return self._send_request('/api/v5/asset/bills-history',
-                                 method=HttpMmthod.GET.name, params=params, use_sign=True)
+        owner = getattr(self, 'account_id', None) or getattr(self, 'api_key', None) or id(self)
+        with _funding_bills_registry_lock:
+            gate = _funding_bills_gates.setdefault(owner, _FundingBillsGate())
+        return gate.request(lambda: self._send_request('/api/v5/asset/bills-history',
+            method=HttpMmthod.GET.name, params=params, use_sign=True), deadline_monotonic)
 
     def get_trading_bills_archive(self, **page):
         return self._send_request('/api/v5/account/bills-archive',

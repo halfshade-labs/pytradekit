@@ -91,3 +91,17 @@ def test_retry_query_retires_complete_revisions_before_selecting_oldest_partial(
     assert pipeline[1] == {'$sort': {'collected_ms': -1, '_id': -1}}
     assert pipeline[4] == {'$match': {'status': 'partial'}}
     assert pipeline[-2:] == [{'$sort': {'collected_ms': 1, '_id': 1}}, {'$limit': 2}]
+
+
+def test_retry_filter_precedes_limit_and_retains_legacy_or_changed_profiles():
+    mongo = object.__new__(MongodbOperations)
+    collection = Mock()
+    collection.aggregate.return_value = []
+    mongo.client = {'arbitrage': {'account_cashflow_batches': collection}}
+    mongo.read_cashflow_retry_windows('scope', 123, limit=2, profile_digest='reviewed-profile')
+    pipeline = collection.aggregate.call_args.args[0]
+    assert pipeline[4] == {'$match': {
+        'status': 'partial',
+        '$nor': [{'retry_on_profile_change_only': True, 'profile_digest': 'reviewed-profile'}]}}
+    assert pipeline[-1] == {'$limit': 2}
+    assert collection.aggregate.call_args.kwargs == {'maxTimeMS': 5000}
