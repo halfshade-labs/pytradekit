@@ -5,7 +5,7 @@ from typing import Iterable, List
 
 import requests
 
-from pytradekit.utils.dynamic_types import BinanceAuxiliary, BinanceWebSocket, WebsocketStatus
+from pytradekit.utils.dynamic_types import BinanceAuxiliary, BinanceWebSocket, ExchangeId, WebsocketStatus
 from pytradekit.gateway.websocket.ws_manager import WsManager
 from pytradekit.utils.time_handler import (
     get_timestamp_ms, get_timestamp_s, get_millisecond_str, get_datetime,
@@ -186,7 +186,7 @@ class BinanceWsManager(WsManager):
 
     def _transport_log_context(self):
         return {
-            'exchange': 'BN', 'stream_id': self._bookticker_health.stream_id,
+            'exchange': ExchangeId.BN.name, 'stream_id': self._bookticker_health.stream_id,
             'market': 'perp' if self._is_perp else 'spot',
             'stream_kind': 'public_bookticker' if self._public_bookticker else (
                 'private_user_data' if self._api_key else 'unspecified'

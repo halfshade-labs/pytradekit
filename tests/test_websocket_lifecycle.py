@@ -1,11 +1,12 @@
 """Exercise reconnect races without exchange access or real WebSocket I/O."""
-from threading import Event, Thread
+from threading import Event, Thread, current_thread
 from time import monotonic
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
 
+from pytradekit.gateway.websocket import base_ws_manager
 from pytradekit.gateway.websocket.base_ws_manager import BaseWebsocketManager
 from pytradekit.utils.dynamic_types import WebsocketStatus
 from pytradekit.ws.binance_ws import BinanceWsManager
@@ -29,6 +30,7 @@ class FakeSocket:
         self.open_gate = Event()
         self.open_gate.set()
         self.started = Event()
+        self.opened = Event()
         self.finished = Event()
         self.raise_on_run = False
         self.sent = []
@@ -48,6 +50,7 @@ class FakeSocket:
                 return
             self.sock = SimpleNamespace(connected=True)
             self.callbacks['on_open'](self)
+            self.opened.set()
             self.stop.wait(3)
             self.sock.connected = False
             self.callbacks['on_close'](self, 1006, 'synthetic close')
@@ -461,43 +464,61 @@ def test_retired_callback_cannot_overwrite_transport_diagnostics(manager, socket
     assert before['error_errno'] is None and before['protocol_pong_received_ms'] is None
 
 
+def patch_callback_clock(monkeypatch, values):
+    """Script only this thread; lifecycle work keeps the real monotonic clock."""
+    callback_thread = current_thread()
+    real_clock = base_ws_manager.get_monotonic_timestamp_ns
+    ticks = iter(values)
+
+    def clock_for_thread():
+        if current_thread() is callback_thread:
+            return next(ticks)
+        return real_clock()
+
+    monkeypatch.setattr(base_ws_manager, 'get_monotonic_timestamp_ns', clock_for_thread)
+
+
 def test_callback_failure_and_slow_callback_include_timing_without_payload(manager, sockets, monkeypatch):
     def failed_message(*args):
         raise ValueError('SENSITIVE_CALLBACK')
     manager._on_message = failed_message
     manager.connect()
-    manager.reconnect = Mock()
-    ticks = iter([1_000_000_000, 1_150_000_000])
-    monkeypatch.setattr('pytradekit.gateway.websocket.base_ws_manager.get_monotonic_timestamp_ns',
-                        lambda: next(ticks))
     socket = sockets[0]
-    socket.callbacks['on_message'](socket, 'SENSITIVE_PAYLOAD')
-    diagnostic = manager.get_connection_health()['transport']
-    assert diagnostic['callback_event'] == 'message'
-    assert diagnostic['callback_duration_ms'] == 150
-    assert diagnostic['error_phase'] == 'callback'
-    assert diagnostic['error_errno'] is None
-    assert 'SENSITIVE_' not in str(manager.logger.mock_calls)
-    assert 'callback_error' in str(manager.logger.mock_calls)
-    monkeypatch.undo()
+    assert socket.opened.wait(1), 'wrapped on_open did not complete'
+    manager.reconnect = Mock()
+    with monkeypatch.context() as clock_patch:
+        patch_callback_clock(clock_patch, [1_000_000_000, 1_150_000_000])
+        socket.callbacks['on_message'](socket, 'SENSITIVE_PAYLOAD')
+        diagnostic = manager.get_connection_health()['transport']
+        assert diagnostic['callback_event'] == 'message'
+        assert diagnostic['callback_duration_ms'] == 150
+        assert diagnostic['error_phase'] == 'callback'
+        assert diagnostic['error_type'] == 'ValueError'
+        assert diagnostic['error_errno'] is None
+        assert 'SENSITIVE_' not in str(manager.logger.mock_calls)
+        assert 'callback_error' in str(manager.logger.mock_calls)
+        manager.reconnect.assert_called_once_with(socket)
     manager.close()
 
 
 def test_successful_slow_callback_is_logged_without_per_message_logging(manager, sockets, monkeypatch):
     manager._on_message = Mock()
     manager.connect()
-    ticks = iter([1_000_000_000, 1_150_000_000, 2_000_000_000, 2_001_000_000])
-    monkeypatch.setattr('pytradekit.gateway.websocket.base_ws_manager.get_monotonic_timestamp_ns',
-                        lambda: next(ticks))
     socket = sockets[0]
-    manager.logger.reset_mock()
-    socket.callbacks['on_message'](socket, 'SENSITIVE_SLOW_PAYLOAD')
-    assert 'callback_slow' in str(manager.logger.mock_calls)
-    manager.logger.reset_mock()
-    socket.callbacks['on_message'](socket, 'SENSITIVE_FAST_PAYLOAD')
-    manager.logger.debug.assert_not_called()
-    monkeypatch.undo()
-
+    assert socket.opened.wait(1), 'wrapped on_open did not complete'
+    manager.reconnect = Mock()
+    with monkeypatch.context() as clock_patch:
+        patch_callback_clock(clock_patch, [1_000_000_000, 1_150_000_000, 2_000_000_000, 2_001_000_000])
+        manager.logger.reset_mock()
+        socket.callbacks['on_message'](socket, 'SENSITIVE_SLOW_PAYLOAD')
+        assert manager.get_connection_health()['transport']['callback_duration_ms'] == 150
+        assert 'callback_slow' in str(manager.logger.mock_calls)
+        assert 'SENSITIVE_' not in str(manager.logger.mock_calls)
+        manager.logger.reset_mock()
+        socket.callbacks['on_message'](socket, 'SENSITIVE_FAST_PAYLOAD')
+        assert manager.get_connection_health()['transport']['callback_duration_ms'] == 1
+        manager.logger.debug.assert_not_called()
+        manager.reconnect.assert_not_called()
 
 
 def test_run_error_before_open_retains_connecting_phase_in_safe_log(manager, monkeypatch, sockets):

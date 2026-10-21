@@ -4,7 +4,7 @@ import base64
 from decimal import Decimal
 from typing import Iterable, List
 
-from pytradekit.utils.dynamic_types import OkexAuxiliary, OkexWebSocket, WebsocketStatus
+from pytradekit.utils.dynamic_types import ExchangeId, OkexAuxiliary, OkexWebSocket, WebsocketStatus
 from pytradekit.gateway.websocket.ws_manager import WsManager
 from pytradekit.utils.time_handler import get_timestamp_s, get_millisecond_str, get_datetime
 from pytradekit.ws.subscription_update import (
@@ -43,7 +43,7 @@ class OkexWsManager(WsManager):
 
     def _transport_log_context(self):
         return {
-            'exchange': 'OKX', 'stream_id': self._transport_stream_id,
+            'exchange': ExchangeId.OKX.name, 'stream_id': self._transport_stream_id,
             'stream_kind': 'public' if self._is_public else 'private', 'market': 'spot',
         }
 
