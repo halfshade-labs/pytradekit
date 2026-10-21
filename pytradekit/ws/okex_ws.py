@@ -41,6 +41,12 @@ class OkexWsManager(WsManager):
         self._orders_subscribed = False
         self._pending_pong_socket = None
 
+    def _transport_log_context(self):
+        return {
+            'exchange': 'OKX', 'stream_id': self._transport_stream_id,
+            'stream_kind': 'public' if self._is_public else 'private', 'market': 'spot',
+        }
+
     def get_signature(self, params):
         mac = hmac.new(bytes(self._api_secret, encoding='utf8'), bytes(params, encoding='utf-8'), digestmod='sha256')
         return base64.b64encode(mac.digest())
@@ -79,15 +85,18 @@ class OkexWsManager(WsManager):
         if ws is None:
             return
         if self._pending_pong_socket is ws:
-            self.logger.debug("okx heartbeat pong timeout")
+            self._record_transport_close(ws, 'heartbeat_timeout')
+            self._log_transport_event('heartbeat_timeout', ws)
             self.reconnect(ws)
             return
         # Set before send: a fast pong callback may run before send returns.
         self._pending_pong_socket = ws
         try:
+            self._record_heartbeat(ws, 'application_ping_attempt_ms')
             self.send("ping")
+            self._record_heartbeat(ws, 'application_ping_sent_ms')
         except Exception as error:
-            self.logger.debug(f"okx heartbeat error_type={type(error).__name__}")
+            self._log_transport_event('heartbeat_error', ws, error)
             self.reconnect(ws)
 
     def _on_open(self, ws, *args, **kwargs):
@@ -223,6 +232,7 @@ class OkexWsManager(WsManager):
     def _on_message(self, _ws, message):
         try:
             if message == 'pong':
+                self._record_heartbeat(_ws, 'application_pong_received_ms')
                 if self._pending_pong_socket is _ws:
                     self._pending_pong_socket = None
                 return

@@ -176,3 +176,32 @@ def test_non_target_or_failed_orders_ack_does_not_mark_ready(ack):
     manager._on_message(manager.ws, json.dumps(ack))
     assert not manager.get_connection_health()['connected']
     assert not manager.get_connection_health()['subscribed']
+
+
+def test_failed_application_ping_is_attempt_evidence_without_successful_send():
+    manager = make_manager()
+    manager.send = Mock(side_effect=OSError(104, 'test-private-ping-error'))
+    manager.reconnect = Mock()
+    manager._send_heartbeat()
+    diagnostic = manager.get_connection_health()['transport']
+    assert diagnostic['application_ping_attempt_ms'] is not None
+    assert diagnostic['application_ping_sent_ms'] is None
+    assert diagnostic['error_errno'] == 104
+    assert 'test-private-ping-error' not in str(manager.logger.mock_calls)
+    manager.reconnect.assert_called_once_with(manager.ws)
+
+
+def test_fast_application_pong_does_not_turn_send_attempt_into_premature_success():
+    manager = make_manager()
+    during_send = []
+    def immediate_pong(_):
+        during_send.append(manager.get_connection_health()['transport'])
+        manager._on_message(manager.ws, 'pong')
+    manager.send = Mock(side_effect=immediate_pong)
+    manager._send_heartbeat()
+    assert during_send[0]['application_ping_attempt_ms'] is not None
+    assert during_send[0]['application_ping_sent_ms'] is None
+    diagnostic = manager.get_connection_health()['transport']
+    assert diagnostic['application_ping_sent_ms'] is not None
+    assert diagnostic['application_pong_received_ms'] is not None
+    assert manager._pending_pong_socket is None
