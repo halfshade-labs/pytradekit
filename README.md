@@ -428,3 +428,29 @@ except ExchangeException as e:
 ---
 
 **⚠️ 风险提示**: 数字货币交易存在高风险，使用本工具进行交易时请务必做好风险管理。本工具仅供学习和研究使用，使用者需自行承担交易风险。
+
+
+### WebSocket transport diagnostics
+
+`get_connection_health()["transport"]` 返回当前 connection generation 的有界诊断快照。
+BN 使用已有 `stream_id`，并区分 spot/perp 与 public bookticker/private user data；
+OKX 区分 public/private（当前 private orders 为 SPOT）。替换 socket 时重置诊断，旧 socket
+的 callback 不更新当前快照。health 的 generation 和 transport 在同一短临界区内复制。
+每次 callback 开始时，event/start 一起更新，finished/duration 清空，避免混入上次完成值。
+
+`phase` 为 `connecting`、`open` 或 `closed`；`error_phase` 保留错误发生时的阶段
+（callback 自身抛异常时为 `callback`）。`error_errno` 只读取数值 errno，最多沿 cause/context
+检查 8 层；未知值为 null。协议 ping/pong callback 和 OKX application ping/pong 分开记录，
+未观察到的时间为 null，不推断对端收包、网络故障根因或未收到的 pong。
+`application_ping_attempt_ms` 是本次调用 send 前的时间，同时清空该次的
+`application_ping_sent_ms`；只有 send 正常返回才记录 sent 时间。失败只保留 attempt，
+成功发送也不证明对端已收到。快速 pong 仍可在 send 返回前被观察并清除 pending 状态。
+callback 起止为 UTC 毫秒，耗时使用 monotonic clock；100 ms 以上或异常的 callback 才额外
+写 debug。生命周期/错误日志只使用固定字段，不记录 URL、payload、account ID、credential、
+exception text 或远端 close reason。`local_close_reason` 仅为固定本地枚举。快照不保留历史
+message，不改变重连、backoff、订阅或 OKX application heartbeat 的行为。
+
+每个 generation 只输出一次 `terminal` debug 摘要。run exit、detached socket 的本地
+close error，以及退休前已开始的 callback 完成日志持有当时的安全 context 和诊断引用，
+因此替换 socket 后仍可记录原 generation 的 timing/error；这些引用不覆盖新 generation，
+也不构成无界历史存储。退休之后才开始的 callback 仍被抑制。

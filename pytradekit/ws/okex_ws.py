@@ -4,7 +4,7 @@ import base64
 from decimal import Decimal
 from typing import Iterable, List
 
-from pytradekit.utils.dynamic_types import OkexAuxiliary, OkexWebSocket, WebsocketStatus
+from pytradekit.utils.dynamic_types import ExchangeId, OkexAuxiliary, OkexWebSocket, WebsocketStatus
 from pytradekit.gateway.websocket.ws_manager import WsManager
 from pytradekit.utils.time_handler import get_timestamp_s, get_millisecond_str, get_datetime
 from pytradekit.ws.subscription_update import (
@@ -40,6 +40,12 @@ class OkexWsManager(WsManager):
         self._logged_on = False
         self._orders_subscribed = False
         self._pending_pong_socket = None
+
+    def _transport_log_context(self):
+        return {
+            'exchange': ExchangeId.OKX.name, 'stream_id': self._transport_stream_id,
+            'stream_kind': 'public' if self._is_public else 'private', 'market': 'spot',
+        }
 
     def get_signature(self, params):
         mac = hmac.new(bytes(self._api_secret, encoding='utf8'), bytes(params, encoding='utf-8'), digestmod='sha256')
@@ -79,15 +85,18 @@ class OkexWsManager(WsManager):
         if ws is None:
             return
         if self._pending_pong_socket is ws:
-            self.logger.debug("okx heartbeat pong timeout")
+            self._record_transport_close(ws, 'heartbeat_timeout')
+            self._log_transport_event('heartbeat_timeout', ws)
             self.reconnect(ws)
             return
         # Set before send: a fast pong callback may run before send returns.
         self._pending_pong_socket = ws
         try:
+            self._record_heartbeat(ws, 'application_ping_attempt_ms')
             self.send("ping")
+            self._record_heartbeat(ws, 'application_ping_sent_ms')
         except Exception as error:
-            self.logger.debug(f"okx heartbeat error_type={type(error).__name__}")
+            self._log_transport_event('heartbeat_error', ws, error)
             self.reconnect(ws)
 
     def _on_open(self, ws, *args, **kwargs):
@@ -223,6 +232,7 @@ class OkexWsManager(WsManager):
     def _on_message(self, _ws, message):
         try:
             if message == 'pong':
+                self._record_heartbeat(_ws, 'application_pong_received_ms')
                 if self._pending_pong_socket is _ws:
                     self._pending_pong_socket = None
                 return

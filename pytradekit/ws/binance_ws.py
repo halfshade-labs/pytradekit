@@ -5,7 +5,7 @@ from typing import Iterable, List
 
 import requests
 
-from pytradekit.utils.dynamic_types import BinanceAuxiliary, BinanceWebSocket, WebsocketStatus
+from pytradekit.utils.dynamic_types import BinanceAuxiliary, BinanceWebSocket, ExchangeId, WebsocketStatus
 from pytradekit.gateway.websocket.ws_manager import WsManager
 from pytradekit.utils.time_handler import (
     get_timestamp_ms, get_timestamp_s, get_millisecond_str, get_datetime,
@@ -139,7 +139,8 @@ class BinanceWsManager(WsManager):
 
     def reconnect(self, ws=None, *, reason='connection_recovery'):
         if not self._public_bookticker:
-            return super().reconnect(ws)
+            return super().reconnect(ws, reason=reason)
+        self._record_transport_close(ws, reason)
         retired = False
         with self._state_lock:
             if not self._stop_event.is_set() and (ws is None or ws is self.ws):
@@ -183,6 +184,15 @@ class BinanceWsManager(WsManager):
     def _listen_key_kind(self):
         return 'SPOT' if self._is_spot() else 'PERP'
 
+    def _transport_log_context(self):
+        return {
+            'exchange': ExchangeId.BN.name, 'stream_id': self._bookticker_health.stream_id,
+            'market': 'perp' if self._is_perp else 'spot',
+            'stream_kind': 'public_bookticker' if self._public_bookticker else (
+                'private_user_data' if self._api_key else 'unspecified'
+            ),
+        }
+
     def _private_stream_log_context(self, kind=None):
         """Return diagnostics that cannot disclose a Binance listen key."""
         kind = kind or self._listen_key_kind()
@@ -191,7 +201,8 @@ class BinanceWsManager(WsManager):
         stream_kind = 'public_bookticker' if self._public_bookticker else (
             'private_user_data' if self._api_key else 'unspecified'
         )
-        return f"market={kind.lower()} stream_kind={stream_kind} listen_key_len={listen_key_len}"
+        return (f"market={kind.lower()} stream_kind={stream_kind} listen_key_len={listen_key_len} "
+                f"stream_id={self._bookticker_health.stream_id} generation={self._generation}")
 
     @staticmethod
     def _error_type(error):
@@ -637,7 +648,7 @@ class BinanceWsManager(WsManager):
         self.logger.debug(
             f"[bn_ws on_close] market={market} msg_count_so_far={self._msg_count} "
             f"close_code={close_code} connection_age_ms={self._connection_age_ms()} "
-            f"close_kwarg_names={list(kwargs)}"
+            f"stream_id={self._bookticker_health.stream_id} generation={self._generation}"
         )
         self.reconnect(ws, reason='socket_close')
 
