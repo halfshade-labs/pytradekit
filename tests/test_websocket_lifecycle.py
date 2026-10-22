@@ -95,6 +95,8 @@ def manager(sockets):
 
 def test_health_snapshot_reports_thread_failure_and_idle_business_stream(manager):
     manager.connect()
+    # sock.connected can be published before the socket thread enters on_open.
+    wait_for(lambda: manager.get_connection_health()['last_open_ms'] is not None)
     health = manager.get_connection_health()
     assert health['status'] == WebsocketStatus.ACTIVE.name
     assert health['connected'] and health['monitor_alive'] and health['socket_thread_alive']
@@ -457,6 +459,7 @@ def test_retired_callback_cannot_overwrite_transport_diagnostics(manager, socket
     manager.connect()
     old = sockets[0]
     manager._reconnect_with_new_url()
+    wait_for(lambda: manager.get_transport_diagnostics()['callback_finished_ms'] is not None)
     before = manager.get_connection_health()['transport']
     old.callbacks['on_error'](old, OSError(104, 'SENSITIVE_RETIRED'))
     old.callbacks['on_pong'](old, 'SENSITIVE_RETIRED')
@@ -707,3 +710,149 @@ def test_health_generation_and_transport_are_copied_before_replacement(manager, 
     assert not reader.is_alive() and not rotation.is_alive()
     assert result[0]['generation'] == result[0]['transport']['generation'] == 1
     assert manager.get_connection_health()['generation'] == 2
+
+
+@pytest.mark.parametrize('failed', [False, True])
+def test_close_during_started_callback_keeps_evidence_and_health_readable(
+    manager, sockets, failed,
+):
+    callback_entered, release_callback = Event(), Event()
+    close_entered, release_close = Event(), Event()
+    health_read = Event()
+    snapshots = []
+
+    def blocked_message(*args):
+        callback_entered.set()
+        assert release_callback.wait(2)
+        if failed:
+            raise OSError(104, 'test-private-close-callback')
+
+    def read_health():
+        snapshots.append(manager.get_connection_health())
+        health_read.set()
+
+    manager._on_message = blocked_message
+    manager.connect()
+    socket = sockets[0]
+    original_close = socket.close
+
+    def blocked_close(**kwargs):
+        if current_thread() is closer:
+            close_entered.set()
+            assert release_close.wait(2)
+        original_close(**kwargs)
+
+    socket.close = blocked_close
+    callback = Thread(target=socket.callbacks['on_message'], args=(socket, 'test-private-message'))
+    closer = Thread(target=manager.close)
+    reader = Thread(target=read_health)
+    callback.start()
+    try:
+        assert callback_entered.wait(1)
+        closer.start()
+        assert close_entered.wait(1)
+        reader.start()
+        assert health_read.wait(1), 'health reader waited on socket close I/O'
+        health = snapshots[0]
+        assert health['status'] == WebsocketStatus.STOP.name
+        assert not health['connected']
+        assert health['generation'] == health['transport']['generation'] == 1
+        assert health['transport']['phase'] == 'closed'
+        assert health['transport']['local_close_reason'] == 'stop'
+        socket.callbacks['on_error'](socket, OSError(5, 'test-private-late-error'))
+        assert manager.get_transport_diagnostics() == health['transport']
+        release_callback.set()
+        callback.join(timeout=1)
+        assert not callback.is_alive()
+        event = 'callback_error' if failed else 'callback_retired'
+        rows = transport_events(manager.logger, event)
+        assert len(rows) == 1
+        assert rows[0]['generation'] == 1 and rows[0]['phase'] == 'closed'
+        assert rows[0]['local_close_reason'] == 'stop'
+        assert rows[0]['callback_finished_ms'] is not None
+        assert rows[0]['callback_duration_ms'] is not None
+        if failed:
+            assert rows[0]['error_errno'] == 104
+            assert rows[0]['error_phase'] == 'callback'
+    finally:
+        release_callback.set()
+        release_close.set()
+        for thread in (callback, closer, reader):
+            if thread.ident is not None:
+                thread.join(timeout=1)
+                assert not thread.is_alive()
+    manager._monitorThread.join(timeout=1)
+    manager.close()
+    assert len(sockets) == 1
+    assert len(transport_events(manager.logger, 'terminal')) == 1
+    assert 'test-private-' not in str(manager.logger.mock_calls)
+
+
+def test_callback_can_close_its_socket_without_deadlocking_lifecycle(manager, sockets, monkeypatch):
+    callback_returned = Event()
+    callback_threads = []
+
+    def close_from_callback(*args):
+        callback_threads.append(current_thread())
+        manager.close()
+        callback_returned.set()
+
+    def run_with_message(socket, **kwargs):
+        socket.sock = SimpleNamespace(connected=True)
+        socket.callbacks['on_open'](socket)
+        socket.callbacks['on_message'](socket, 'test-private-stop')
+
+    monkeypatch.setattr(FakeSocket, 'run_forever', run_with_message)
+    manager._on_message = close_from_callback
+    manager.connect()
+    assert callback_returned.wait(1)
+    manager._socket_thread.join(timeout=1)
+    manager._monitorThread.join(timeout=1)
+    assert callback_threads == [manager._socket_thread]
+    assert not manager._socket_thread.is_alive() and not manager._monitorThread.is_alive()
+    assert manager.get_connection_health()['status'] == WebsocketStatus.STOP.name
+    assert len(sockets) == 1
+    assert len(transport_events(manager.logger, 'terminal')) == 1
+    rows = transport_events(manager.logger, 'callback_retired')
+    assert len(rows) == 1 and rows[0]['local_close_reason'] == 'stop'
+    assert 'test-private-' not in str(manager.logger.mock_calls)
+
+
+def test_delayed_close_error_survives_concurrent_terminal_summary(manager, sockets):
+    manager.connect()
+    socket = sockets[0]
+    close_entered, release_close = Event(), Event()
+    original_close = socket.close
+
+    def delayed_failure(**kwargs):
+        if current_thread() is closer:
+            close_entered.set()
+            assert release_close.wait(2)
+            original_close(**kwargs)
+            raise OSError(5, 'test-private-delayed-close')
+        original_close(**kwargs)
+
+    socket.close = delayed_failure
+    closer = Thread(target=manager.close)
+    closer.start()
+    try:
+        assert close_entered.wait(1)
+        # A second stop can emit terminal while the first close is still in I/O.
+        manager.close()
+        rows = transport_events(manager.logger, 'terminal')
+        assert len(rows) == 1 and rows[0]['generation'] == 1
+        assert rows[0]['local_close_reason'] == 'stop'
+    finally:
+        release_close.set()
+        closer.join(timeout=1)
+    manager._monitorThread.join(timeout=1)
+    assert not closer.is_alive() and not manager._monitorThread.is_alive()
+    errors = transport_events(manager.logger, 'close_error')
+    assert len(errors) == 1
+    assert errors[0]['generation'] == rows[0]['generation']
+    assert errors[0]['stream_id'] == rows[0]['stream_id']
+    assert errors[0]['phase'] == errors[0]['error_phase'] == 'closed'
+    assert errors[0]['error_errno'] == 5
+    assert len(transport_events(manager.logger, 'terminal')) == 1
+    assert len(sockets) == 1
+    assert 'test-private-' not in str(manager.logger.mock_calls)

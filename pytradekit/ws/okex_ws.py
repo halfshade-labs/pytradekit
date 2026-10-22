@@ -4,7 +4,10 @@ import base64
 from decimal import Decimal
 from typing import Iterable, List
 
+from websocket._abnf import ABNF
+
 from pytradekit.utils.dynamic_types import ExchangeId, OkexAuxiliary, OkexWebSocket, WebsocketStatus
+from pytradekit.utils.exceptions import ExchangeException
 from pytradekit.gateway.websocket.ws_manager import WsManager
 from pytradekit.utils.time_handler import get_timestamp_s, get_millisecond_str, get_datetime
 from pytradekit.ws.subscription_update import (
@@ -89,20 +92,30 @@ class OkexWsManager(WsManager):
             self._log_transport_event('heartbeat_timeout', ws)
             self.reconnect(ws)
             return
-        # Set before send: a fast pong callback may run before send returns.
-        self._pending_pong_socket = ws
         try:
-            self._record_heartbeat(ws, 'application_ping_attempt_ms')
-            self.send("ping")
-            self._record_heartbeat(ws, 'application_ping_sent_ms')
+            with self._semaphore:
+                with self._state_lock:
+                    if self._stop_event.is_set() or ws is not self.ws:
+                        return
+                    # Publish before send so a fast pong can clear it.
+                    self._pending_pong_socket = ws
+                self._record_heartbeat(ws, 'application_ping_attempt_ms')
+                if not self._is_connected(ws):
+                    raise ExchangeException("websocket is not connected")
+                # Keep send and evidence bound to this socket across recovery.
+                ws.send("ping", opcode=ABNF.OPCODE_TEXT)
+                self._record_heartbeat(ws, 'application_ping_sent_ms')
         except Exception as error:
             self._log_transport_event('heartbeat_error', ws, error)
             self.reconnect(ws)
 
     def _on_open(self, ws, *args, **kwargs):
-        self._pending_pong_socket = None
-        self._logged_on = False
-        self._orders_subscribed = False
+        with self._state_lock:
+            if self._stop_event.is_set() or ws is not self.ws:
+                return
+            self._pending_pong_socket = None
+            self._logged_on = False
+            self._orders_subscribed = False
 
     def _on_close(self, ws, *args, **kwargs):
         self._logged_on = False
@@ -233,8 +246,9 @@ class OkexWsManager(WsManager):
         try:
             if message == 'pong':
                 self._record_heartbeat(_ws, 'application_pong_received_ms')
-                if self._pending_pong_socket is _ws:
-                    self._pending_pong_socket = None
+                with self._state_lock:
+                    if self._pending_pong_socket is _ws:
+                        self._pending_pong_socket = None
                 return
             msg = json.loads(message)
             if self._handle_session_event(_ws, msg):
