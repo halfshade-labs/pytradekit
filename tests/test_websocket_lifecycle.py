@@ -707,3 +707,235 @@ def test_health_generation_and_transport_are_copied_before_replacement(manager, 
     assert not reader.is_alive() and not rotation.is_alive()
     assert result[0]['generation'] == result[0]['transport']['generation'] == 1
     assert manager.get_connection_health()['generation'] == 2
+
+
+@pytest.mark.parametrize('late_event', ['close', 'run_exit'])
+def test_old_recovery_request_during_backoff_is_consumed_before_next_socket(
+    manager, sockets, monkeypatch, late_event,
+):
+    manager.connect()
+    old = sockets[0]
+    original_wait = manager._wait_reconnect_delay
+    original_connected = manager._wait_connected
+    observed_requests = []
+    injected = Event()
+
+    def inject_retired_request(delay):
+        if not injected.is_set():
+            injected.set()
+            if late_event == 'close':
+                old.callbacks['on_close'](old, None, 'test-private-old-close')
+            else:
+                old.callbacks['on_close'] = lambda *args: None
+                old.stop.set()
+                manager._socket_thread.join(timeout=1)
+                assert not manager._socket_thread.is_alive()
+            assert manager._needRecovery.is_set()
+        return original_wait(0)
+
+    def observe_new_wait(socket):
+        observed_requests.append(manager._needRecovery.is_set())
+        return original_connected(socket)
+
+    monkeypatch.setattr(manager, '_wait_reconnect_delay', inject_retired_request)
+    monkeypatch.setattr(manager, '_wait_connected', observe_new_wait)
+    manager.reconnect(old)
+    wait_for(lambda: bool(observed_requests))
+    assert observed_requests == [False], 'retired recovery canceled the next generation'
+    wait_for(lambda: manager.get_connection_health()['connected'])
+    assert manager.get_connection_health()['generation'] == 2
+    assert not transport_events(manager.logger, 'connect_failed')
+    assert 'test-private-old-close' not in str(manager.logger.mock_calls)
+
+
+@pytest.mark.parametrize('exit_reason', [
+    'deadline_elapsed', 'recovery_requested', 'socket_thread_exit', 'stopped', 'socket_replaced',
+])
+def test_connection_wait_records_the_actual_exit_instead_of_implying_a_deadline(
+    manager, monkeypatch, exit_reason,
+):
+    socket = SimpleNamespace(sock=None)
+    manager.ws = socket
+    manager._socket_thread = SimpleNamespace(is_alive=lambda: exit_reason != 'socket_thread_exit')
+    if exit_reason == 'deadline_elapsed':
+        manager._connect_timeout_s = 0
+    elif exit_reason == 'recovery_requested':
+        manager._needRecovery.set()
+    elif exit_reason == 'stopped':
+        manager._stop_event.set()
+    elif exit_reason == 'socket_replaced':
+        manager.ws = None
+    monkeypatch.setattr(manager, '_close_socket', lambda *args: None)
+
+    assert manager._wait_connected(socket) is False
+    diagnostic = manager.get_transport_diagnostics()
+    assert diagnostic['connect_wait_result'] == exit_reason
+    assert type(diagnostic['connect_wait_ms']) is int and diagnostic['connect_wait_ms'] >= 0
+    manager._socket_thread = None
+
+
+def test_rotation_after_socket_detachment_is_not_consumed_by_new_connection(
+    manager, sockets, monkeypatch,
+):
+    manager.connect()
+    old = sockets[0]
+    original_disconnect = manager._disconnect
+    original_connected = manager._wait_connected
+    observed_requests = []
+    rotation_requested = Event()
+
+    def rotate_after_detachment():
+        original_disconnect()
+        if not rotation_requested.is_set():
+            rotation_requested.set()
+            manager._url = 'wss://example.invalid/test-private-rotated-stream'
+            manager.reconnect(reason='url_rotation')
+
+    def observe_new_wait(socket):
+        observed_requests.append(manager._needRecovery.is_set())
+        return original_connected(socket)
+
+    monkeypatch.setattr(manager, '_disconnect', rotate_after_detachment)
+    monkeypatch.setattr(manager, '_wait_connected', observe_new_wait)
+    manager.reconnect(old)
+    wait_for(lambda: bool(observed_requests))
+    assert observed_requests[0] is True
+    wait_for(lambda: manager.get_connection_health()['connected'])
+    assert manager.ws.url.endswith('test-private-rotated-stream')
+    assert all(row['local_close_reason'] != 'handshake_timeout'
+               for row in transport_events(manager.logger, 'connect_failed'))
+
+
+@pytest.mark.parametrize('failure', [
+    'deadline_elapsed', 'recovery_requested', 'socket_thread_exit',
+])
+def test_connect_failed_labels_only_an_observed_deadline_as_handshake_timeout(
+    manager, sockets, monkeypatch, failure,
+):
+    factory = base_ws_manager.WebSocketApp
+    original_wait = manager._wait_connected
+    injected = Event()
+
+    def fail_first_socket(*args, **kwargs):
+        socket = factory(*args, **kwargs)
+        if len(sockets) == 1:
+            socket.open_gate.clear()
+            if failure == 'socket_thread_exit':
+                socket.raise_on_run = True
+        return socket
+
+    def wait_after_failure(socket):
+        if not injected.is_set():
+            injected.set()
+            if failure == 'recovery_requested':
+                manager.reconnect(socket)
+            elif failure == 'socket_thread_exit':
+                manager._socket_thread.join(timeout=1)
+                assert not manager._socket_thread.is_alive()
+        return original_wait(socket)
+
+    monkeypatch.setattr(base_ws_manager, 'WebSocketApp', fail_first_socket)
+    monkeypatch.setattr(manager, '_wait_connected', wait_after_failure)
+    manager.connect()
+    failed = transport_events(manager.logger, 'connect_failed')
+    assert len(failed) == 1 and failed[0]['generation'] == 1
+    assert failed[0]['connect_wait_result'] == failure
+    assert (failed[0]['local_close_reason'] == 'handshake_timeout') == (failure == 'deadline_elapsed')
+    if failure == 'deadline_elapsed':
+        assert failed[0]['connect_wait_ms'] >= 60
+    assert manager.get_connection_health()['generation'] == 2
+    assert manager.get_connection_health()['transport']['connect_wait_result'] == 'connected'
+
+
+def test_stopping_a_pending_connection_logs_its_wait_result_after_terminal(
+    manager, sockets, monkeypatch,
+):
+    entered, release = Event(), Event()
+    factory = base_ws_manager.WebSocketApp
+    original_wait = manager._wait_connected
+
+    def hold_handshake(*args, **kwargs):
+        socket = factory(*args, **kwargs)
+        socket.open_gate.clear()
+        return socket
+
+    def hold_connection_wait(socket):
+        entered.set()
+        assert release.wait(2)
+        return original_wait(socket)
+
+    monkeypatch.setattr(base_ws_manager, 'WebSocketApp', hold_handshake)
+    monkeypatch.setattr(manager, '_wait_connected', hold_connection_wait)
+    caller = Thread(target=manager.connect)
+    caller.start()
+    try:
+        assert entered.wait(1)
+        manager.close()
+        terminal = transport_events(manager.logger, 'terminal')
+        assert len(terminal) == 1 and terminal[0]['connect_wait_result'] is None
+        release.set()
+        caller.join(timeout=1)
+        manager._monitorThread.join(timeout=1)
+        assert not caller.is_alive() and not manager._monitorThread.is_alive()
+        failed = transport_events(manager.logger, 'connect_failed')
+        assert len(failed) == 1 and failed[0]['generation'] == terminal[0]['generation'] == 1
+        assert failed[0]['connect_wait_result'] == 'stopped'
+        assert failed[0]['local_close_reason'] == 'stop'
+        assert len(transport_events(manager.logger, 'terminal')) == 1
+        assert len(sockets) == 1
+    finally:
+        release.set()
+        manager.close()
+        caller.join(timeout=1)
+
+
+@pytest.mark.parametrize('stream', ['private', 'public'])
+@pytest.mark.parametrize('blocking_stage', ['close', 'join'])
+def test_rotation_during_detached_socket_cleanup_keeps_its_reason_for_next_generation(
+    manager, sockets, monkeypatch, stream, blocking_stage,
+):
+    if stream == 'public':
+        manager._set_bookticker_symbols(frozenset({'BTCUSDT'}))
+    manager.connect()
+    old = sockets[0]
+    old_evidence = manager._transport_evidence
+    entered, release = Event(), Event()
+    target = old if blocking_stage == 'close' else manager._socket_thread
+    original_cleanup = getattr(target, blocking_stage)
+
+    def block_old_cleanup(*args, **kwargs):
+        if not entered.is_set():
+            entered.set()
+            assert release.wait(2)
+        return original_cleanup(*args, **kwargs)
+
+    def rotate_detached_stream():
+        manager._url = 'wss://example.invalid/test-private-detached-rotation'
+        manager.reconnect(reason='url_rotation')
+
+    monkeypatch.setattr(target, blocking_stage, block_old_cleanup)
+    manager.reconnect(old)
+    rotation = Thread(target=rotate_detached_stream)
+    try:
+        assert entered.wait(1)
+        assert manager.ws is None and not manager._needRecovery.is_set()
+        rotation.start()
+        rotation.join(timeout=1)
+        assert not rotation.is_alive(), 'detached socket cleanup held the state lock'
+        assert manager._needRecovery.is_set()
+        release.set()
+        wait_for(lambda: manager.get_connection_health()['connected'])
+        failed = transport_events(manager.logger, 'connect_failed')
+        assert len(failed) == 1 and failed[0]['generation'] == 2
+        assert failed[0]['connect_wait_result'] == 'recovery_requested'
+        assert failed[0]['local_close_reason'] == 'url_rotation'
+        assert old_evidence.state['local_close_reason'] != 'url_rotation'
+        assert all(row['local_close_reason'] != 'url_rotation'
+                   for row in transport_events(manager.logger, 'terminal') if row['generation'] == 1)
+        assert manager.get_connection_health()['generation'] == 3
+        assert manager.ws.url.endswith('test-private-detached-rotation')
+        assert 'test-private-detached-rotation' not in str(manager.logger.mock_calls)
+    finally:
+        release.set()
+        if rotation.ident is not None:
+            rotation.join(timeout=1)
