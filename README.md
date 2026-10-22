@@ -445,10 +445,12 @@ OKX 区分 public/private（当前 private orders 为 SPOT）。替换 socket �
 `application_ping_attempt_ms` 是本次调用 send 前的时间，同时清空该次的
 `application_ping_sent_ms`；只有 send 正常返回才记录 sent 时间。失败只保留 attempt，
 成功发送也不证明对端已收到。快速 pong 仍可在 send 返回前被观察并清除 pending 状态。
+OKX heartbeat 在发送锁内核对原 socket；等待发送时若该 socket 已被替换，本轮跳过，
+下轮由新连接重新发起 ping，避免新 socket 收到没有对应 pending/诊断的旧连接 ping。
 callback 起止为 UTC 毫秒，耗时使用 monotonic clock；100 ms 以上或异常的 callback 才额外
 写 debug。生命周期/错误日志只使用固定字段，不记录 URL、payload、account ID、credential、
 exception text 或远端 close reason。`local_close_reason` 仅为固定本地枚举。快照不保留历史
-message，不改变重连、backoff、订阅或 OKX application heartbeat 的行为。
+message；诊断快照本身不改变重连、backoff、订阅或 OKX application heartbeat 的间隔。
 
 每个 generation 只输出一次 `terminal` debug 摘要。run exit、detached socket 的本地
 close error，以及退休前已开始的 callback 完成日志持有当时的安全 context 和诊断引用，
@@ -465,3 +467,24 @@ pending 请求只保留固定枚举 reason，并在 detach 消费；清理旧 so
 收到的新请求不修改旧 generation 的诊断。若它取消下一代，`connect_failed` 保留其 reason。
 STOP 早于 wait 完成时，已保留的 generation 仍补记 `connect_failed` 的 `stopped` 结果，
 不会再次输出该 generation 的 `terminal`。
+`terminal` 是当时的终态快照，不等待已开始的 callback 或所有并发 close I/O 完成。
+晚到的 callback 完成或 close error 使用独立事件保留原 generation；排查时应按
+`stream_id`/`generation` 关联这些事件，而不能只读 terminal 推断完整收尾顺序。
+
+数据源时间与 transport 接收时间使用不同契约：BN `get_public_feed_health()` 优先取
+整数 `E`，缺失（含 null）时取 `T`；只有 spot 同时缺少二者时才以本地接收时间观察新鲜度。
+首条有效 quote 的源时间延迟包含 0 和 1000 ms 边界，后续 freshness 同时检查本地接收
+时间和源时间。未来时间、错误类型或错误单位不能因为 callback 刚完成就被认作 fresh。
+freshness 在每次查询时按当前时钟重算；首条有效 quote 指标只在接收并接受报价时记录。
+OKX ticker 保留原始字符串 `ts`；其 transport health 不判断报价源时间新鲜度，下游仍须
+验证 `ts`。这些健康观察均不替代交易执行前的报价校验。
+
+本地并发与时间边界回归（Python 3.11，无交易所连接）：
+
+```bash
+python -m pytest -o addopts= tests/test_websocket_lifecycle.py tests/test_okex_ws_keepalive.py tests/test_ws_source_timestamp_boundaries.py -q
+```
+
+测试覆盖阻塞 close 时的 health 读取、close 与已开始 callback 的交错、terminal 去重、
+晚到 close error 的身份和脱敏，以及 BN/OKX 源时间类型、单位和新鲜度边界。
+这些回归不代表生产自然断线/恢复已验收；实际恢复仍需另行观察重连、订阅确认和有效报价。
