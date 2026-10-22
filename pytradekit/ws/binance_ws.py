@@ -140,17 +140,15 @@ class BinanceWsManager(WsManager):
     def reconnect(self, ws=None, *, reason='connection_recovery'):
         if not self._public_bookticker:
             return super().reconnect(ws, reason=reason)
-        self._record_transport_close(ws, reason)
         retired = False
         with self._state_lock:
             if not self._stop_event.is_set() and (ws is None or ws is self.ws):
+                reason = self._request_recovery_locked(reason)
                 retired = self._bookticker_health.retire(
                     self._generation, get_timestamp_ms(), reason,
                 )
                 # Publish retirement and the recovery request in one critical
                 # section; a concurrent replacement must not split them.
-                self._ready.clear()
-                self._needRecovery.set()
                 if retired:
                     snapshot = self._public_feed_snapshot()
         if retired:

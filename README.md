@@ -457,6 +457,16 @@ close error，以及退休前已开始的 callback 完成日志持有当时的�
 因此替换 socket 后仍可记录原 generation 的 timing/error；这些引用不覆盖新 generation，
 也不构成无界历史存储。退休之后才开始的 callback 仍被抑制。
 
+连接等待保留 `connect_wait_result` 固定结果：`connected`、`deadline_elapsed`、
+`recovery_requested`、`socket_thread_exit`、`stopped`、`socket_replaced`；
+`connect_wait_ms` 为 monotonic 毫秒耗时。只有实际等待 deadline 到期才使用本地关闭标签
+`handshake_timeout`；`connecting` 阶段仍不能单独区分 DNS、TCP、TLS 或 HTTP Upgrade。
+socket detach 在同一临界区消费旧代次的恢复请求，避免 backoff 中的重复 close/run-exit
+请求取消下一代连接；detach 后的新恢复或 URL rotation 请求继续保留，STOP 不再开启连接。
+pending 请求只保留固定枚举 reason，并在 detach 消费；清理旧 socket 的 close/join 期间
+收到的新请求不修改旧 generation 的诊断。若它取消下一代，`connect_failed` 保留其 reason。
+STOP 早于 wait 完成时，已保留的 generation 仍补记 `connect_failed` 的 `stopped` 结果，
+不会再次输出该 generation 的 `terminal`。
 `terminal` 是当时的终态快照，不等待已开始的 callback 或所有并发 close I/O 完成。
 晚到的 callback 完成或 close error 使用独立事件保留原 generation；排查时应按
 `stream_id`/`generation` 关联这些事件，而不能只读 terminal 推断完整收尾顺序。

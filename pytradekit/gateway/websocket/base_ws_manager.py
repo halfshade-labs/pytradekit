@@ -35,6 +35,7 @@ def _new_transport_diagnostics(generation):
         'protocol_ping_received_ms', 'protocol_pong_received_ms',
         'application_ping_attempt_ms', 'application_ping_sent_ms', 'application_pong_received_ms',
         'run_exit_ms',
+        'connect_wait_result', 'connect_wait_ms',
         'callback_event', 'callback_started_ms', 'callback_finished_ms', 'callback_duration_ms',
     ))
     state.update(generation=generation, phase='connecting')
@@ -70,6 +71,7 @@ class BaseWebsocketManager:
         self._state_lock = Lock()
         self._stop_event = Event()
         self._needRecovery = Event()
+        self._pending_recovery_reason = None
         self._ready = Event()
         self._monitorThread = None
         self._socket_thread = None
@@ -124,9 +126,20 @@ class BaseWebsocketManager:
     def reconnect(self, ws=None, *, reason='connection_recovery') -> None:
         with self._state_lock:
             if not self._stop_event.is_set() and (ws is None or ws is self.ws):
-                self._set_local_close_reason(reason)
-                self._ready.clear()
-                self._needRecovery.set()
+                self._request_recovery_locked(reason)
+
+    def _request_recovery_locked(self, reason):
+        reason = reason if reason in LOCAL_CLOSE_REASONS else 'connection_recovery'
+        if (reason in {'stop', 'url_rotation'}
+                or self._pending_recovery_reason in {None, 'connection_recovery'}):
+            self._pending_recovery_reason = reason
+        # A request made while detached belongs to the next attempt, not the
+        # retained evidence for a socket whose cleanup may still be running.
+        if self.ws is not None:
+            self._set_local_close_reason(reason)
+        self._ready.clear()
+        self._needRecovery.set()
+        return reason
 
     def connect(self):
         with self._state_lock:
@@ -155,6 +168,7 @@ class BaseWebsocketManager:
             ws = self.ws
             evidence = self._transport_evidence
             self.ws = None
+            self._pending_recovery_reason = None
         self._close_socket(ws, evidence)
         self._emit_transport_terminal(evidence)
 
@@ -212,9 +226,11 @@ class BaseWebsocketManager:
         with self._state_lock:
             return self._transport_evidence if ws is self.ws else None
 
-    def _record_transport_close(self, ws, reason):
+    def _record_transport_close(self, ws, reason, evidence=None):
         with self._state_lock:
-            if not self._stop_event.is_set() and (ws is None or ws is self.ws):
+            if evidence is not None:
+                self._set_local_close_reason(reason, evidence)
+            elif not self._stop_event.is_set() and (ws is None or ws is self.ws):
                 self._set_local_close_reason(reason)
 
     def _record_heartbeat(self, ws, event):
@@ -278,7 +294,9 @@ class BaseWebsocketManager:
 
     def _monitor_connection(self):
         if self._generation == 0 and self.ws is None:
-            self._needRecovery.clear()
+            with self._state_lock:
+                self._needRecovery.clear()
+                self._pending_recovery_reason = None
             self._connect()
             return
         socket_thread = self._socket_thread
@@ -320,8 +338,11 @@ class BaseWebsocketManager:
             )
             self._socket_thread.start()
         if not self._wait_connected(ws):
-            self._record_transport_close(ws, 'handshake_timeout')
-            self._log_transport_event('connect_failed', ws)
+            reason = ('handshake_timeout'
+                      if evidence.state['connect_wait_result'] == 'deadline_elapsed'
+                      else 'connection_recovery')
+            self._record_transport_close(ws, reason, evidence)
+            self._log_transport_event('connect_failed', ws, evidence=evidence)
             self._disconnect()
             return
         with self._state_lock:
@@ -330,16 +351,38 @@ class BaseWebsocketManager:
                 self._ready.set()
 
     def _wait_connected(self, ws):
-        deadline_ns = get_monotonic_timestamp_ns() + int(self._connect_timeout_s * 1e9)
-        while not self._stop_event.is_set() and ws is self.ws:
+        started_ns = get_monotonic_timestamp_ns()
+        deadline_ns = started_ns + int(self._connect_timeout_s * 1e9)
+        with self._state_lock:
+            evidence = self._transport_evidence
+        while True:
+            result = self._get_connection_wait_result(ws, deadline_ns)
+            if result is not None:
+                elapsed_ms = max(0, (get_monotonic_timestamp_ns() - started_ns) // 1_000_000)
+                with self._state_lock:
+                    evidence.state.update(connect_wait_result=result, connect_wait_ms=elapsed_ms)
+                    if result == 'recovery_requested':
+                        self._set_local_close_reason(
+                            self._pending_recovery_reason or 'connection_recovery', evidence,
+                        )
+                return result == 'connected'
             self._monitor_heartbeat_ms = get_timestamp_ms()
-            if self._is_connected(ws):
-                return True
-            if (not self._socket_thread.is_alive() or self._needRecovery.is_set()
-                    or get_monotonic_timestamp_ns() >= deadline_ns):
-                return False
             self._stop_event.wait(self._monitor_interval_s)
-        return False
+
+    def _get_connection_wait_result(self, ws, deadline_ns):
+        if self._stop_event.is_set():
+            return 'stopped'
+        if ws is not self.ws:
+            return 'socket_replaced'
+        if not self._socket_thread.is_alive():
+            return 'socket_thread_exit'
+        if self._needRecovery.is_set():
+            return 'recovery_requested'
+        if self._is_connected(ws):
+            return 'connected'
+        if get_monotonic_timestamp_ns() >= deadline_ns:
+            return 'deadline_elapsed'
+        return None
 
     def _begin_callback(self, ws, event_name, args):
         with self._state_lock:
@@ -440,6 +483,11 @@ class BaseWebsocketManager:
             self._set_local_close_reason('connection_recovery', evidence)
             evidence.state['phase'] = 'closed'
             self.ws = None
+            # All requests for this socket are satisfied by detaching it.
+            # Later callbacks fail the identity gate; new rotation requests
+            # must remain set until the next replacement consumes them.
+            self._needRecovery.clear()
+            self._pending_recovery_reason = None
             self._ready.clear()
         self._close_socket(ws, evidence)
         socket_thread = self._socket_thread
