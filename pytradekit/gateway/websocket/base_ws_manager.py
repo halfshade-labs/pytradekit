@@ -75,6 +75,8 @@ class BaseWebsocketManager:
         self._ready = Event()
         self._monitorThread = None
         self._socket_thread = None
+        self._owned_socket_threads = set()
+        self._socket_close_error_type = None
         self._generation = 0
         self._transport_stream_id = uuid4().hex
         self._transport_evidence = _TransportEvidence(0)
@@ -336,6 +338,8 @@ class BaseWebsocketManager:
                 target=self._run_websocket, args=(ws, evidence), daemon=True,
                 name=f'websocket-socket-{self._generation}',
             )
+            self._owned_socket_threads = {worker for worker in self._owned_socket_threads if worker.is_alive()}
+            self._owned_socket_threads.add(self._socket_thread)
             self._socket_thread.start()
         if not self._wait_connected(ws):
             reason = ('handshake_timeout'
@@ -349,6 +353,23 @@ class BaseWebsocketManager:
             if not self._stop_event.is_set() and ws is self.ws:
                 self.status = WebsocketStatus.ACTIVE.name
                 self._ready.set()
+
+    def _get_owned_socket_threads(self):
+        """Retain every live generation even if a bounded disconnect join expired."""
+        with self._state_lock:
+            self._owned_socket_threads = {worker for worker in self._owned_socket_threads if worker.is_alive()}
+            return list(self._owned_socket_threads)
+
+    def _get_cleanup_result(self):
+        """Additive evidence only: a swallowed physical close error is not cleanup success."""
+        with self._state_lock:
+            return {'complete': bool(self._stop_event.is_set() and self.ws is None
+                                     and self._socket_close_error_type is None),
+                    'error_type': self._socket_close_error_type}
+
+    def _get_owned_worker_threads(self):
+        sockets = self._get_owned_socket_threads()
+        return [worker for worker in [self._monitorThread, *sockets] if worker is not None]
 
     def _wait_connected(self, ws):
         started_ns = get_monotonic_timestamp_ns()
@@ -474,6 +495,8 @@ class BaseWebsocketManager:
             try:
                 ws.close(timeout=1)
             except Exception as error:
+                with self._state_lock:
+                    self._socket_close_error_type = type(error).__name__
                 self._log_transport_event('close_error', ws, error, evidence)
 
     def _disconnect(self):
