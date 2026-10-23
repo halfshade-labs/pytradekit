@@ -378,6 +378,8 @@ def test_initial_public_target_update_after_failed_handshake_does_not_deadlock(
         return socket
 
     monkeypatch.setattr('pytradekit.gateway.websocket.base_ws_manager.WebSocketApp', fail_first)
+    # This test isolates lifecycle lock ordering; real control pacing is covered separately.
+    monkeypatch.setattr(manager, '_pace_public_control', lambda: None)
     manager._set_bookticker_symbols(frozenset({'BTCUSDT'}))
     manager._subs = [{'method': 'SUBSCRIBE', 'params': ['btcusdt@bookTicker']}]
     errors = []
@@ -1117,3 +1119,50 @@ def test_delayed_close_error_survives_concurrent_terminal_summary(manager, socke
     assert len(transport_events(manager.logger, 'terminal')) == 1
     assert len(sockets) == 1
     assert 'test-private-' not in str(manager.logger.mock_calls)
+
+
+def test_owned_threads_retain_blocked_old_generation_after_current_socket_is_overwritten(manager, sockets, monkeypatch):
+    factory = base_ws_manager.WebSocketApp
+    release = Event()
+    def blocked_old_generation(*args, **kwargs):
+        socket = factory(*args, **kwargs)
+        if len(sockets) == 1:
+            run = socket.run_forever
+            def retained(**options):
+                run(**options)
+                release.wait(5)
+            socket.run_forever = retained
+        return socket
+    monkeypatch.setattr(base_ws_manager, 'WebSocketApp', blocked_old_generation)
+    try:
+        manager.connect()
+        old = manager._socket_thread
+        manager.reconnect(manager.ws)
+        wait_for(lambda: len(sockets) >= 2 and manager.get_connection_health()['connected'], timeout=3)
+        current = manager._socket_thread
+        assert old is not current and old.is_alive()
+        assert old in manager._get_owned_socket_threads()
+        assert current in manager._get_owned_socket_threads()
+        manager.close()
+        current.join(1)
+        assert old in manager._get_owned_worker_threads()
+        release.set()
+        old.join(1)
+        assert old not in manager._get_owned_worker_threads()
+    finally:
+        release.set()
+
+
+def test_real_socket_close_error_stays_in_cleanup_result_after_owned_threads_exit(manager, sockets):
+    manager.connect()
+    socket = sockets[-1]
+    original = socket.close
+    def close_with_error(**kwargs):
+        original(**kwargs)
+        raise OSError('private-close-detail')
+    socket.close = close_with_error
+    manager.close()  # Existing STOP behavior still swallows the transport exception.
+    for worker in manager._get_owned_worker_threads():
+        worker.join(1)
+    assert not any(worker.is_alive() for worker in manager._get_owned_worker_threads())
+    assert manager._get_cleanup_result() == {'complete': False, 'error_type': 'OSError'}

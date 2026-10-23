@@ -1,5 +1,6 @@
 import time
 import json
+import random
 from threading import RLock, Thread, current_thread
 from typing import Iterable, List
 
@@ -14,6 +15,7 @@ from pytradekit.utils.time_handler import (
 from pytradekit.ws.save_restful_bn_deposit_withdraw import HandleRestfulDepositWithdraw
 from pytradekit.ws.bn_add_missing_orders import get_binance_trade
 from pytradekit.ws.bookticker_health import BookTickerHealth
+from pytradekit.utils.exceptions import ExchangeException
 from pytradekit.utils.tools import get_redis
 from pytradekit.ws.subscription_update import (
     SubscriptionUpdate,
@@ -30,6 +32,8 @@ BOOKTICKER_SAME_PRICE_REFRESH_INTERVAL_MS = 250
 RECONNECT_BASE_DELAY_MS = 1000
 RECONNECT_MAX_DELAY_MS = 30000
 RECONNECT_STABLE_CONNECTION_MS = 60000
+PUBLIC_CONTROL_INTERVAL_MS = 500
+PUBLIC_RECONNECT_JITTER_MS = 250
 
 
 class AtUser:
@@ -85,6 +89,7 @@ class BinanceWsManager(WsManager):
         self._reconnect_delay_s = 0
         self._reconnect_base_delay_ms = RECONNECT_BASE_DELAY_MS
         self._reconnect_max_delay_ms = RECONNECT_MAX_DELAY_MS
+        self._public_control_next_ns = 0
 
     def _get_api_url(self) -> str:
         return self._api_url
@@ -164,6 +169,7 @@ class BinanceWsManager(WsManager):
             self.connect()
         public_subscription = message.get('method') == BinanceWebSocket.subscribe.value
         with self._subscription_lock:
+            self._pace_public_control()
             if public_subscription:
                 with self._state_lock:
                     self._bookticker_health.prepare_generation(self._generation)
@@ -172,6 +178,15 @@ class BinanceWsManager(WsManager):
             super().send_json(message)
         if public_subscription:
             self._log_public_feed_event('subscription_sent', snapshot)
+
+    def _pace_public_control(self):
+        """Reserve headroom for protocol ping/pong; STOP interrupts the wait."""
+        now_ns = get_monotonic_timestamp_ns()
+        delay_s = max(0, self._public_control_next_ns - now_ns) / 1_000_000_000
+        if self._stop_event.wait(delay_s):
+            raise ExchangeException("public websocket is stopped")
+        self._public_control_next_ns = (
+            get_monotonic_timestamp_ns() + PUBLIC_CONTROL_INTERVAL_MS * 1_000_000)
 
     def _get_url(self) -> str:
         if (self._public_bookticker and self._is_perp
@@ -630,6 +645,10 @@ class BinanceWsManager(WsManager):
             self._reconnect_base_delay_ms * 2 ** (self._reconnect_attempt - 1),
             self._reconnect_max_delay_ms,
         )
+        if self._public_bookticker:
+            spread_ms = min(PUBLIC_RECONNECT_JITTER_MS,
+                            max(0, self._reconnect_max_delay_ms - self._reconnect_base_delay_ms))
+            delay_ms = min(delay_ms, self._reconnect_max_delay_ms - spread_ms) + random.randint(0, spread_ms)
         self.logger.debug(
             f"[bn_ws recovery] {self._private_stream_log_context()} "
             f"connection_age_ms={age_ms} attempt={self._reconnect_attempt} "

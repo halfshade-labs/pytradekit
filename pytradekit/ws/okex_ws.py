@@ -2,8 +2,9 @@ import json
 import hmac
 import base64
 from decimal import Decimal
-from typing import Iterable, List
+from typing import Iterable, List, Optional
 
+from websocket import WebSocketApp
 from websocket._abnf import ABNF
 
 from pytradekit.utils.dynamic_types import ExchangeId, OkexAuxiliary, OkexWebSocket, WebsocketStatus
@@ -43,6 +44,7 @@ class OkexWsManager(WsManager):
         self._logged_on = False
         self._orders_subscribed = False
         self._pending_pong_socket = None
+        self._session_socket = None
 
     def _transport_log_context(self):
         return {
@@ -63,7 +65,11 @@ class OkexWsManager(WsManager):
     def _pong(self, ts) -> None:
         self.send(json.dumps({"pong": ts}))
 
-    def _send_order(self):
+    def _is_current_session_locked(self, ws: Optional[WebSocketApp]) -> bool:
+        return ws is not None and ws is self.ws and not self._stop_event.is_set()
+
+    def _send_order(self, ws: Optional[WebSocketApp] = None) -> None:
+        ws = self.ws if ws is None else ws
         _rqs_orders = {
             "op": "subscribe",
             "args": [{
@@ -71,9 +77,19 @@ class OkexWsManager(WsManager):
                 "instType": "SPOT"
             }]
         }
-        if not self._subs:
-            self._subs.append(_rqs_orders)
-        self.send_json(_rqs_orders)
+        with self._semaphore:
+            with self._state_lock:
+                if (not self._is_current_session_locked(ws)
+                        or self._session_socket is not ws or not self._logged_on):
+                    return
+                if not self._subs:
+                    self._subs.append(_rqs_orders)
+                # Preserve WsManager.send_json IDs without reselecting self.ws.
+                message = dict(_rqs_orders, id=self._cur_id)
+                self._cur_id += 1
+            if not self._is_connected(ws):
+                raise ExchangeException("websocket is not connected")
+            ws.send(json.dumps(message), opcode=ABNF.OPCODE_TEXT)
 
     def _ping(self, n_seconds, reconnection_time=None) -> None:
         # OKX requires an application-level string ping before its 30-second
@@ -114,12 +130,16 @@ class OkexWsManager(WsManager):
             if self._stop_event.is_set() or ws is not self.ws:
                 return
             self._pending_pong_socket = None
+            self._session_socket = ws
             self._logged_on = False
             self._orders_subscribed = False
 
     def _on_close(self, ws, *args, **kwargs):
-        self._logged_on = False
-        self._orders_subscribed = False
+        with self._state_lock:
+            if not self._is_current_session_locked(ws):
+                return
+            self._logged_on = False
+            self._orders_subscribed = False
         super()._on_close(ws, *args, **kwargs)
 
     def _reconnect_streams(self):
@@ -131,11 +151,17 @@ class OkexWsManager(WsManager):
     def get_connection_health(self):
         health = super().get_connection_health()
         if not self._is_public:
-            health['logged_on'] = self._logged_on
-            health['subscribed'] = self._orders_subscribed
-            health['connected'] = bool(
-                health['connected'] and self._logged_on and self._orders_subscribed
-            )
+            with self._state_lock:
+                # Fail closed if replacement occurred after the base snapshot.
+                current = (health['generation'] == self._generation
+                           and self._is_current_session_locked(self._session_socket))
+                health['logged_on'] = bool(current and self._logged_on)
+                health['subscribed'] = bool(current and self._orders_subscribed)
+                health['connected'] = bool(
+                    health['connected'] and self.status == WebsocketStatus.ACTIVE.name
+                    and not self._needRecovery.is_set() and self._is_connected(self.ws)
+                    and health['logged_on'] and health['subscribed']
+                )
         return health
 
     def _login(self):
@@ -217,29 +243,38 @@ class OkexWsManager(WsManager):
 
     def _handle_session_event(self, ws, msg):
         event = msg.get('event')
-        if event == 'login':
-            if msg.get('code') == '0':
+        arg = msg.get('arg', {})
+        orders_event = event in ('subscribe', 'unsubscribe') and arg.get('channel') == 'orders'
+        if event not in ('login', 'error') and not orders_event:
+            return False
+        with self._state_lock:
+            if not self._is_current_session_locked(ws):
+                return True
+            if self._session_socket is not ws:
+                self._session_socket = ws
+                self._logged_on = False
+                self._orders_subscribed = False
+            if event == 'login' and msg.get('code') == '0':
                 self._logged_on = True
                 self._orders_subscribed = False
-                self._send_order()
-            else:
-                self._reset_private_session(ws)
-            return True
-        arg = msg.get('arg', {})
-        if event in ('subscribe', 'unsubscribe') and arg.get('channel') == 'orders':
-            self._orders_subscribed = bool(
-                event == 'subscribe' and self._logged_on
-                and arg.get('instType') == 'SPOT' and msg.get('code', '0') == '0'
-            )
-            return True
-        if event == 'error':
+            elif orders_event:
+                self._orders_subscribed = bool(
+                    event == 'subscribe' and self._logged_on
+                    and arg.get('instType') == 'SPOT' and msg.get('code', '0') == '0'
+                )
+                return True
+        if event == 'login' and msg.get('code') == '0':
+            self._send_order(ws)
+        else:
             self._reset_private_session(ws)
-            return True
-        return False
+        return True
 
     def _reset_private_session(self, ws):
-        self._logged_on = False
-        self._orders_subscribed = False
+        with self._state_lock:
+            if not self._is_current_session_locked(ws):
+                return
+            self._logged_on = False
+            self._orders_subscribed = False
         self.reconnect(ws)
 
     def _on_message(self, _ws, message):
