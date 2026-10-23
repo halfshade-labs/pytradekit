@@ -432,6 +432,14 @@ except ExchangeException as e:
 
 ### WebSocket transport diagnostics
 
+OKX 私有 session 的状态提交和 orders 订阅均绑定触发回调的 socket。已开始的旧
+login、orders ACK、close/error 回调在连接替换或 STOP 后不会改变当前 readiness；
+订阅等待发送锁后再次检查身份，并向原 socket 发送，状态锁不覆盖网络 I/O。
+新 socket 尚未执行 open 时也不会继承旧 session 的 logged-on/subscribed 状态。
+health 如在两次取样间遇到 generation 替换，会保守返回未 ready，下一次读取再反映新 session。
+同一 socket 已请求恢复或已断开时，晚到的 session ACK 也不能与旧 transport 快照拼成 ready。
+合法流程仍为当前连接的 login 成功后订阅 orders/SPOT，再收到 ACK 才 ready。
+
 `get_connection_health()["transport"]` 返回当前 connection generation 的有界诊断快照。
 BN 使用已有 `stream_id`，并区分 spot/perp 与 public bookticker/private user data；
 OKX 区分 public/private（当前 private orders 为 SPOT）。替换 socket 时重置诊断，旧 socket
@@ -482,7 +490,7 @@ OKX ticker 保留原始字符串 `ts`；其 transport health 不判断报价源�
 本地并发与时间边界回归（Python 3.11，无交易所连接）：
 
 ```bash
-python -m pytest -o addopts= tests/test_websocket_lifecycle.py tests/test_okex_ws_keepalive.py tests/test_ws_source_timestamp_boundaries.py -q
+python -m pytest -o addopts= tests/test_websocket_lifecycle.py tests/test_okex_ws_keepalive.py tests/test_okex_ws_session_generation.py tests/test_ws_source_timestamp_boundaries.py -q
 ```
 
 测试覆盖阻塞 close 时的 health 读取、close 与已开始 callback 的交错、terminal 去重、

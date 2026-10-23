@@ -59,11 +59,12 @@ def test_unrelated_or_unsolicited_ack_cannot_make_private_stream_ready():
 def test_private_recovery_logs_in_before_replaying_orders():
     manager = make_manager()
     manager._subs = [{'op': 'subscribe', 'args': [{'channel': 'orders', 'instType': 'SPOT'}]}]
-    manager.send_json = Mock()
     manager._reconnect_streams()
-    assert [call.args[0]['op'] for call in manager.send_json.call_args_list] == ['login']
+    assert [json.loads(call.args[0])['op'] for call in manager.ws.send.call_args_list] == ['login']
     manager._on_message(manager.ws, json.dumps({'event': 'login', 'code': '0'}))
-    assert [call.args[0]['op'] for call in manager.send_json.call_args_list] == ['login', 'subscribe']
+    sent = [json.loads(call.args[0]) for call in manager.ws.send.call_args_list]
+    assert [message['op'] for message in sent] == ['login', 'subscribe']
+    assert [message['id'] for message in sent] == [0, 1]
 
 
 def test_public_health_and_subscription_replay_do_not_require_login():
