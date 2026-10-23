@@ -479,10 +479,18 @@ freshness 在每次查询时按当前时钟重算；首条有效 quote 指标只
 OKX ticker 保留原始字符串 `ts`；其 transport health 不判断报价源时间新鲜度，下游仍须
 验证 `ts`。这些健康观察均不替代交易执行前的报价校验。
 
+同步 `BinanceWsManager.start_bookticker_stream()` / `update_bookticker_stream()`
+的 perpetual public bookTicker 使用专用
+`wss://fstream.binance.com/public/ws`，启动和首次动态更新均在第一次握手前选择路径；
+重连沿用该路径。spot（含自定义 URL）、private user data 与其他 stream 的路由保留原状。
+这是对齐 Binance [公共行情端点规范](https://developers.binance.com/en/docs/products/derivatives-trading-usds-futures/websocket-market-streams/Connect)，
+不构成旧 `/ws` 导致自然断连或新路径提高稳定性的证明。满 24 小时断开、心跳、订阅重放、
+generation 隔离和下游报价新鲜度检查仍需独立保证；单连接没有备用行情接管能力。
+
 本地并发与时间边界回归（Python 3.11，无交易所连接）：
 
 ```bash
-python -m pytest -o addopts= tests/test_websocket_lifecycle.py tests/test_okex_ws_keepalive.py tests/test_ws_source_timestamp_boundaries.py -q
+python -m pytest -o addopts= tests/test_websocket_lifecycle.py tests/test_okex_ws_keepalive.py tests/test_ws_source_timestamp_boundaries.py tests/test_binance_bookticker_routing.py -q
 ```
 
 测试覆盖阻塞 close 时的 health 读取、close 与已开始 callback 的交错、terminal 去重、

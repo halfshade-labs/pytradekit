@@ -941,6 +941,7 @@ class BinanceAuxiliary(Enum):
     url_ws = 'wss://stream.binance.com:9443/ws'
     url_ws_base = 'wss://stream.binance.com:9443'
     url_perp_ws = 'wss://fstream.binance.com/ws'
+    url_perp_public_ws = 'wss://fstream.binance.com/public/ws'
     user_data_stream = '/api/v3/userDataStream'
     user_perp_data_stream = '/fapi/v1/listenKey'
     url_ticker_24hr = '/api/v3/ticker/24hr'

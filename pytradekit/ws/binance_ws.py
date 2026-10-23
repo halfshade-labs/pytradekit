@@ -174,6 +174,9 @@ class BinanceWsManager(WsManager):
             self._log_public_feed_event('subscription_sent', snapshot)
 
     def _get_url(self) -> str:
+        if (self._public_bookticker and self._is_perp
+                and self._url == BinanceAuxiliary.url_perp_ws.value):
+            return BinanceAuxiliary.url_perp_public_ws.value
         return self._url
 
     def _is_spot(self):
@@ -449,6 +452,10 @@ class BinanceWsManager(WsManager):
         target_symbols = normalize_subscription_targets(symbols)
         if target_symbols == self._bookticker_symbols:
             return calculate_subscription_update(target_symbols, target_symbols)
+        # Select the public route before a fresh manager's first handshake.
+        # Desired targets are still published under the subscription transaction.
+        with self._state_lock:
+            self._public_bookticker = True
         # A failed first handshake may require the monitor to replay before
         # connect() returns. Never wait for it while holding the replay lock.
         if (self.status == WebsocketStatus.INIT.name

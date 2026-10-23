@@ -1,5 +1,6 @@
 """Exercise reconnect races without exchange access or real WebSocket I/O."""
 from threading import Event, Thread, current_thread
+from queue import Queue
 from time import monotonic
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -91,6 +92,36 @@ def manager(sockets):
     if monitor:
         monitor.join(timeout=2)
         assert not monitor.is_alive()
+
+
+@pytest.mark.parametrize('operation', ['start', 'update'])
+@pytest.mark.parametrize('initial_failure', [False, True])
+def test_public_bookticker_endpoint_survives_initial_failure_and_recovery(
+    manager, sockets, monkeypatch, operation, initial_failure,
+):
+    original_factory = base_ws_manager.WebSocketApp
+
+    def factory(*args, **kwargs):
+        socket = original_factory(*args, **kwargs)
+        socket.raise_on_run = initial_failure and len(sockets) == 1
+        return socket
+
+    monkeypatch.setattr(base_ws_manager, 'WebSocketApp', factory)
+    monkeypatch.setattr(manager, '_ping', Mock())
+    manager._queue = Queue()
+    if operation == 'start':
+        manager.start_bookticker_stream(['BTCUSDT'])
+    else:
+        manager.update_bookticker_stream(['BTCUSDT'])
+    wait_for(lambda: manager.get_connection_health()['connected'] and manager.ws.sent)
+    old = manager.ws
+    manager.reconnect(old)
+    wait_for(lambda: manager.ws is not None and manager.ws is not old
+             and manager.get_connection_health()['connected'] and manager.ws.sent)
+    assert len(sockets) >= (3 if initial_failure else 2)
+    assert all(socket.url == 'wss://fstream.binance.com/public/ws' for socket in sockets)
+    assert any('btcusdt@bookTicker' in message for message in manager.ws.sent)
+    assert manager._bookticker_symbols == frozenset({'BTCUSDT'})
 
 
 def test_health_snapshot_reports_thread_failure_and_idle_business_stream(manager):
