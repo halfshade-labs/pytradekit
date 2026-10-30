@@ -610,6 +610,12 @@ class BinanceWsManager(WsManager):
             return True
         return False
 
+    def _run_websocket(self, ws: object, evidence: object = None) -> None:
+        if self._public_bookticker:
+            from pytradekit.gateway.websocket.public_receiver import configure_public_receiver
+            configure_public_receiver(ws)
+        return super()._run_websocket(ws, evidence)
+
     def _on_open(self, ws, *args, **kwargs):
         if self._public_bookticker:
             with self._state_lock:

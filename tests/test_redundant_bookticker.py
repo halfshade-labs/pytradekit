@@ -926,3 +926,57 @@ def test_cleanup_reads_physical_result_only_after_worker_finally_exits(rig):
         worker.join(1)
         with feed._lock:
             feed._cleanup_pending.pop(pending.key, None)
+
+
+def test_busy_ingress_does_not_rescan_entire_cohort_on_every_wakeup(rig, monkeypatch):
+    feed, managers, clock = rig
+    select = Mock(wraps=feed._select)
+    monkeypatch.setattr(feed, '_select', select)
+    for update in range(1, 101):
+        managers[0].quote(update)
+        feed._poll()
+        delivered = feed._output.get_nowait()
+        assert delivered['u'] == update
+        assert feed.is_current_bookticker_message(delivered)
+    full_sweeps = [call for call in select.call_args_list if call.kwargs.get('symbols') is None]
+    assert len(full_sweeps) == 1
+    clock.advance(20)
+    feed._poll()
+    assert len([call for call in select.call_args_list if call.kwargs.get('symbols') is None]) == 2
+    managers[0].connected = False
+    feed._poll()
+    assert len([call for call in select.call_args_list if call.kwargs.get('symbols') is None]) == 3
+
+
+def test_full_selection_samples_clocks_once_without_caching_delivery_permission(rig, monkeypatch):
+    feed, managers, clock = rig
+    managers[0].quote()
+    feed._poll()
+    frame = feed._output.get_nowait()
+    wall = Mock(wraps=clock.wall_ms)
+    monkeypatch.setattr(clock, 'wall_ms', wall)
+    feed._select(publish=False)
+    assert wall.call_count == 1
+    # The scan snapshot must never grant permission to a later stale consumer.
+    clock.advance(1001)
+    assert not feed.is_current_bookticker_message(frame)
+
+
+def test_transition_expiring_during_scan_is_rejected_before_enqueue(rig, monkeypatch):
+    feed, managers, clock = rig
+    qualified = feed._qualified
+    advanced = False
+
+    def expire_during_scan(*args, **kwargs):
+        nonlocal advanced
+        if not advanced and kwargs.get('clocks') is not None:
+            advanced = True
+            clock.advance(1001)
+        return qualified(*args, **kwargs)
+
+    monkeypatch.setattr(feed, '_qualified', expire_during_scan)
+    managers[0].quote()
+    feed._poll()
+    assert advanced
+    assert feed._output.empty()
+    assert not feed.get_public_feed_state()['symbols']['BTCUSDT']['available']
