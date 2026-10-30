@@ -52,6 +52,10 @@ class RedundantBookTickerOptions:
             raise ValueError('both initial slots must rotate before 24h')
 
 
+SELECTOR_SWEEP_INTERVAL_MS = 20
+RECEIVE_TIME_MS = BinanceWebSocket.run_time_ms.value
+
+
 class _Clock:
     wall_ms = staticmethod(get_timestamp_ms)
     monotonic_ms = staticmethod(lambda: get_monotonic_timestamp_ns() // 1_000_000)
@@ -161,6 +165,8 @@ class RedundantBookTickerFeed:
         self._joint_ms = Counter()
         self._coverage_until = {}
         self._joint_until = {}
+        self._sweep_due_ms = 0
+        self._sweep_states = None
         self.status = WebsocketStatus.INIT.name
 
     def start_bookticker_stream(self, symbols):
@@ -174,6 +180,8 @@ class RedundantBookTickerFeed:
             if self._stop.is_set():
                 return calculate_subscription_update(previous, previous)
             self._targets = targets
+            if targets != previous:
+                self._sweep_due_ms = 0
             for symbol in previous ^ targets:
                 self._memberships[symbol] = self._memberships.get(symbol, 0) + 1
             memberships = {symbol: self._memberships[symbol] for symbol in targets}
@@ -255,7 +263,7 @@ class RedundantBookTickerFeed:
                     self._rejections['selector_error'] += 1
                     self._lose_coverage()
                 self.logger.debug(f'bookticker selector error_type={type(error).__name__}')
-            self._wake.wait(0.02)
+            self._wake.wait(SELECTOR_SWEEP_INTERVAL_MS / 1000)
 
     def _poll(self):
         retired = []
@@ -263,7 +271,12 @@ class RedundantBookTickerFeed:
             if self._stop.is_set():
                 return
             self._qualify_pending()
-            self._select()
+            states = self._route_states()
+            now = self._clock.monotonic_ms()
+            if states != self._sweep_states or now >= self._sweep_due_ms:
+                self._select()
+                self._sweep_states = states
+                self._sweep_due_ms = now + SELECTOR_SWEEP_INTERVAL_MS
             self._flush_deliveries()
             self._reap_cleanup()
             retired = self._rotate()
@@ -493,15 +506,18 @@ class RedundantBookTickerFeed:
 
     def _fresh_at(self, message, now, monotonic_ms, max_age_ms=None):
         limit = self.options.max_age_ms if max_age_ms is None else min(max_age_ms, self.options.max_age_ms)
-        stamps = (message.get(BinanceWebSocket.run_time_ms.value), self._source_time(message))
+        received = message.get(RECEIVE_TIME_MS)
+        source = self._source_time(message)
         stamp = message.get(INGRESS_MONOTONIC_MS)
-        age = monotonic_ms - stamp if type(stamp) is int else -1
-        return 0 <= age <= limit and all(type(value) is int and 0 <= now - value <= limit for value in stamps)
+        return (type(stamp) is int and 0 <= monotonic_ms - stamp <= limit
+                and type(received) is int and 0 <= now - received <= limit
+                and type(source) is int and 0 <= now - source <= limit)
 
-    def _qualified(self, route, symbol, max_age_ms=None, states=None, highwater=None):
+    def _qualified(self, route, symbol, max_age_ms=None, states=None, highwater=None, clocks=None):
         message = route.quotes.get(symbol)
         if (message is None or message.get(MEMBERSHIP_VERSION) != self._memberships[symbol]
-                or not self._fresh(message, max_age_ms)):
+                or not (self._fresh_at(message, *clocks, max_age_ms) if clocks is not None
+                        else self._fresh(message, max_age_ms))):
             return False
         state = (states or {}).get(route.key)
         if states is None:
@@ -511,34 +527,39 @@ class RedundantBookTickerFeed:
                 state.get('stream_id'), state.get('generation')):
             return False
         high = (self._observed_highwater if highwater is None else highwater).get(symbol)
-        return high is None or (message['u'] >= high['u']
+        return high is None or high is message or (message['u'] >= high['u']
             and self._source_time(message) >= self._source_time(high) and (
             message['u'] != high['u'] or self._fingerprint(message) == self._fingerprint(high)))
 
-    def _select(self, publish=True, symbols=None):
-        if self._stop.is_set():
-            return
+    def _route_states(self) -> dict:
         states = {}
         for route in self._routes.values():
             try:
                 states[route.key] = route.manager.get_public_feed_state()
             except Exception:
                 states[route.key] = {'connected': False}
+        return states
+
+    def _select(self, publish=True, symbols=None):
+        if self._stop.is_set():
+            return
+        states = self._route_states()
         for route in self._routes.values():
             self._sync_ingress_serial(route)
         now = self._clock.monotonic_ms()
+        clocks = self._clock.wall_ms(), now
         for symbol in self._targets if symbols is None else symbols:
             if symbol not in self._targets:
                 continue
             union = [route for route in self._routes.values()
-                     if self._qualified(route, symbol, states=states)]
+                     if self._qualified(route, symbol, states=states, clocks=clocks)]
             self._observe_joint(symbol, bool(union),
                                 min(now, self._joint_until.get(symbol, now)) if not union else now)
             candidates = union
             if self.options.mode == 'shadow':
                 candidates = [route for route in self._routes.values() if route.slot == 0
                               and not route.replacement and self._qualified(
-                                  route, symbol, states=states, highwater=self._primary_highwater)]
+                                  route, symbol, states=states, highwater=self._primary_highwater, clocks=clocks)]
             selected = self._routes.get(self._selected.get(symbol))
             if selected not in candidates:
                 selected = max(candidates, key=lambda route: route.quotes[symbol]['u'], default=None)
