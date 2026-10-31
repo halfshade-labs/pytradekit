@@ -42,6 +42,27 @@ fresh 健康 burst 不增 epoch，duplicate 不推进确认。物理断线且 B 
 相同 `u` 只有 BBO、数量和源时间完全一致才能证明覆盖，永不重发，也不会
 刷新原始接收/源时间或推进 confirmation。`u` 可以跳号，无连续整数要求。
 
+公共 spot/perp manager 保留每个不同 `u` 的 BBO 更新，包括仅数量或源时间变化的
+同价帧；不按价格相同或时间间隔采样。仅同一原生 update ID 的重复不再次投递。
+热路径可调用 `get_public_symbol_state(symbol)` 精确查询一个币；返回形状与
+`get_public_feed_state()` 相同，另有字符串 `symbol_scope`，`symbols` 仅含请求且
+当前订阅的币。未订阅/已移除的币返回空 `symbols`；消费方必须仅合并或删除该
+scope 的 epoch，不把其他未返回的币当作移除。查询在同一锁内逐帧核验 pending、
+单币选择并检查当前时钟、物理代次及 ingress 缺口，不使用时间缓存或容差。
+查询只暂存原帧，不向 output 投递。全标的查询仍执行即时完整选择；最终消费
+freshness gate 每帧重新执行。
+消费已排队消息时使用 `gate_bookticker_message(message)`，返回
+`(accepted, scoped_state)`。它在同一 logical 锁下执行原 bool gate 的一次
+pending 处理、单币选择及最终即时 freshness/epoch/physical 核验，随后更新
+consumer 水位或退休未消费 transition，再返回同一 `symbol_scope` 快照。
+消费方在自身市场锁内先应用返回的 token/epoch，再仅对 accepted 消息写缓存；
+不应在该消息前另做 scoped 查询或再次调用 bool gate。后到帧尚未通过消费 gate
+时，已接受当前帧的 `delivery_pending` 仍为 true。最终 candidate 检查继续使用
+精确 state 查询。原 `is_current_bookticker_message` 复用同一 gate 内核保留兼容。
+shadow B 的有序观察更新独立 joint 高水位及原始 coverage 时间，不逐帧重复
+delivery 选择。A 的每帧选择保持不变；精确查询/全量查询仍立即检查各路资格，
+原有周期 selector 维护其余观测空窗，不赋予 B 投递权限。
+
 ## 序号重置的显式恢复策略
 
 全局 high-water 在普通 reconnect、物理 generation 更新、轮换、覆盖丢失及

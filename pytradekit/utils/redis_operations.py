@@ -395,7 +395,7 @@ class RedisOperations:
             self.logger.exception(f"Failed to set depth_order_theoretical for {key}: {e}")
             raise DependencyException(f"Failed to set depth_order_theoretical for {key}") from e
 
-    def set_portfolios(self, value):
+    def set_portfolios(self, value, *, snapshot=None):
         """Merge `value` ({symbol: data}) into the stored portfolios snapshot and
         publish only the delta.
 
@@ -408,13 +408,22 @@ class RedisOperations:
         PORTFOLIOS_EXPIRE_TIME so a quiet market cannot serve an arbitrarily
         old snapshot forever; per-tick freshness (ts_ms/local_ts) is the
         reader's responsibility.
+
+        An explicit ``snapshot`` retains the complete market view for close
+        readers while ``value`` contains only proven entry venues. Both use
+        the existing snapshot lock; no filtered signal may erase other quotes.
         """
+        stored = value if snapshot is None else snapshot
+        if (not isinstance(value, Mapping) or not isinstance(stored, Mapping)
+                or not set(value).issubset(stored)):
+            raise DataTypeException("Signal symbols require a matching market snapshot")
         key = f"{RedisFields.portfolios.name}"
         lock = self.get_lock_for_resource(key)
         try:
+            payload = json.dumps(value, cls=_DecimalEncoder, allow_nan=False)
             with lock:
-                self._merge_portfolios_snapshot(value)
-                self.client.publish(key, json.dumps(value, cls=_DecimalEncoder))
+                self._merge_portfolios_snapshot(stored)
+                self.client.publish(key, payload)
         except Exception as e:
             self.logger.exception(f"Failed to set portfolios for {key}: {e}")
             raise DependencyException(f"Failed to set portfolios for {key}") from e

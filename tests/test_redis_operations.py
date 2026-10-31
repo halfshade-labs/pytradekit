@@ -251,6 +251,42 @@ class TestSetPortfolios:
         stored = json.loads(client.set.call_args.args[1])
         assert set(stored) == {"REUSDT"}
 
+    def test_signal_filter_preserves_complete_close_market_snapshot(self, redis_ops):
+        """Entry venue filtering must not remove quotes used by close readers."""
+        import json
+        ops, client, _ = redis_ops
+        client.get.return_value = '{"OTHERUSDT": {"short": {"bid": "1"}}}'
+        market = {'TRXUSDT': {'short': {'bid': Decimal('0.34')},
+                             'long': {'BN': {'ask': Decimal('0.33')}, 'OKX': {'ask': Decimal('0.35')}}}}
+        signal = {'TRXUSDT': {**market['TRXUSDT'], 'long': {'BN': market['TRXUSDT']['long']['BN']}}}
+
+        ops.set_portfolios(signal, snapshot=market)
+
+        stored = json.loads(client.set.call_args.args[1])
+        published = json.loads(client.publish.call_args.args[1])
+        assert set(stored) == {'OTHERUSDT', 'TRXUSDT'}
+        assert set(stored['TRXUSDT']['long']) == {'BN', 'OKX'}
+        assert set(published['TRXUSDT']['long']) == {'BN'}
+        assert stored['TRXUSDT']['short']['bid'] == '0.34'
+        assert client.lock.call_count == 1
+
+    @pytest.mark.parametrize('snapshot', [[], {}, {'OTHERUSDT': {}}])
+    def test_invalid_signal_snapshot_fails_before_storage_or_publication(self, redis_ops, snapshot):
+        ops, client, _ = redis_ops
+        with pytest.raises(DataTypeException):
+            ops.set_portfolios({'TRXUSDT': {}}, snapshot=snapshot)
+        client.set.assert_not_called()
+        client.publish.assert_not_called()
+
+    def test_signal_storage_failure_never_publishes(self, redis_ops):
+        ops, client, _ = redis_ops
+        client.get.return_value = '{}'
+        client.set.return_value = False
+        with pytest.raises(DependencyException):
+            ops.set_portfolios({'TRXUSDT': {'long': {'BN': {}}}},
+                               snapshot={'TRXUSDT': {'long': {'BN': {}, 'OKX': {}}}})
+        client.publish.assert_not_called()
+
 
 class TestArbitrageThreshold:
     def test_set_writes_value_and_expiry(self, redis_ops):

@@ -948,6 +948,193 @@ def test_busy_ingress_does_not_rescan_entire_cohort_on_every_wakeup(rig, monkeyp
     assert len([call for call in select.call_args_list if call.kwargs.get('symbols') is None]) == 3
 
 
+def test_scoped_consumer_queries_do_not_scan_other_symbols(rig, monkeypatch):
+    """Replay the 42-symbol, moving-clock query/consumer path for every frame."""
+    feed, managers, clock = rig
+    feed.update_bookticker_stream(('BTCUSDT', *(f'ASSET{index}USDT' for index in range(41))))
+    select = Mock(wraps=feed._select)
+    monkeypatch.setattr(feed, '_select', select)
+    for update in range(1, 101):
+        managers[0].quote(update, E=clock.now, T=clock.now, **{RECEIVE: clock.now})
+        state = feed.get_public_symbol_state('BTCUSDT')
+        assert state['symbol_scope'] == 'BTCUSDT'
+        assert set(state['symbols']) == {'BTCUSDT'}
+        feed._poll()
+        frame = feed._output.get_nowait()
+        assert frame['u'] == update
+        assert feed.is_current_bookticker_message(frame)
+        clock.advance(1)
+    full_sweeps = [call for call in select.call_args_list if call.kwargs.get('symbols') is None]
+    assert len(full_sweeps) <= 6  # Periodic selector work, never one full sweep per query.
+    managers[0].connected = False
+    assert not feed.get_public_symbol_state('BTCUSDT')['symbols']['BTCUSDT']['available']
+    managers[0].connected = True
+    managers[0].quote(101)
+    assert feed.get_public_symbol_state('BTCUSDT')['symbols']['BTCUSDT']['available']
+    clock.advance(1001)
+    assert not feed.get_public_symbol_state('BTCUSDT')['symbols']['BTCUSDT']['available']
+
+
+def test_scoped_query_does_not_publish_and_has_immediate_expiry_and_membership(rig):
+    feed, (primary, backup), clock = rig
+    primary.quote(1)
+    primary.quote(1, s='ETHUSDT')
+    state = feed.get_public_symbol_state('BTCUSDT')
+    assert state['symbols']['BTCUSDT']['available']
+    assert feed._output.empty()
+    clock.advance(1001)
+    assert not feed.get_public_symbol_state('BTCUSDT')['symbols']['BTCUSDT']['available']
+    assert not feed.get_public_feed_state()['symbols']['ETHUSDT']['available']
+    feed.update_bookticker_stream(('ETHUSDT',))
+    state = feed.get_public_symbol_state('BTCUSDT')
+    assert state['symbol_scope'] == 'BTCUSDT'
+    assert state['symbols'] == {}
+
+
+def test_scoped_query_same_clock_ingress_gap_and_route_retirement_are_immediate(rig):
+    feed, (primary, backup), clock = rig
+    primary.quote(1)
+    assert feed.get_public_symbol_state('BTCUSDT')['symbols']['BTCUSDT']['epoch'] == 0
+    for update in range(2, 7):
+        primary.quote(update)
+    state = feed.get_public_symbol_state('BTCUSDT')
+    assert state['symbols']['BTCUSDT']['epoch'] > 0
+    primary.connected = False
+    assert not feed.get_public_symbol_state('BTCUSDT')['symbols']['BTCUSDT']['available']
+
+
+def test_scoped_query_wall_rollback_cannot_revive_old_transition(rig):
+    feed, (primary, backup), clock = rig
+    primary.quote(1)
+    feed._poll()
+    old = drain(feed)[0]
+    clock.advance(1001)
+    clock.now = NOW
+    assert not feed.get_public_symbol_state('BTCUSDT')['symbols']['BTCUSDT']['available']
+    assert not feed.is_current_bookticker_message(old)
+
+
+def test_shadow_observation_burst_does_not_run_delivery_selection(rig, monkeypatch):
+    """Backup ingress updates joint observations without redundant delivery work."""
+    feed, (primary, backup), clock = rig
+    feed.options = RedundantBookTickerOptions(mode='shadow')
+    select = Mock(wraps=feed._select)
+    monkeypatch.setattr(feed, '_select', select)
+    for update in range(1, 51):
+        clock.advance(1)
+        backup.quote(update, E=clock.now, T=clock.now, **{RECEIVE: clock.now})
+        state = feed.get_public_symbol_state('BTCUSDT')
+        assert not state['symbols']['BTCUSDT']['available']
+    delivery_selection = [call for call in select.call_args_list if call.kwargs.get('publish', True)]
+    assert delivery_selection == []
+    assert feed._output.empty()
+    health = feed.get_public_feed_health()
+    assert feed._joint_available['BTCUSDT']
+    joint_unavailable = health['joint_unavailable_ms']['BTCUSDT']
+    clock.advance(1000)
+    assert feed.get_public_feed_health()['joint_unavailable_ms']['BTCUSDT'] == joint_unavailable
+    clock.advance(1)
+    feed.get_public_symbol_state('BTCUSDT')
+    assert not feed._joint_available['BTCUSDT']
+    assert not feed.get_public_feed_state()['symbols']['BTCUSDT']['available']
+
+
+def test_shadow_observations_keep_primary_transitions_and_immediate_expiry(rig):
+    feed, (primary, backup), clock = rig
+    feed.options = RedundantBookTickerOptions(mode='shadow')
+    for update in range(1, 21):
+        clock.advance(1)
+        backup.quote(100 + update, E=clock.now, T=clock.now, **{RECEIVE: clock.now})
+        primary.quote(update, E=clock.now, T=clock.now, **{RECEIVE: clock.now})
+        assert feed.get_public_symbol_state('BTCUSDT')['symbols']['BTCUSDT']['available']
+        feed._poll()
+        frame = feed._output.get_nowait()
+        assert frame['u'] == update
+        assert feed.is_current_bookticker_message(frame)
+    assert feed._output.empty()
+    clock.advance(1001)
+    assert not feed.get_public_symbol_state('BTCUSDT')['symbols']['BTCUSDT']['available']
+    assert not feed.is_current_bookticker_message(frame)
+
+
+def test_atomic_gate_returns_exact_state_without_duplicate_query_work(rig, monkeypatch):
+    """Gate each queued transition once and return its post-gate watermark state."""
+    feed, (primary, backup), clock = rig
+    feed.update_bookticker_stream(('BTCUSDT', *(f'ASSET{index}USDT' for index in range(41))))
+    qualify = Mock(wraps=feed._qualify_pending)
+    select = Mock(wraps=feed._select)
+    monkeypatch.setattr(feed, '_qualify_pending', qualify)
+    monkeypatch.setattr(feed, '_select', select)
+    for update in range(1, 101):
+        clock.advance(1)
+        primary.quote(update, E=clock.now, T=clock.now, **{RECEIVE: clock.now})
+        feed._poll()
+        frame = feed._output.get_nowait()
+        qualify.reset_mock()
+        select.reset_mock()
+        accepted, state = feed.gate_bookticker_message(frame)
+        assert accepted
+        assert qualify.call_count == select.call_count == 1
+        assert select.call_args.kwargs == {'publish': False, 'symbols': ('BTCUSDT',)}
+        assert state['symbol_scope'] == 'BTCUSDT'
+        assert state['symbols'] == {'BTCUSDT': {'epoch': frame[SYMBOL_EPOCH],
+                                               'available': True, 'delivery_pending': False}}
+        assert feed._consumer_gated_highwater['BTCUSDT'] == update
+
+
+def test_atomic_gate_preserves_pending_transition_and_reports_post_gate_watermark(rig):
+    feed, (primary, backup), clock = rig
+    primary.quote(1)
+    feed._poll()
+    first = drain(feed)[0]
+    primary.quote(2, b='99')
+    accepted, state = feed.gate_bookticker_message(first)
+    assert accepted
+    assert state['symbols']['BTCUSDT']['delivery_pending']
+    assert feed._consumer_gated_highwater['BTCUSDT'] == 1
+    assert feed._output.empty()
+    feed._poll()
+    second = drain(feed)[0]
+    assert second['u'] == 2 and second['b'] == '99'
+    accepted, state = feed.gate_bookticker_message(second)
+    assert accepted and not state['symbols']['BTCUSDT']['delivery_pending']
+    assert feed._consumer_gated_highwater['BTCUSDT'] == 2
+
+
+@pytest.mark.parametrize('retirement', ['expiry', 'physical'])
+def test_atomic_gate_rechecks_permission_after_selection(rig, monkeypatch, retirement):
+    feed, (primary, backup), clock = rig
+    primary.quote(1)
+    feed._poll()
+    frame = drain(feed)[0]
+    select = feed._select
+
+    def retire_after_selection(*args, **kwargs):
+        select(*args, **kwargs)
+        if retirement == 'expiry':
+            clock.advance(1001)
+        else:
+            primary.connected = False
+
+    monkeypatch.setattr(feed, '_select', retire_after_selection)
+    accepted, state = feed.gate_bookticker_message(frame)
+    assert not accepted
+    assert state['symbols']['BTCUSDT']['epoch'] > frame[SYMBOL_EPOCH]
+    assert feed._consumer_gated_highwater.get('BTCUSDT', -1) < 1
+
+
+def test_atomic_gate_unknown_membership_rejects_without_advancing_consumer(rig):
+    feed, (primary, backup), clock = rig
+    primary.quote(1)
+    feed._poll()
+    frame = drain(feed)[0]
+    feed.update_bookticker_stream(('ETHUSDT',))
+    accepted, state = feed.gate_bookticker_message(frame)
+    assert not accepted and state['symbol_scope'] == 'BTCUSDT'
+    assert state['symbols'] == {}
+    assert 'BTCUSDT' not in feed._consumer_gated_highwater
+
+
 def test_full_selection_samples_clocks_once_without_caching_delivery_permission(rig, monkeypatch):
     feed, managers, clock = rig
     managers[0].quote()
