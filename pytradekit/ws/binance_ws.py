@@ -25,10 +25,6 @@ from pytradekit.ws.subscription_update import (
 
 
 BINANCE_UNSUBSCRIBE_METHOD = "UNSUBSCRIBE"
-# Quantity-only book-ticker updates can arrive thousands of times per second.
-# Forward a bounded heartbeat for unchanged BBO prices so consumers can refresh
-# quote freshness without turning every size change into a premium calculation.
-BOOKTICKER_SAME_PRICE_REFRESH_INTERVAL_MS = 250
 RECONNECT_BASE_DELAY_MS = 1000
 RECONNECT_MAX_DELAY_MS = 30000
 RECONNECT_STABLE_CONNECTION_MS = 60000
@@ -558,7 +554,7 @@ class BinanceWsManager(WsManager):
                 self.start_end_time_dict['start_time'] = times
 
     def verify_spot_bookticker_duplicate(self, msg, receive_time_ms=None):
-        """Forward price changes immediately and sample same-price heartbeats."""
+        """Retain distinct updates, including same-price quantity transitions."""
         required_fields = (
             BinanceWebSocket.order_book_update_id.value,
             BinanceWebSocket.symbol.value,
@@ -580,16 +576,6 @@ class BinanceWsManager(WsManager):
         previous = self.verify_bookticker_duplicate.get(symbol)
         if previous and previous["update_id"] == update_id:
             return False
-        if (
-            previous
-            and previous["bid"] == bid
-            and previous["ask"] == ask
-            and receive_time_ms - previous["forwarded_at_ms"]
-            < BOOKTICKER_SAME_PRICE_REFRESH_INTERVAL_MS
-        ):
-            previous["update_id"] = update_id
-            return False
-
         self.verify_bookticker_duplicate[symbol] = {
             "update_id": update_id,
             "bid": bid,

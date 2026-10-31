@@ -14,7 +14,7 @@ import functools
 import pandas as pd
 from pandas import DataFrame
 import numpy as np
-from pymongo import MongoClient, DESCENDING, ReplaceOne, UpdateOne
+from pymongo import MongoClient, DESCENDING, ReplaceOne, UpdateOne, timeout
 from pymongo.errors import DuplicateKeyError, ConnectionFailure, NetworkTimeout, OperationFailure, ServerSelectionTimeoutError
 
 from pytradekit.utils.time_handler import DATETIME_FORMAT_DAY, get_yesterday_datetime, \
@@ -25,7 +25,7 @@ from pytradekit.utils.static_types import KlineAttribute, Database, OrderAttribu
     InventoryAttribute, DepthAttribute, PnlAttribute, VolumeFeeAttribute, BudgetAttribute, UserLoanAttribute, \
     MaxInventoryAttribute, ArbitragePoolsReportAttribute, PerpPositionAttribute, PerpIncomeAttribute, \
     TradeRecordAttribute, PremiumSnapshotAttribute, FundingRateHistoryAttribute
-from pytradekit.utils.dynamic_types import DepositWithdrawAuxiliary, DuplicateFields, ExchangeId
+from pytradekit.utils.dynamic_types import DepositWithdrawAuxiliary, DuplicateFields, ExchangeId, PremiumStatus
 from pytradekit.utils.custom_types import InstCode
 from pytradekit.utils.exceptions import NoDataException, DataTypeException
 
@@ -1580,6 +1580,26 @@ class MongodbOperations:
             cursor = cursor.limit(limit)
         res = list(cursor)
         return res
+
+    def read_active_trade_records_bounded(self, limit=64, timeout_ms=1000):
+        """Read every active state in one capped query and one CSOT budget.
+
+        Timeout, incomplete reads and overflow propagate to the caller; none
+        can prove an empty active set. No indexes or singleton state are changed.
+        """
+        if type(limit) is not int or not 1 <= limit <= 5000:
+            raise ValueError('Active trade record limit must be 1..5000')
+        if type(timeout_ms) is not int or not 1 <= timeout_ms <= 5000:
+            raise ValueError('Active trade record timeout must be 1..5000ms')
+        query = {TradeRecordAttribute.status.name: {'$in': [
+            PremiumStatus.open.name, PremiumStatus.open_pending.name, PremiumStatus.close_pending.name]}}
+        with timeout(timeout_ms / 1000):
+            collection = self.client[Database.arbitrage.name][Database.trade_records.name]
+            with collection.find(query).limit(limit + 1).max_time_ms(timeout_ms) as cursor:
+                rows = list(cursor)
+        if len(rows) > limit:
+            raise OverflowError('Active trade record snapshot exceeds limit')
+        return rows
 
     def read_accounting_candidates(self, start_ms, limit=500, order='recent'):
         """Bounded discovery includes old open/blocked records, with truncation."""

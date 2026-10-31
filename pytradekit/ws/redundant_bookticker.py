@@ -407,9 +407,11 @@ class RedundantBookTickerFeed:
         if route.slot == 0 and not route.replacement:
             self._primary_highwater[symbol] = message
         self._observe_arrival(route, symbol, message)
+        if not self._contributes_delivery(route):
+            return  # Shadow observations update joint coverage without delivery work.
         if self._fresh(message):
             self._select(symbols=(symbol,))  # Stage every ordered transition, including during queries.
-        elif self.options.mode != 'shadow' or route.slot == 0 and not route.replacement:
+        else:
             high = self._staged_highwater.get(symbol) or self._highwater.get(symbol)
             if high is None or message['u'] > high['u']:
                 self._epochs[symbol] += 1
@@ -700,17 +702,31 @@ class RedundantBookTickerFeed:
 
     def is_current_bookticker_message(self, message):
         with self._lock:
-            symbol = message.get('s')
-            if not self._stop.is_set():
-                self._qualify_pending()
-            self._select(publish=False, symbols=(symbol,))
-            accepted = self._delivery_is_current(message)
-            if accepted:
-                self._consumer_gated_highwater[symbol] = max(
-                    message['u'], self._consumer_gated_highwater.get(symbol, -1))
-            elif self._retire_undelivered_transition(message):
-                self._delivery_drops += 1
-            return accepted
+            return self._gate_bookticker_message_locked(message)
+
+    def gate_bookticker_message(self, message: dict) -> tuple:
+        """Return the final message gate and its post-gate state under one lock."""
+        symbol = message.get('s') if isinstance(message, dict) else None
+        if not isinstance(symbol, str) or not symbol:
+            raise ValueError('message symbol must be a non-empty string')
+        with self._lock:
+            accepted = self._gate_bookticker_message_locked(message)
+            symbols = (symbol,) if symbol in self._targets else ()
+            state = dict(self._public_state_snapshot(symbols), symbol_scope=symbol)
+            return accepted, state
+
+    def _gate_bookticker_message_locked(self, message: dict) -> bool:
+        symbol = message.get('s')
+        if not self._stop.is_set():
+            self._qualify_pending()
+        self._select(publish=False, symbols=(symbol,))
+        accepted = self._delivery_is_current(message)
+        if accepted:
+            self._consumer_gated_highwater[symbol] = max(
+                message['u'], self._consumer_gated_highwater.get(symbol, -1))
+        elif self._retire_undelivered_transition(message):
+            self._delivery_drops += 1
+        return accepted
 
     def get_public_feed_state(self):
         with self._lock:
@@ -718,13 +734,28 @@ class RedundantBookTickerFeed:
             if not self._stop.is_set():
                 self._qualify_pending()
                 self._select(publish=False)
-            return {'stream_id': self._stream_id, 'generation': 1,
-                    'connected': bool(self._thread and not self._stop.is_set()), 'logical': True,
-                    'symbols': {symbol: {'epoch': self._epochs[symbol],
-                                         'available': self._available.get(symbol, False),
-                                         'delivery_pending': self._staged_highwater.get(symbol, {}).get('u', -1)
-                                             > self._consumer_gated_highwater.get(symbol, -1)}
-                                for symbol in self._targets}}
+            return self._public_state_snapshot(self._targets)
+
+    def get_public_symbol_state(self, symbol: str) -> dict:
+        """Check one symbol immediately; pending transitions retain their order."""
+        if not isinstance(symbol, str) or not symbol:
+            raise ValueError('symbol must be a non-empty string')
+        with self._lock:
+            self._reap_cleanup()
+            if not self._stop.is_set():
+                self._qualify_pending()
+                self._select(publish=False, symbols=(symbol,))
+            symbols = (symbol,) if symbol in self._targets else ()
+            return dict(self._public_state_snapshot(symbols), symbol_scope=symbol)
+
+    def _public_state_snapshot(self, symbols) -> dict:
+        return {'stream_id': self._stream_id, 'generation': 1,
+                'connected': bool(self._thread and not self._stop.is_set()), 'logical': True,
+                'symbols': {symbol: {'epoch': self._epochs[symbol],
+                                     'available': self._available.get(symbol, False),
+                                     'delivery_pending': self._staged_highwater.get(symbol, {}).get('u', -1)
+                                         > self._consumer_gated_highwater.get(symbol, -1)}
+                            for symbol in symbols}}
 
     @staticmethod
     def _socket_generation_count(route):

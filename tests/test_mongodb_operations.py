@@ -362,3 +362,72 @@ class TestAccountLookupValidation:
         assert ops.read_exchanges(user="first, second") == [ExchangeId.BN.name]
         collection.find.assert_called_once_with(
             {"is_mm": 1, "user": {"$in": ["first", "second"]}}, {"_id": 0, "exchange_id": 1})
+
+
+class TestBoundedActiveTradeRecords:
+    @staticmethod
+    def _ops(mocker, rows):
+        ops = object.__new__(MongodbOperations)
+        ops.client = mocker.MagicMock()
+        collection = ops.client['arbitrage']['trade_records']
+        cursor = collection.find.return_value
+        cursor.limit.return_value = cursor
+        cursor.max_time_ms.return_value = cursor
+        cursor.__enter__.return_value = cursor
+        cursor.__iter__.return_value = iter(rows)
+        return ops, collection, cursor
+
+    def test_one_query_covers_all_active_states_with_one_budget(self, mocker):
+        """Status migration stays inside one active-set query and CSOT block."""
+        import pymongo
+        scope = mocker.patch('pytradekit.utils.mongodb_operations.timeout', wraps=pymongo.timeout, create=True)
+        rows = [{'trade_id': 'owner', 'status': 'open'}, {'trade_id': 'other', 'status': 'close_pending'}]
+        ops, collection, cursor = self._ops(mocker, rows)
+
+        assert ops.read_active_trade_records_bounded() == rows
+        collection.find.assert_called_once_with({'status': {'$in': ['open', 'open_pending', 'close_pending']}})
+        cursor.limit.assert_called_once_with(65)
+        cursor.max_time_ms.assert_called_once_with(1000)
+        scope.assert_called_once_with(1)
+
+    def test_overflow_is_not_empty_or_partial_success(self, mocker):
+        ops, _, _ = self._ops(mocker, [{'trade_id': 'first'}, {'trade_id': 'second'}])
+        with pytest.raises(OverflowError):
+            ops.read_active_trade_records_bounded(limit=1)
+
+    def test_cursor_timeout_propagates_without_empty_success(self, mocker):
+        from pymongo.errors import NetworkTimeout
+        ops, _, cursor = self._ops(mocker, [])
+        cursor.__iter__.side_effect = NetworkTimeout('offline timeout')
+        with pytest.raises(NetworkTimeout):
+            ops.read_active_trade_records_bounded()
+
+    @pytest.mark.parametrize('kwargs', [
+        {'limit': True}, {'limit': 0}, {'limit': 5001}, {'limit': 1.5},
+        {'timeout_ms': True}, {'timeout_ms': 0}, {'timeout_ms': 5001}, {'timeout_ms': '1000'},
+    ])
+    def test_invalid_budget_fails_before_query(self, mocker, kwargs):
+        ops, collection, _ = self._ops(mocker, [])
+        with pytest.raises(ValueError):
+            ops.read_active_trade_records_bounded(**kwargs)
+        collection.find.assert_not_called()
+
+    def test_real_driver_csot_bounds_server_selection(self):
+        """A credential-free loopback refusal cannot consume the 5s client timeout."""
+        import time
+        from pymongo import MongoClient
+        from pymongo.errors import PyMongoError
+        client = MongoClient('mongodb://127.0.0.1:1/?directConnection=true',
+                             serverSelectionTimeoutMS=5000, connect=False)
+        ops = object.__new__(MongodbOperations)
+        ops.client = client
+        started = time.monotonic()
+        try:
+            with pytest.raises(PyMongoError) as error:
+                ops.read_active_trade_records_bounded(timeout_ms=100)
+            elapsed = time.monotonic() - started
+            assert error.value.timeout
+            assert elapsed < 2, f'CSOT exceeded the 100ms budget: {elapsed:.3f}s'
+            print(f'loopback_csot_elapsed_ms={elapsed * 1000:.1f}')
+        finally:
+            client.close()

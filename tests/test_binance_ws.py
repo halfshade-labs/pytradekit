@@ -301,7 +301,7 @@ class TestBookTickerReceiveTimestamp:
         assert first['u'] < second['u']
         assert mgr._queue.empty()
 
-    def test_same_price_quantity_burst_is_rate_limited(self, mocker):
+    def test_same_price_quantity_burst_preserves_every_update(self, mocker):
         from pytradekit.utils.dynamic_types import BinanceWebSocket
 
         mgr = _make_manager(is_perp=False)
@@ -332,13 +332,12 @@ class TestBookTickerReceiveTimestamp:
                 'A': str(3.3 + offset),
             }))
 
-        first = mgr._queue.get_nowait()
-        heartbeat = mgr._queue.get_nowait()
-        assert first['u'] == 789
-        assert heartbeat['u'] == 792
-        assert heartbeat[BinanceWebSocket.run_time_ms.value] == (
-            first_receive_time_ms + 250
-        )
+        frames = [mgr._queue.get_nowait() for _ in range(4)]
+        assert [frame['u'] for frame in frames] == [789, 790, 791, 792]
+        assert [frame[BinanceWebSocket.run_time_ms.value] for frame in frames] == [
+            first_receive_time_ms, first_receive_time_ms + 100,
+            first_receive_time_ms + 249, first_receive_time_ms + 250,
+        ]
         assert mgr._queue.empty()
 
     def test_price_change_is_forwarded_inside_refresh_interval(self, mocker):

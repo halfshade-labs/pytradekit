@@ -83,6 +83,34 @@ def test_spot_without_exchange_clock_reports_local_receive_basis(manager):
     assert health['local_receive_symbol_count'] == 1
 
 
+@pytest.mark.parametrize('is_perp', [False, True])
+def test_distinct_same_price_public_updates_preserve_quantity_transitions(manager, monkeypatch, is_perp):
+    """A new ordered BBO remains a transition when only its size changed."""
+    manager._is_perp = is_perp
+    received = NOW
+    monkeypatch.setattr('pytradekit.ws.binance_ws.get_timestamp_ms', lambda: received)
+    for update in range(1, 5):
+        received = NOW + update
+        message = book(update, B=str(update), A=str(update + 1), E=received, T=received)
+        manager._on_message(manager.ws, json.dumps(message))
+    frames = [manager._queue.get_nowait() for _ in range(manager._queue.qsize())]
+    assert [frame['u'] for frame in frames] == [1, 2, 3, 4]
+    assert [frame['B'] for frame in frames] == ['1', '2', '3', '4']
+
+
+def test_same_price_fresh_source_update_is_not_hidden_by_sampling(manager, monkeypatch):
+    """Near-expiry old source data must not hide a newer raw observation."""
+    received = NOW
+    monkeypatch.setattr('pytradekit.ws.binance_ws.get_timestamp_ms', lambda: received)
+    manager._on_message(manager.ws, json.dumps(book(1, E=NOW - 999, T=NOW - 999)))
+    received += 1
+    manager._on_message(manager.ws, json.dumps(book(2, E=received, T=received)))
+    received += 1
+    health = manager.get_public_feed_health()
+    assert health['fresh_symbol_count'] == 1
+    assert manager._queue.qsize() == 2
+
+
 @pytest.mark.parametrize('changes', [
     {'b': 'NaN'}, {'a': '99'}, {'B': '0'}, {'E': NOW - 1001}, {'E': NOW + 1},
 ])
