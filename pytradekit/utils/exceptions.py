@@ -5,6 +5,22 @@ class JwjException(Exception):
     """
 
 
+class PublicFeedReadTimeout(JwjException):
+    """A public feed snapshot could not be accepted before its deadline."""
+
+    def __init__(self, note=None):
+        super().__init__('public feed read deadline expired')
+        self.note = note
+
+
+class PublicFeedReadCancelled(JwjException):
+    """A caller cancelled its public feed snapshot read."""
+
+    def __init__(self, note=None):
+        super().__init__('public feed read cancelled')
+        self.note = note
+
+
 class NoDataException(JwjException):
     def __init__(self, note=None):
         super().__init__('no data for next action')

@@ -2,12 +2,15 @@ import time
 import json
 import random
 from threading import RLock, Thread, current_thread
-from typing import Iterable, List
+from typing import Iterable, List, Optional
 
 import requests
 
 from pytradekit.utils.dynamic_types import BinanceAuxiliary, BinanceWebSocket, ExchangeId, WebsocketStatus
 from pytradekit.gateway.websocket.ws_manager import WsManager
+from pytradekit.gateway.websocket.public_feed_access import (
+    PublicFeedReadBudget, _public_feed_read_lock,
+)
 from pytradekit.utils.time_handler import (
     get_timestamp_ms, get_timestamp_s, get_millisecond_str, get_datetime,
     get_monotonic_timestamp_ns, TimeSpan, sleep_min_time,
@@ -96,9 +99,12 @@ class BinanceWsManager(WsManager):
             and self._bookticker_health.retired_generation != self._generation
         )
 
-    def is_current_bookticker_message(self, message):
+    def is_current_bookticker_message(
+        self, message, *, read_budget: Optional[PublicFeedReadBudget] = None,
+    ):
         """Reject an IPC quote from a retired connection or replaced manager."""
-        with self._state_lock:
+        with (self._state_lock if read_budget is None else
+              _public_feed_read_lock(self._state_lock, read_budget)):
             return (
                 self._accept_public_socket(self.ws) and self._is_connected(self.ws)
                 and message.get(BinanceWebSocket.connection_id.value)
@@ -107,9 +113,10 @@ class BinanceWsManager(WsManager):
                 == self._generation
             )
 
-    def get_public_feed_state(self):
+    def get_public_feed_state(self, *, read_budget: Optional[PublicFeedReadBudget] = None):
         """Constant-time generation gate for queue consumers, without coverage scans."""
-        with self._state_lock:
+        with (self._state_lock if read_budget is None else
+              _public_feed_read_lock(self._state_lock, read_budget)):
             return {
                 'stream_id': self._bookticker_health.stream_id,
                 'generation': self._generation,
