@@ -6,7 +6,46 @@ from pytradekit.trading_setup.inst_code_usage import get_mm_target, DepthThresho
     MmInstCode, \
     fetch_mm_inst_code, get_pair_key_mm_target, get_related_inst_code
 from pytradekit.utils.dynamic_types import MmTarget, ExchangeId
-from pytradekit.utils.custom_types import Pair
+from pytradekit.utils.custom_types import InstCode, Pair
+from pytradekit.trading_setup.inst_code_usage import (
+    convert_symbol_to_inst_code, convert_symbol_to_pair,
+)
+
+
+@pytest.mark.parametrize('symbol, pair', [
+    ('BTCFDUSD', 'BTC-FDUSD'),
+    ('BTCTUSD', 'BTC-TUSD'),
+    ('BTCUSD', 'BTC-USD'),
+    ('BTCUSDT', 'BTC-USDT'),
+    ('BTCUSDC', 'BTC-USDC'),
+    ('BTCBUSD', 'BTC-BUSD'),
+    ('ETHBTC', 'ETH-BTC'),
+    ('SOLeth', 'SOL-ETH'),
+    ('btcfdusd', 'BTC-FDUSD'),
+    ('BTC-FDUSD', 'BTC-FDUSD'),
+    ('DOT-USD', 'DOT-USD'),
+    ('HOT-USD', 'HOT-USD'),
+    ('dot-usd', 'DOT-USD'),
+])
+def test_symbol_conversion_uses_longest_supported_quote(symbol, pair):
+    """Shared conversion and legacy InstCode parsing must agree on the quote."""
+    assert convert_symbol_to_pair(symbol) == pair
+    expected = f'{pair}_BN.SPOT'
+    assert convert_symbol_to_inst_code(symbol) == expected
+    assert str(InstCode.from_string(f'{symbol}_BN.SPOT')) == expected
+
+
+@pytest.mark.parametrize('symbol', ['FDUSD', 'TUSD', 'USD', 'USDT', 'FOOXYZ'])
+def test_symbol_without_a_known_base_and_quote_preserves_fallback(symbol):
+    """A bare quote must not fall through to a shorter suffix."""
+    assert convert_symbol_to_pair(symbol) == symbol
+    assert convert_symbol_to_inst_code(symbol) == f'{symbol}_BN.SPOT'
+    assert str(InstCode.from_string(f'{symbol}_BN.SPOT')) == f'{symbol}_BN.SPOT'
+
+
+def test_unknown_separated_quote_preserves_existing_normalization():
+    """Unsupported quotes retain the existing compact uppercase fallback."""
+    assert convert_symbol_to_pair('foo-xyz') == 'FOOXYZ'
 
 
 @pytest.mark.parametrize(

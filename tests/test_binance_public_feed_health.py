@@ -212,9 +212,12 @@ def test_removed_targets_are_pruned_and_coverage_samples_are_bounded(manager):
     assert not manager._bookticker_health.quotes
 
 
-def test_missing_subscription_responses_have_bounded_state_and_never_claim_ack(manager):
+def test_missing_subscription_responses_have_bounded_state_and_never_claim_ack(manager, monkeypatch):
+    # This test exercises ACK bookkeeping; pacing and STOP have dedicated tests.
+    monkeypatch.setattr(manager, '_pace_public_control', Mock())
     for _ in range(70):
         manager.send_json({'method': 'SUBSCRIBE', 'params': ['btcusdt@bookTicker']})
+    assert manager.ws.send.call_count == 70
     manager._on_message(manager.ws, json.dumps({'id': 69, 'result': None}))
     health = manager.get_public_feed_health()
     assert health['subscription_tracking_lost']

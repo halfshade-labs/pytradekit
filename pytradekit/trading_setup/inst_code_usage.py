@@ -314,16 +314,25 @@ def convert_symbol_to_pair(symbol: str) -> str:
     Example:
         'BTCUSDT' -> 'BTC-USDT'
     """
-    symbol = symbol.upper().replace("-", "")
+    symbol = symbol.upper()
 
     # Common quote currencies (ordered by length to match longest first)
-    quote_currencies = ["USDT", "USDC", "BUSD", "USD", "BTC", "ETH"]
+    quote_currencies = sorted(
+        ("USDT", "USDC", "BUSD", "FDUSD", "TUSD", "USD", "BTC", "ETH"),
+        key=len, reverse=True,
+    )
+
+    # An explicit supported quote disambiguates pairs such as DOT-USD.
+    if symbol.count('-') == 1:
+        base, quote = symbol.split('-')
+        if base and quote in quote_currencies:
+            return symbol
+    symbol = symbol.replace('-', '')
 
     for quote in quote_currencies:
         if symbol.endswith(quote):
             base = symbol[: -len(quote)]
-            if base:
-                return f"{base}-{quote}"
+            return f"{base}-{quote}" if base else symbol
 
     # If no known quote currency found, return as-is (for edge cases)
     return symbol
