@@ -1,10 +1,17 @@
 version: '3.8'
 
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
 services:
   mongodb:
     image: mongo:8.0@sha256:ffa440e8d62533e24a67696ae1bbb46e610ebb3167d65abd122b496ae06d28e6
     container_name: infra_mongodb
     restart: unless-stopped
+    logging: *logging
     volumes:
       - mongodb_data_v8:/data/db
       - /etc/codex/secrets/mongodb-health.env:/run/secrets/mongodb-health.env:ro
@@ -34,6 +41,7 @@ services:
     image: redis:7.2.1
     container_name: infra_redis
     restart: unless-stopped
+    logging: *logging
     volumes:
       - redis_data:/data
     networks:
