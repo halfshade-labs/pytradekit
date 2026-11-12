@@ -1,0 +1,573 @@
+{
+  "scope": "actual source-extracted PTK method; I/O-free receiver, not a socket test",
+  "source_sha256": "db5ec16637dc31ba5c1a0e70e8236c626b540d43cc12dd8db3da00c01ba5410d",
+  "method_sha256": "56e992868cc4f9fa755d2c096e7b32c97297dec69e750b9b58fea8b3533fbec2",
+  "constants": {
+    "RECONNECT_BASE_DELAY_MS": 1000,
+    "RECONNECT_MAX_DELAY_MS": 30000,
+    "RECONNECT_STABLE_CONNECTION_MS": 60000,
+    "PUBLIC_RECONNECT_JITTER_MS": 250
+  },
+  "cases": [
+    {
+      "attempt_before": 0,
+      "opened_age_ms": null,
+      "jitter_ms": 0,
+      "attempt_after": 1,
+      "delay_ms": 1000,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 0,
+      "opened_age_ms": null,
+      "jitter_ms": 250,
+      "attempt_after": 1,
+      "delay_ms": 1250,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 0,
+      "opened_age_ms": 0,
+      "jitter_ms": 0,
+      "attempt_after": 1,
+      "delay_ms": 1000,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 0,
+      "opened_age_ms": 0,
+      "jitter_ms": 250,
+      "attempt_after": 1,
+      "delay_ms": 1250,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 0,
+      "opened_age_ms": 59999,
+      "jitter_ms": 0,
+      "attempt_after": 1,
+      "delay_ms": 1000,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 0,
+      "opened_age_ms": 59999,
+      "jitter_ms": 250,
+      "attempt_after": 1,
+      "delay_ms": 1250,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 0,
+      "opened_age_ms": 60000,
+      "jitter_ms": 0,
+      "attempt_after": 1,
+      "delay_ms": 1000,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 0,
+      "opened_age_ms": 60000,
+      "jitter_ms": 250,
+      "attempt_after": 1,
+      "delay_ms": 1250,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 0,
+      "opened_age_ms": 60001,
+      "jitter_ms": 0,
+      "attempt_after": 1,
+      "delay_ms": 1000,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 0,
+      "opened_age_ms": 60001,
+      "jitter_ms": 250,
+      "attempt_after": 1,
+      "delay_ms": 1250,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 1,
+      "opened_age_ms": null,
+      "jitter_ms": 0,
+      "attempt_after": 2,
+      "delay_ms": 2000,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 1,
+      "opened_age_ms": null,
+      "jitter_ms": 250,
+      "attempt_after": 2,
+      "delay_ms": 2250,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 1,
+      "opened_age_ms": 0,
+      "jitter_ms": 0,
+      "attempt_after": 2,
+      "delay_ms": 2000,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 1,
+      "opened_age_ms": 0,
+      "jitter_ms": 250,
+      "attempt_after": 2,
+      "delay_ms": 2250,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 1,
+      "opened_age_ms": 59999,
+      "jitter_ms": 0,
+      "attempt_after": 2,
+      "delay_ms": 2000,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 1,
+      "opened_age_ms": 59999,
+      "jitter_ms": 250,
+      "attempt_after": 2,
+      "delay_ms": 2250,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 1,
+      "opened_age_ms": 60000,
+      "jitter_ms": 0,
+      "attempt_after": 1,
+      "delay_ms": 1000,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 1,
+      "opened_age_ms": 60000,
+      "jitter_ms": 250,
+      "attempt_after": 1,
+      "delay_ms": 1250,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 1,
+      "opened_age_ms": 60001,
+      "jitter_ms": 0,
+      "attempt_after": 1,
+      "delay_ms": 1000,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 1,
+      "opened_age_ms": 60001,
+      "jitter_ms": 250,
+      "attempt_after": 1,
+      "delay_ms": 1250,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 2,
+      "opened_age_ms": null,
+      "jitter_ms": 0,
+      "attempt_after": 3,
+      "delay_ms": 4000,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 2,
+      "opened_age_ms": null,
+      "jitter_ms": 250,
+      "attempt_after": 3,
+      "delay_ms": 4250,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 2,
+      "opened_age_ms": 0,
+      "jitter_ms": 0,
+      "attempt_after": 3,
+      "delay_ms": 4000,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 2,
+      "opened_age_ms": 0,
+      "jitter_ms": 250,
+      "attempt_after": 3,
+      "delay_ms": 4250,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 2,
+      "opened_age_ms": 59999,
+      "jitter_ms": 0,
+      "attempt_after": 3,
+      "delay_ms": 4000,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 2,
+      "opened_age_ms": 59999,
+      "jitter_ms": 250,
+      "attempt_after": 3,
+      "delay_ms": 4250,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 2,
+      "opened_age_ms": 60000,
+      "jitter_ms": 0,
+      "attempt_after": 1,
+      "delay_ms": 1000,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 2,
+      "opened_age_ms": 60000,
+      "jitter_ms": 250,
+      "attempt_after": 1,
+      "delay_ms": 1250,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 2,
+      "opened_age_ms": 60001,
+      "jitter_ms": 0,
+      "attempt_after": 1,
+      "delay_ms": 1000,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 2,
+      "opened_age_ms": 60001,
+      "jitter_ms": 250,
+      "attempt_after": 1,
+      "delay_ms": 1250,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 3,
+      "opened_age_ms": null,
+      "jitter_ms": 0,
+      "attempt_after": 4,
+      "delay_ms": 8000,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 3,
+      "opened_age_ms": null,
+      "jitter_ms": 250,
+      "attempt_after": 4,
+      "delay_ms": 8250,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 3,
+      "opened_age_ms": 0,
+      "jitter_ms": 0,
+      "attempt_after": 4,
+      "delay_ms": 8000,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 3,
+      "opened_age_ms": 0,
+      "jitter_ms": 250,
+      "attempt_after": 4,
+      "delay_ms": 8250,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 3,
+      "opened_age_ms": 59999,
+      "jitter_ms": 0,
+      "attempt_after": 4,
+      "delay_ms": 8000,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 3,
+      "opened_age_ms": 59999,
+      "jitter_ms": 250,
+      "attempt_after": 4,
+      "delay_ms": 8250,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 3,
+      "opened_age_ms": 60000,
+      "jitter_ms": 0,
+      "attempt_after": 1,
+      "delay_ms": 1000,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 3,
+      "opened_age_ms": 60000,
+      "jitter_ms": 250,
+      "attempt_after": 1,
+      "delay_ms": 1250,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 3,
+      "opened_age_ms": 60001,
+      "jitter_ms": 0,
+      "attempt_after": 1,
+      "delay_ms": 1000,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 3,
+      "opened_age_ms": 60001,
+      "jitter_ms": 250,
+      "attempt_after": 1,
+      "delay_ms": 1250,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 4,
+      "opened_age_ms": null,
+      "jitter_ms": 0,
+      "attempt_after": 5,
+      "delay_ms": 16000,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 4,
+      "opened_age_ms": null,
+      "jitter_ms": 250,
+      "attempt_after": 5,
+      "delay_ms": 16250,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 4,
+      "opened_age_ms": 0,
+      "jitter_ms": 0,
+      "attempt_after": 5,
+      "delay_ms": 16000,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 4,
+      "opened_age_ms": 0,
+      "jitter_ms": 250,
+      "attempt_after": 5,
+      "delay_ms": 16250,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 4,
+      "opened_age_ms": 59999,
+      "jitter_ms": 0,
+      "attempt_after": 5,
+      "delay_ms": 16000,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 4,
+      "opened_age_ms": 59999,
+      "jitter_ms": 250,
+      "attempt_after": 5,
+      "delay_ms": 16250,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 4,
+      "opened_age_ms": 60000,
+      "jitter_ms": 0,
+      "attempt_after": 1,
+      "delay_ms": 1000,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 4,
+      "opened_age_ms": 60000,
+      "jitter_ms": 250,
+      "attempt_after": 1,
+      "delay_ms": 1250,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 4,
+      "opened_age_ms": 60001,
+      "jitter_ms": 0,
+      "attempt_after": 1,
+      "delay_ms": 1000,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 4,
+      "opened_age_ms": 60001,
+      "jitter_ms": 250,
+      "attempt_after": 1,
+      "delay_ms": 1250,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 5,
+      "opened_age_ms": null,
+      "jitter_ms": 0,
+      "attempt_after": 6,
+      "delay_ms": 29750,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 5,
+      "opened_age_ms": null,
+      "jitter_ms": 250,
+      "attempt_after": 6,
+      "delay_ms": 30000,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 5,
+      "opened_age_ms": 0,
+      "jitter_ms": 0,
+      "attempt_after": 6,
+      "delay_ms": 29750,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 5,
+      "opened_age_ms": 0,
+      "jitter_ms": 250,
+      "attempt_after": 6,
+      "delay_ms": 30000,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 5,
+      "opened_age_ms": 59999,
+      "jitter_ms": 0,
+      "attempt_after": 6,
+      "delay_ms": 29750,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 5,
+      "opened_age_ms": 59999,
+      "jitter_ms": 250,
+      "attempt_after": 6,
+      "delay_ms": 30000,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 5,
+      "opened_age_ms": 60000,
+      "jitter_ms": 0,
+      "attempt_after": 1,
+      "delay_ms": 1000,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 5,
+      "opened_age_ms": 60000,
+      "jitter_ms": 250,
+      "attempt_after": 1,
+      "delay_ms": 1250,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 5,
+      "opened_age_ms": 60001,
+      "jitter_ms": 0,
+      "attempt_after": 1,
+      "delay_ms": 1000,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 5,
+      "opened_age_ms": 60001,
+      "jitter_ms": 250,
+      "attempt_after": 1,
+      "delay_ms": 1250,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 6,
+      "opened_age_ms": null,
+      "jitter_ms": 0,
+      "attempt_after": 6,
+      "delay_ms": 29750,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 6,
+      "opened_age_ms": null,
+      "jitter_ms": 250,
+      "attempt_after": 6,
+      "delay_ms": 30000,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 6,
+      "opened_age_ms": 0,
+      "jitter_ms": 0,
+      "attempt_after": 6,
+      "delay_ms": 29750,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 6,
+      "opened_age_ms": 0,
+      "jitter_ms": 250,
+      "attempt_after": 6,
+      "delay_ms": 30000,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 6,
+      "opened_age_ms": 59999,
+      "jitter_ms": 0,
+      "attempt_after": 6,
+      "delay_ms": 29750,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 6,
+      "opened_age_ms": 59999,
+      "jitter_ms": 250,
+      "attempt_after": 6,
+      "delay_ms": 30000,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 6,
+      "opened_age_ms": 60000,
+      "jitter_ms": 0,
+      "attempt_after": 1,
+      "delay_ms": 1000,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 6,
+      "opened_age_ms": 60000,
+      "jitter_ms": 250,
+      "attempt_after": 1,
+      "delay_ms": 1250,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 6,
+      "opened_age_ms": 60001,
+      "jitter_ms": 0,
+      "attempt_after": 1,
+      "delay_ms": 1000,
+      "lifetime_consumed": true
+    },
+    {
+      "attempt_before": 6,
+      "opened_age_ms": 60001,
+      "jitter_ms": 250,
+      "attempt_after": 1,
+      "delay_ms": 1250,
+      "lifetime_consumed": true
+    }
+  ]
+}
