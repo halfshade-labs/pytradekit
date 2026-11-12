@@ -1,0 +1,81 @@
+name: Rust public market
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'rust/public-market/**'
+      - '.github/workflows/rust-public-market.yml'
+  pull_request:
+    paths:
+      - 'rust/public-market/**'
+      - '.github/workflows/rust-public-market.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  rust-public-market:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      RUST_IMAGE: rust@sha256:3914072ca0c3b8aad871db9169a651ccfce30cf58303e5d6f2db16d1d8a7e58f
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Fetch locked dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          task_root="$(mktemp -d "${RUNNER_TEMP}/ptk-public-market.XXXXXX")"
+          mkdir -p "$task_root/cargo-home" "$task_root/target"
+          printf 'PTK_TASK_ROOT=%s\n' "$task_root" >> "$GITHUB_ENV"
+          runner_uid="$(id -u)"
+          runner_gid="$(id -g)"
+          docker pull "$RUST_IMAGE"
+          docker run --rm \
+            --network=bridge \
+            --cpus=1 --memory=768m --memory-swap=768m --pids-limit=64 \
+            --read-only --cap-drop=ALL --security-opt=no-new-privileges \
+            --user "$runner_uid:$runner_gid" \
+            --tmpfs "/tmp:rw,nosuid,nodev,size=128m,uid=$runner_uid,gid=$runner_gid" \
+            --mount "type=bind,src=$GITHUB_WORKSPACE/rust/public-market,dst=/work/rust/public-market,readonly" \
+            --mount "type=bind,src=$task_root/cargo-home,dst=/cargo" \
+            --mount "type=bind,src=$task_root/target,dst=/target" \
+            --env HOME=/tmp --env CARGO_HOME=/cargo --env CARGO_TARGET_DIR=/target \
+            --env CARGO_BUILD_JOBS=1 --workdir /work \
+            --entrypoint /bin/sh "$RUST_IMAGE" -eu -c \
+            'cargo fetch --locked --manifest-path /work/rust/public-market/Cargo.toml'
+
+      - name: Run real offline tests and release replay build
+        shell: bash
+        run: |
+          set -euo pipefail
+          runner_uid="$(id -u)"
+          runner_gid="$(id -g)"
+          docker run --rm --pull=never \
+            --network=none \
+            --cpus=1 --memory=768m --memory-swap=768m --pids-limit=64 \
+            --read-only --cap-drop=ALL --security-opt=no-new-privileges \
+            --user "$runner_uid:$runner_gid" \
+            --tmpfs "/tmp:rw,nosuid,nodev,size=128m,uid=$runner_uid,gid=$runner_gid" \
+            --mount "type=bind,src=$GITHUB_WORKSPACE/rust/public-market,dst=/work/rust/public-market,readonly" \
+            --mount "type=bind,src=$PTK_TASK_ROOT/cargo-home,dst=/cargo" \
+            --mount "type=bind,src=$PTK_TASK_ROOT/target,dst=/target" \
+            --env HOME=/tmp --env CARGO_HOME=/cargo --env CARGO_TARGET_DIR=/target \
+            --env CARGO_BUILD_JOBS=1 --env RUST_TEST_THREADS=1 --workdir /work \
+            --entrypoint /bin/sh "$RUST_IMAGE" -eu -c '
+              cargo test --locked --offline --manifest-path /work/rust/public-market/Cargo.toml
+              cargo build --locked --offline --release --manifest-path /work/rust/public-market/Cargo.toml --bin public-market-replay
+            '
+
+      - name: Remove task cache and target
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "${PTK_TASK_ROOT:-}" && "$PTK_TASK_ROOT" == "$RUNNER_TEMP"/ptk-public-market.* ]]; then
+            rm -rf -- "$PTK_TASK_ROOT"
+          fi
