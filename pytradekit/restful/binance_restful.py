@@ -1,12 +1,15 @@
 import asyncio
+from copy import deepcopy
 from decimal import Decimal
 from typing import Any, Dict, Optional
 from urllib.parse import urlencode
+import ssl
 import time
 
 import httpx
 import requests
-from requests.adapters import HTTPAdapter
+from requests.adapters import BaseAdapter, HTTPAdapter
+from urllib3.exceptions import ProtocolError, SSLError as Urllib3SSLError
 from urllib3.util.retry import Retry
 import base64
 
@@ -30,6 +33,56 @@ RETRY_INTERVAL = 5
 # 长生命周期复用 session 时下次请求会拿到死 socket 触发 RemoteDisconnected。
 # 仅对 GET 自动重试，避免 POST/DELETE（下单/撤单）被重复执行。
 SYNC_HTTP_TIMEOUT = (5, 30)  # (connect, read)
+_SIGNED_GET_TRANSPORT_HEADER = 'X-PTK-Signed-Get-Transport'
+_SIGNED_GET_TRANSPORT_VALUE = 'single-attempt'
+
+
+def _create_sync_retry() -> Retry:
+    return Retry(
+        total=3, connect=3, read=3,
+        backoff_factor=0.3,
+        status_forcelist=[502, 503, 504],
+        allowed_methods=frozenset(['GET']),
+        raise_on_status=False,
+    )
+
+
+def _get_transport_cause(error: BaseException) -> BaseException:
+    cause = error
+    for _ in range(4):
+        nested = (getattr(cause, 'reason', None)
+                  or getattr(cause, 'original_error', None)
+                  or cause.__cause__)
+        if not isinstance(nested, BaseException) and cause.args:
+            nested = cause.args[0]
+        if not isinstance(nested, BaseException) or nested is cause:
+            break
+        cause = nested
+    return cause
+
+
+class _SignedGetAdapterRouter(BaseAdapter):
+    """Keep signed GET replay above signing without mutating shared adapters."""
+
+    def __init__(self) -> None:
+        self.signed_get_adapter = HTTPAdapter(
+            max_retries=0, pool_connections=10, pool_maxsize=20,
+        )
+        self.fallback_adapter = HTTPAdapter(
+            max_retries=_create_sync_retry(),
+            pool_connections=10, pool_maxsize=20,
+        )
+
+    def send(self, request: requests.PreparedRequest, **kwargs: Any) -> requests.Response:
+        adapter = self.fallback_adapter
+        marker = request.headers.pop(_SIGNED_GET_TRANSPORT_HEADER, None)
+        if request.method == 'GET' and marker == _SIGNED_GET_TRANSPORT_VALUE:
+            adapter = self.signed_get_adapter
+        return adapter.send(request, **kwargs)
+
+    def close(self) -> None:
+        self.signed_get_adapter.close()
+        self.fallback_adapter.close()
 
 
 class BinanceClient:
@@ -40,14 +93,7 @@ class BinanceClient:
         self.passphrase = passphrase
         self.account_id = account_id
         self.session = requests.session()
-        retry = Retry(
-            total=3, connect=3, read=3,
-            backoff_factor=0.3,
-            status_forcelist=[502, 503, 504],
-            allowed_methods=frozenset(['GET']),
-            raise_on_status=False,
-        )
-        adapter = HTTPAdapter(max_retries=retry, pool_connections=10, pool_maxsize=20)
+        adapter = _SignedGetAdapterRouter()
         self.session.mount('https://', adapter)
         self.session.mount('http://', adapter)
         self.logger = logger
@@ -75,12 +121,17 @@ class BinanceClient:
         return private_key_b64
 
     def request(self, method, url, params=None, use_sign=True):
+        diagnostic_url = url.partition('?')[0] if use_sign else url
         try:
-            headers = {}
+            # A call must opt in explicitly; Session defaults cannot select
+            # single-attempt transport for unsigned requests or writes.
+            headers = {_SIGNED_GET_TRANSPORT_HEADER: None}
             if use_sign:
                 headers["X-MBX-APIKEY"] = self.api_key
 
-            if method == "GET":
+            if method == "GET" and use_sign:
+                resp = self._request_signed_get(url, params)
+            elif method == "GET":
                 resp = self.session.get(url, headers=headers, params=params, timeout=SYNC_HTTP_TIMEOUT)
             elif method == "POST":
                 resp = self.session.post(url, headers=headers, data=params, timeout=SYNC_HTTP_TIMEOUT)
@@ -97,7 +148,7 @@ class BinanceClient:
 
             # Check for non-2xx status codes
             if not resp.ok:
-                error_msg = f"HTTP {resp.status_code} error for {method} {url}"
+                error_msg = f"HTTP {resp.status_code} error for {method} {diagnostic_url}"
                 try:
                     error_body = resp.text[:500]  # Limit error message length
                     self.logger.error(f"{error_msg}, response: {error_body}")
@@ -110,15 +161,81 @@ class BinanceClient:
                 result = resp.json()
                 return result
             except ValueError as json_err:
-                error_msg = f"Failed to parse JSON response for {method} {url}, status: {resp.status_code}"
+                error_msg = f"Failed to parse JSON response for {method} {diagnostic_url}, status: {resp.status_code}"
                 response_text = resp.text[:500]  # Limit error message length
                 self.logger.error(f"{error_msg}, response body: {response_text}")
                 raise ExchangeException(f"{error_msg}") from json_err
         except ExchangeException:
             raise
         except Exception as e:
+            if method == 'GET' and use_sign:
+                cause_name = type(_get_transport_cause(e)).__name__
+                self.logger.error(
+                    f'Signed GET failed: {type(e).__name__}, cause: {cause_name}',
+                )
+                raise ExchangeException(
+                    f'Request error {method} {diagnostic_url} ({cause_name})',
+                ) from None
             self.logger.exception(e)
             raise ExchangeException(f"Request error {method} {url}") from e
+
+    def _request_signed_get(
+        self, url: str, params: Optional[Dict[str, Any]],
+    ) -> requests.Response:
+        retry = _create_sync_retry()
+        max_attempts = retry.total + 1
+        original_params = deepcopy(params or {})
+        for attempt in range(max_attempts):
+            # Normalize only this GET attempt; legacy first-sign callers retain
+            # their existing in-place encoding, including nullable values.
+            signed_params = {
+                name: ([item for item in value if item is not None]
+                       if isinstance(value, (list, tuple)) else value)
+                for name, value in original_params.items()
+                if name != 'signature' and value is not None
+            }
+            self._sign_parameters(signed_params, self.get_timestamp())
+            try:
+                response = self.session.get(
+                    url, headers={
+                        'X-MBX-APIKEY': self.api_key,
+                        _SIGNED_GET_TRANSPORT_HEADER: _SIGNED_GET_TRANSPORT_VALUE,
+                    },
+                    params=signed_params, timeout=SYNC_HTTP_TIMEOUT,
+                    allow_redirects=False, stream=True,
+                )
+            except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as error:
+                cause = _get_transport_cause(error)
+                if (isinstance(error, requests.exceptions.SSLError)
+                        or isinstance(cause, (ssl.SSLError, Urllib3SSLError, ValueError))
+                        or attempt == max_attempts - 1):
+                    raise
+                retry = retry.increment(
+                    method='GET', error=ProtocolError('Transient signed GET failure'),
+                )
+                retry.sleep()
+                continue
+            if 300 <= response.status_code < 400:
+                response.close()
+                raise ExchangeException('Signed GET redirect rejected')
+            should_retry = retry.is_retry(
+                'GET', response.status_code,
+                has_retry_after=bool(response.headers.get('Retry-After')),
+            )
+            if not should_retry or attempt == max_attempts - 1:
+                return self._consume_signed_get_response(response)
+            retry = retry.increment(method='GET', response=response.raw)
+            response.close()
+            retry.sleep(response.raw)
+
+    @staticmethod
+    def _consume_signed_get_response(response: requests.Response) -> requests.Response:
+        try:
+            # Final body failures must escape the application retry loop.
+            _ = response.content
+            return response
+        finally:
+            response.close()
 
     @async_retry_decorator(max_retries=RETRY_TIMES, wait_time=RETRY_INTERVAL)
     async def async_request(self, method, url, use_sign=True, http_client=None, params=None):
@@ -248,19 +365,22 @@ class BinanceClient:
             url = url + '?' + query_string
         return url
 
+    def _sign_parameters(
+        self, params: Dict[str, Any], timestamp: int,
+    ) -> Dict[str, Any]:
+        # Preserve the original builder's in-place first-sign byte encoding.
+        params.setdefault('recvWindow', RECVWINDOW)
+        params['timestamp'] = timestamp
+        payload = urlencode(params, doseq=True)
+        params['signature'] = self._hashing(payload)
+        return params
+
     def _make_private_url(self, url_path, params, use_sign=True, timestamp=True):
         timestamp1 = self.get_timestamp()
         if use_sign:
-            # recvWindow must be part of the signed payload; setdefault keeps
-            # per-request overrides possible.
-            params.setdefault('recvWindow', RECVWINDOW)
-        params['timestamp'] = timestamp1
-        # Sign the encoded query/body bytes that requests and httpx send.
-        # Signing raw Unicode breaks authentication after HTTP percent-encoding.
-        payload = urlencode(params, doseq=True)
-        if use_sign:
-            signature = self._hashing(payload)
-            params['signature'] = signature
+            self._sign_parameters(params, timestamp1)
+        else:
+            params['timestamp'] = timestamp1
         url = f"{self._url}{url_path}"
         return url, params, timestamp1
 
