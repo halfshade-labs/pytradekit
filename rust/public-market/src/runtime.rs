@@ -323,6 +323,13 @@ impl Runtime {
         }
         Ok(())
     }
+    // Explicit final shutdown/destruction only. Keep every unfinished handle
+    // owned and counted; reuse the destructor's cooperative wait outside truth.
+    fn finish_retiring(&mut self)->Result<()> {
+        let mut first=None;
+        while !self.retiring.is_empty(){if let Err(error)=self.reap_ready(){if first.is_none(){first=Some(error)}}if !self.retiring.is_empty(){thread::sleep(Duration::from_millis(10));}}
+        if let Some(error)=first{Err(error)}else{Ok(())}
+    }
     fn progress_handoff_inner(&mut self)->Result<Vec<Value>> {
         let Some(slot)=self.control.handoff.clone() else{return Ok(vec![])};
         let command={let mut slot=slot.lock().map_err(|_|"configuration slot poisoned")?;if let Some(error)=slot.first_failure(){return Err(error)}if !matches!(slot.phase(),Some(handoff::Phase::Committed|handoff::Phase::Applying|handoff::Phase::Ready)){return Ok(vec![])}slot.command()};
@@ -389,6 +396,7 @@ impl Runtime {
     }
     pub fn rotate(&mut self,slot:u8)->Result<()> {
         if self.handoff_fenced(){return Err("configuration physical operation busy".into())}
+        if !self.retiring.is_empty(){return Err("native physical retirement busy".into())}
         if slot>1||self.workers.values().any(|w|w.replacement)||!self.workers.values().any(|w|!w.spot&&w.slot==slot&&!w.replacement){return Err("invalid or concurrent rotation".into())}
         self.spawn(slot,false,true)
     }
@@ -396,6 +404,7 @@ impl Runtime {
     /// Perpetual make-before-break is reserved for rotations with identical targets.
     pub fn targets(&mut self,perpetual:Vec<String>,spot:Vec<String>)->Result<Vec<Value>> {
         if self.handoff_fenced(){return Err("configuration physical operation busy".into())}
+        if !self.retiring.is_empty(){return Err("native physical retirement busy".into())}
         for symbols in [&perpetual,&spot]{if symbols.is_empty()||symbols.len()>MAX_SYMBOLS||symbols.iter().any(|s|!crate::symbol_valid(s))||symbols.iter().collect::<BTreeSet<_>>().len()!=symbols.len(){return Err("invalid target change".into())}}
         for s in self.settings.perpetual_symbols.iter().chain(&perpetual) {if self.settings.perpetual_symbols.contains(s)!=perpetual.contains(s){*self.memberships.entry(s.clone()).or_default()+=1;}}
         if self.memberships.len()>MAX_SYMBOLS{return Err("lifetime subscription capacity".into())}
@@ -417,6 +426,7 @@ impl Runtime {
     }
     fn recv_inner(&mut self,timeout:Duration)->Result<Vec<Value>> {
         if let Some(error)=self.failure.lock().map_err(|_|"native failure lock poisoned")?.clone(){return Err(error)}
+        self.reap_ready()?;
         let now=self.origin.elapsed().as_millis() as u64;
         if !self.handoff_fenced(){
         let promotion=self.control.promotion.lock().map_err(|_|"promotion truth poisoned")?.take();
@@ -431,12 +441,12 @@ impl Runtime {
                     let slot=worker.slot;let old=self.workers.iter().find(|(id,w)|*id!=&route&&!w.spot&&w.slot==slot&&!w.replacement).map(|(id,_)|id.clone());
                     {
                         // Serialize qualification and the stop commit with
-                        // worker truth updates; retirement joins only after unlock.
+                        // worker truth updates; detached ownership never joins here.
                         let truth=self.control.physical.lock().map_err(|_|"physical truth poisoned")?;
                         if !truth.get(&route).is_some_and(|state|promotion_current(worker,state,&self.settings.perpetual_symbols)){return Ok(vec![])}
                         if let Some(old)=old.as_ref().and_then(|route|self.workers.get(route)){commit_promotion_stop(&truth,old.stop.as_ref());}
                     }
-                    let mut rows=Vec::new();if let Some(old)=old{rows.extend(self.retire(&old)?);}
+                    let mut rows=Vec::new();if let Some(old)=old{rows.extend(self.detach_handoff(vec![old])?);}
                     let worker=self.workers.get_mut(&route).unwrap();worker.replacement=false;worker.due_ms=self.lifecycle.rotation.promoted_due(now);
                     self.control.physical.lock().map_err(|_|"physical truth poisoned")?.get_mut(&route).ok_or("missing physical replacement")?["replacement"]=json!(false);
                     rows.push(json!({"type":"feed","action":{"type":"route","route":route,"slot":slot,"token":worker.token,"generation":worker.generation,"connected":worker.connected,"replacement":false,"applied":self.settings.perpetual_symbols}}));return Ok(rows)
@@ -444,9 +454,9 @@ impl Runtime {
             }
         }
         if let Some((route,slot))=self.workers.iter().find(|(_,w)|w.replacement&&self.lifecycle.rotation.expired(w.created_ms,now)).map(|(id,w)|(id.clone(),w.slot)){
-            let rows=self.retire(&route)?;if let Some(old)=self.workers.values_mut().find(|w|!w.spot&&!w.replacement&&w.slot==slot){old.due_ms=self.lifecycle.rotation.retry_due(now);}return Ok(rows)
+            let rows=self.detach_handoff(vec![route])?;if let Some(old)=self.workers.values_mut().find(|w|!w.spot&&!w.replacement&&w.slot==slot){old.due_ms=self.lifecycle.rotation.retry_due(now);}return Ok(rows)
         }
-        if self.settings.mode!="single"&&!self.settings.perpetual_symbols.is_empty()&&!self.workers.values().any(|w|w.replacement){
+        if self.retiring.is_empty()&&self.settings.mode!="single"&&!self.settings.perpetual_symbols.is_empty()&&!self.workers.values().any(|w|w.replacement){
             if let Some(slot)=self.workers.values().filter(|w|!w.spot&&!w.replacement&&self.lifecycle.rotation.due(w.due_ms,now)).min_by_key(|w|w.due_ms).map(|w|w.slot){self.rotate(slot)?;}
         }
         }
@@ -499,7 +509,7 @@ impl Runtime {
             Err(mpsc::TryRecvError::Disconnected)=>Err("native ingress disconnected".into()),
         }
     }
-    pub fn accounting(&self)->Value {let mut report=json!({"wire_raw_received":self.received.load(Ordering::Acquire),"supplied":self.supplied,"retired_frames":self.retired_frames,"retired_events_or_workers":self.retired,"workers":self.workers.len(),"acknowledged":self.workers.values().filter(|w|w.connected).count(),"capacity":CAPACITY,"queue_age":self.queue_age.value(),"source_age":self.source_age.value(),"first_failure":self.failure.lock().ok().and_then(|f|f.clone()),"recv_total":self.recv_total,"channel_wait":self.channel_wait});if let Some(status)=self.handoff_status(){report["configuration"]=status;report["workers"]=json!(self.workers.len()+self.retiring.len());}report}
+    pub fn accounting(&self)->Value {let mut report=json!({"wire_raw_received":self.received.load(Ordering::Acquire),"supplied":self.supplied,"retired_frames":self.retired_frames,"retired_events_or_workers":self.retired,"workers":self.workers.len()+self.retiring.len(),"acknowledged":self.workers.values().filter(|w|w.connected).count(),"capacity":CAPACITY,"queue_age":self.queue_age.value(),"source_age":self.source_age.value(),"first_failure":self.failure.lock().ok().and_then(|f|f.clone()),"recv_total":self.recv_total,"channel_wait":self.channel_wait});if let Some(status)=self.handoff_status(){report["configuration"]=status;}report}
     pub fn shutdown(&mut self)->Result<()> {
         if self.control.handoff.is_some(){
             let routes=self.workers.keys().cloned().collect();
@@ -511,6 +521,7 @@ impl Runtime {
             }
         }
         let mut first=None;for route in self.workers.keys().cloned().collect::<Vec<_>>(){if let Err(e)=self.retire(&route){if first.is_none(){first=Some(e)}}}
+        if let Err(error)=self.finish_retiring(){if first.is_none(){first=Some(error)}}
         let mut purged=0;while let Ok(event)=self.receiver.try_recv(){if matches!(event,Event::Frame{..}){purged+=1;}else{self.retired+=1;}}
         if purged>0 {let error=format!("shutdown retained {purged} unconsumed native frames; owner incomplete");fail_notified(&self.failure,&self.control.wake,error.clone());if first.is_none(){first=Some(error)}}
         self.retired_frames+=purged;
@@ -523,7 +534,7 @@ impl Drop for Runtime {fn drop(&mut self){
     let _=self.shutdown();
     // Final destruction retains ownership. Progress/status never performs this
     // wait; a process forced closed by its facade remains explicitly incomplete.
-    while !self.retiring.is_empty(){let _=self.reap_ready();if !self.retiring.is_empty(){thread::sleep(Duration::from_millis(10));}}
+    let _=self.finish_retiring();
 }}
 
 #[cfg(test)]
@@ -848,6 +859,156 @@ mod handoff_tests {
     }
 }
 
+
+#[cfg(test)]
+mod rotation_reclamation_tests {
+    use super::*;
+    use super::handoff_tests::empty_runtime;
+
+    // Unit witness only: a real unfinished OS thread deliberately remains in a
+    // bounded internal stall after stop. This is not socket/child evidence.
+    struct Release(Arc<(Mutex<bool>,Condvar)>);
+    impl Release {
+        fn release(&self) {
+            *self.0.0.lock().unwrap_or_else(|e|e.into_inner())=true;
+            self.0.1.notify_all();
+        }
+    }
+    impl Drop for Release {fn drop(&mut self){self.release();}}
+
+    fn worker(token:&str,generation:u64,replacement:bool)->Worker {
+        Worker{stop:Arc::new(AtomicBool::new(false)),join:None,slot:0,spot:false,replacement,token:token.into(),generation,connected:true,created_ms:0,due_ms:u64::MAX}
+    }
+    fn install(runtime:&mut Runtime,route:&str,worker:Worker) {
+        runtime.control.physical.lock().unwrap().insert(route.into(),json!({"type":"route","route":route,"slot":worker.slot,"spot":worker.spot,"token":worker.token,"generation":worker.generation,"connected":true,"replacement":worker.replacement,"applied":["ETHUSDT"]}));
+        runtime.generations.insert(route.into(),worker.generation);
+        runtime.serials.insert(route.into(),if worker.replacement{9}else{4});
+        runtime.workers.insert(route.into(),worker);
+    }
+    fn rotation_recv_retains_live_worker(promote:bool) {
+        let mut runtime=empty_runtime();
+        // Declared after Runtime: assertion unwinding releases the stall before
+        // the ownership-preserving Runtime destructor can wait for its thread.
+        let release=Release(Arc::new((Mutex::new(false),Condvar::new())));
+        let retired_route=if promote{"old"}else{"candidate"};
+        let mut old=worker("old-token",7,false);
+        let mut candidate=worker("candidate-token",8,true);
+        let stopped=if promote{old.stop.clone()}else{candidate.stop.clone()};
+        let (started,ready)=mpsc::sync_channel(1);
+        let physical=runtime.control.physical.clone();let held=release.0.clone();let stop=stopped.clone();
+        let recreated=Arc::new(AtomicBool::new(false));let callback=recreated.clone();
+        let join=thread::spawn(move|| {
+            started.send(()).unwrap();let until=Instant::now()+Duration::from_secs(3);
+            while !stop.load(Ordering::Acquire)&&!*held.0.lock().unwrap()&&Instant::now()<until{thread::sleep(Duration::from_millis(1));}
+            if stop.load(Ordering::Acquire) {
+                // The old join path must exceed the unchanged 250ms RPC budget;
+                // the timeout also bounds the expected-red run without cleanup.
+                let guard=held.0.lock().unwrap();
+                drop(held.1.wait_timeout_while(guard,Duration::from_millis(600),|released|!*released).unwrap());
+                // Same get_mut-only shape as the real late ACK callback.
+                if let Some(state)=physical.lock().unwrap().get_mut(retired_route){state["connected"]=json!(true);callback.store(true,Ordering::Release);}
+            }
+        });
+        if promote{old.join=Some(join);}else{candidate.join=Some(join);}
+        install(&mut runtime,"old",old);install(&mut runtime,"candidate",candidate);
+        let mut spot=worker("spot-token",3,false);spot.spot=true;install(&mut runtime,"spot",spot);
+        ready.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(!runtime.workers[retired_route].join.as_ref().unwrap().is_finished());
+        if promote {*runtime.control.promotion.lock().unwrap()=Some("candidate".into());}
+        else {runtime.lifecycle.rotation.timeout_ms=0;}
+        let memberships=runtime.memberships.clone();let survivor=if promote{"candidate"}else{"old"};
+        let survivor_token=runtime.workers[survivor].token.clone();let survivor_generation=runtime.workers[survivor].generation;let survivor_serial=runtime.serials[survivor];
+        runtime.sender.send(Event::Connected{route:retired_route.into(),token:"test-late1".into(),generation:99}).unwrap();
+        runtime.sender.send(Event::Frame{route:retired_route.into(),token:"test-late1".into(),generation:99,payload:json!({}),clock:runtime.clock()}).unwrap();
+
+        let before=runtime.origin.elapsed().as_millis() as u64;let start=Instant::now();
+        let rows=runtime.recv(Duration::ZERO).unwrap();let elapsed=start.elapsed();let after=runtime.origin.elapsed().as_millis() as u64;
+        assert!(elapsed<Duration::from_millis(250),"rotation recv joined an unfinished worker: promote={promote}, elapsed={elapsed:?}");
+        assert!(stopped.load(Ordering::Acquire));assert!(!runtime.workers.contains_key(retired_route));
+        assert_eq!((runtime.workers.len(),runtime.retiring.len()),(2,1));
+        assert!(!runtime.retiring[retired_route].join.as_ref().unwrap().is_finished());
+        assert!(!runtime.control.physical.lock().unwrap().contains_key(retired_route));
+        assert_eq!(rows.iter().filter(|row|row["action"]["type"]=="retire").cloned().collect::<Vec<_>>(),vec![json!({"type":"feed","action":{"type":"retire","route":retired_route}})]);
+        assert_eq!(rows.len(),if promote{2}else{1});
+        let due=runtime.workers[survivor].due_ms;let interval=if promote{runtime.lifecycle.rotation.rotation_ms}else{runtime.lifecycle.rotation.retry_ms};
+        assert!(due>=before+interval&&due<=after+interval);
+        assert!(!runtime.workers[survivor].replacement&&runtime.workers[survivor].connected);
+        assert_eq!((runtime.workers[survivor].token.as_str(),runtime.workers[survivor].generation,runtime.serials[survivor]),(survivor_token.as_str(),survivor_generation,survivor_serial));
+        assert_eq!(runtime.memberships,memberships);
+        assert_eq!(runtime.accounting()["workers"],3,"live retired handle must remain counted");
+        assert_eq!(runtime.failure_progress().retiring_workers,1);
+        let next=runtime.next;assert!(runtime.rotate(0).is_err(),"unfinished retirement must fence another replacement");assert_eq!(runtime.next,next);
+        assert!(runtime.targets(vec!["BTCUSDT".into()],vec!["BTCUSDT".into()]).is_err(),"unfinished rotation must fence new physical work");
+        assert_eq!(runtime.settings.perpetual_symbols,["ETHUSDT"]);assert_eq!(runtime.memberships,memberships);
+        for _ in 0..2 {let start=Instant::now();assert!(runtime.recv(Duration::ZERO).unwrap().is_empty());assert!(start.elapsed()<Duration::from_millis(250));}
+        assert_eq!((runtime.supplied,runtime.retired_frames,runtime.retired),(0,1,3));
+        assert!(!runtime.generations.contains_key(retired_route)&&!runtime.serials.contains_key(retired_route));
+        assert_eq!((runtime.workers.len(),runtime.retiring.len()),(2,1));
+        release.release();let until=Instant::now()+Duration::from_secs(2);
+        while !runtime.retiring[retired_route].join.as_ref().unwrap().is_finished(){assert!(Instant::now()<until);thread::sleep(Duration::from_millis(1));}
+        // Ordinary nonconfigured recv owns reaping; no handoff/control required.
+        assert!(runtime.recv(Duration::ZERO).unwrap().is_empty());assert!(runtime.retiring.is_empty());
+        assert_eq!(runtime.accounting()["workers"],2);assert!(!recreated.load(Ordering::Acquire));
+        assert!(runtime.failure.lock().unwrap().is_none());runtime.shutdown().unwrap();assert_eq!(runtime.accounting()["workers"],0);
+    }
+    #[test]
+    fn rotation_promotion_recv_keeps_unfinished_retirement_off_actor_lane(){rotation_recv_retains_live_worker(true);}
+    #[test]
+    fn rotation_timeout_recv_keeps_healthy_old_route_and_unfinished_retirement_off_actor_lane(){rotation_recv_retains_live_worker(false);}
+    #[test]
+    fn automatic_rotation_waits_for_unfinished_other_slot_retirement_then_resumes(){
+        for mode in ["shadow","redundant"] {
+            let mut runtime=empty_runtime();runtime.settings.mode=mode.into();
+            // Unit ownership witness, not socket/child qualification. Declare
+            // release after Runtime so unwinding cannot strand its old handle.
+            let release=Release(Arc::new((Mutex::new(false),Condvar::new())));
+            let (started,ready)=mpsc::sync_channel(1);let held=release.0.clone();
+            let mut old=worker("test-auto-old",7,false);let old_stop=old.stop.clone();
+            old.join=Some(thread::spawn(move||{
+                started.send(()).unwrap();let guard=held.0.lock().unwrap();
+                drop(held.1.wait_timeout_while(guard,Duration::from_secs(5),|released|!*released).unwrap());
+            }));
+            install(&mut runtime,"old-slot0",old);
+            install(&mut runtime,"current-slot0",worker("test-auto-current",8,false));
+            let mut other=worker("test-auto-other",9,false);other.slot=1;other.due_ms=0;
+            let stop=other.stop.clone();let (started_other,ready_other)=mpsc::sync_channel(1);
+            other.join=Some(thread::spawn(move||{
+                started_other.send(()).unwrap();let until=Instant::now()+Duration::from_secs(5);
+                while !stop.load(Ordering::Acquire)&&Instant::now()<until{thread::sleep(Duration::from_millis(1));}
+            }));
+            install(&mut runtime,"other-slot1",other);
+            let mut spot=worker("test-auto-spot",3,false);spot.spot=true;install(&mut runtime,"spot",spot);
+            ready.recv_timeout(Duration::from_secs(1)).unwrap();ready_other.recv_timeout(Duration::from_secs(1)).unwrap();
+            assert_eq!(runtime.detach_handoff(vec!["old-slot0".into()]).unwrap(),vec![json!({"type":"feed","action":{"type":"retire","route":"old-slot0"}})]);
+            assert!(old_stop.load(Ordering::Acquire));let next=runtime.next;
+            for _ in 0..8 {
+                assert!(!runtime.retiring["old-slot0"].join.as_ref().unwrap().is_finished());
+                assert!(!runtime.workers["other-slot1"].join.as_ref().unwrap().is_finished());
+                assert!(runtime.workers["other-slot1"].connected);
+                assert!(runtime.lifecycle.rotation.due(runtime.workers["other-slot1"].due_ms,runtime.origin.elapsed().as_millis() as u64));
+                let start=Instant::now();let rows=runtime.recv(Duration::ZERO).expect("due other slot must defer automatic rotation while retirement is unfinished");
+                assert!(start.elapsed()<Duration::from_millis(250));assert!(rows.is_empty());
+                assert_eq!(runtime.next,next);assert!(!runtime.workers.values().any(|w|w.replacement));
+                assert_eq!((runtime.workers.len(),runtime.retiring.len()),(3,1));assert_eq!(runtime.accounting()["workers"],4);
+                assert_eq!(runtime.workers.values().chain(runtime.retiring.values()).filter(|w|!w.spot).count(),3);
+                assert_eq!(runtime.workers.values().chain(runtime.retiring.values()).filter(|w|w.spot).count(),1);
+                assert!(!runtime.control.physical.lock().unwrap().contains_key("old-slot0"));
+                assert!(runtime.failure.lock().unwrap().is_none());
+            }
+            release.release();let until=Instant::now()+Duration::from_secs(2);
+            while !runtime.retiring["old-slot0"].join.as_ref().unwrap().is_finished(){assert!(Instant::now()<until);thread::sleep(Duration::from_millis(1));}
+            // The same ordinary boundary reaps the actual finished handle and
+            // takes the original automatic path for the still-due other slot.
+            runtime.recv(Duration::ZERO).unwrap();assert!(runtime.retiring.is_empty());assert_eq!(runtime.next,next+1);
+            let replacements:Vec<_>=runtime.workers.values().filter(|w|w.replacement).collect();assert_eq!(replacements.len(),1);
+            let replacement=replacements[0];assert_eq!(replacement.slot,1);assert!(replacement.join.is_some());
+            assert_eq!(replacement.due_ms,runtime.lifecycle.rotation.initial_due(replacement.created_ms,1));
+            assert!(runtime.workers.contains_key("current-slot0")&&runtime.workers.contains_key("other-slot1"));
+            assert_eq!(runtime.workers.len(),4);assert_eq!(runtime.accounting()["workers"],4);
+            assert!(runtime.failure.lock().unwrap().is_none());runtime.shutdown().unwrap();assert_eq!(runtime.accounting()["workers"],0);
+        }
+    }
+}
 
 #[cfg(test)]
 mod ingress_emit_tests {
