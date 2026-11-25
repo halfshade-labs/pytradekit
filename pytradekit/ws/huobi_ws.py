@@ -7,7 +7,7 @@ import gzip
 from dataclasses import dataclass, field
 from typing import Iterable, List, Optional
 
-from pytradekit.utils.dynamic_types import HuobiAuxiliary
+from pytradekit.utils.dynamic_types import ExchangeId, HuobiAuxiliary
 from pytradekit.gateway.websocket.ws_manager import WsManager
 from pytradekit.utils.time_handler import get_htx_timestamp, get_timestamp_s, sleep_min_time
 from pytradekit.ws.subscription_update import (
@@ -50,6 +50,23 @@ class HuobiWsManager(WsManager):
         self._ws_connected = False
         self.logger = logger
         self._bookticker_symbols = frozenset()
+
+    def _run_socket(self, ws):
+        if not self.is_public:
+            return super()._run_socket(ws)
+        self._run_bounded_public_socket(ws, ExchangeId.HTX.name)
+
+    def _on_open(self, ws, *args, **kwargs):
+        with self._state_lock:
+            if self.is_public and not self._stop_event.is_set() and ws is self.ws:
+                self._clear_public_socket_opening_timeout(ws)
+
+    def _close_socket(self, ws, evidence=None):
+        try:
+            if self.is_public:
+                self._interrupt_public_socket_on_stop(ws, evidence)
+        finally:
+            super()._close_socket(ws, evidence)
 
     def get_signature(self, params):
         sorted_params = sorted(params.items(), key=lambda d: d[0], reverse=False)
@@ -99,6 +116,14 @@ class HuobiWsManager(WsManager):
             if int(get_timestamp_s() - now_times) >= reconnection_time:
                 return
 
+    def _wait_for_public_resubscribe(self) -> bool:
+        """Keep the public refresh cadence while allowing close to stop the loop."""
+        started_at = get_timestamp_s()
+        while not self._stop_event.wait(HuobiAuxiliary.ws_ping_sleep.value):
+            if get_timestamp_s() - started_at >= HuobiAuxiliary.reconnection_time_sleep.value:
+                return not self._stop_event.is_set()
+        return False
+
     def _send_all_subscriptions(self) -> None:
         """Send all cached subscription requests."""
         for req in tuple(self._subs):
@@ -117,13 +142,11 @@ class HuobiWsManager(WsManager):
         self._bookticker_symbols = target_symbols
         self._subs = self._build_bookticker_requests(target_symbols)
 
+        if self._stop_event.is_set():
+            return
         self._send_all_subscriptions()
 
-        while True:
-            self._wait_reconnection_time(
-                HuobiAuxiliary.ws_ping_sleep.value,
-                HuobiAuxiliary.reconnection_time_sleep.value,
-            )
+        while self._wait_for_public_resubscribe():
             self._send_all_subscriptions()
 
     @staticmethod

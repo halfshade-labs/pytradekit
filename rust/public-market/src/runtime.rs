@@ -3,7 +3,7 @@
 use crate::{Clock, Result, CAPACITY, MAX_SYMBOLS};
 pub mod handoff;
 use handoff::{Slot,Targets,Plan};
-use crate::transport::{PublicSocket, Reception};
+use crate::transport::{PublicSocket, Reception, TextDecode};
 use serde::{Deserialize,Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -72,9 +72,15 @@ enum Event {
     Connected { route:String, token:String, generation:u64 },
     Frame { route:String, token:String, generation:u64, payload:Value, clock:Clock },
     Disconnected { route:String, generation:u64 },
+    CreditedConnected { route:String, token:String, generation:u64, credit:IngressPermit },
+    CreditedFrame { route:String, token:String, generation:u64, payload:Value, clock:Clock, credit:IngressPermit },
+    CreditedDisconnected { route:String, generation:u64, credit:IngressPermit },
 }
-struct Worker { stop:Arc<AtomicBool>, join:Option<JoinHandle<()>>, slot:u8, spot:bool,
-    replacement:bool, token:String, generation:u64, connected:bool, created_ms:u64,due_ms:u64 }
+#[derive(Default)]
+struct WorkerExit { canceled_post_ack:u8 }
+struct Worker { stop:Arc<AtomicBool>, join:Option<JoinHandle<WorkerExit>>, slot:u8, spot:bool,
+    replacement:bool, token:String, generation:u64, connected:bool, created_ms:u64,due_ms:u64,
+    spot_ingress:Option<Arc<SpotIngress>> }
 fn promotion_current(worker:&Worker,state:&Value,targets:&[String])->bool{
     let expected:BTreeSet<_>=targets.iter().map(String::as_str).collect();
     let applied=state["applied"].as_array().and_then(|symbols|symbols.iter().map(Value::as_str).collect::<Option<BTreeSet<_>>>());
@@ -112,6 +118,248 @@ impl WakeSignal {
         *pending=false;Ok(())
     }
 }
+/// Monotonic capture times at three independent observation boundaries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SpotIngressClocks {
+    pub observed: Option<i64>,
+    pub offered: Option<i64>,
+    pub dequeued: Option<i64>,
+}
+
+struct SpotIngressSlot {
+    observed: AtomicI64,
+    offered: AtomicI64,
+    dequeued: AtomicI64,
+}
+
+impl SpotIngressSlot {
+    fn new() -> Self {
+        Self { observed: AtomicI64::new(-1), offered: AtomicI64::new(-1), dequeued: AtomicI64::new(-1) }
+    }
+
+    fn read(&self) -> SpotIngressClocks {
+        let read = |point: &AtomicI64| Some(point.load(Ordering::Acquire)).filter(|time| *time >= 0);
+        SpotIngressClocks { observed: read(&self.observed), offered: read(&self.offered), dequeued: read(&self.dequeued) }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct SpotCreditWaitSummary {
+    granted: u64,
+    stopped: u64,
+    failed: u64,
+    completed_total_ns: u64,
+    completed_max_ns: u64,
+    in_flight_age_ns: Option<u64>,
+}
+
+/// Private report metadata for comparing adjacent reads of the same wait counters.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct SpotCreditInterval {
+    worker_instance: u64,
+    generation: u64,
+    sampled_at_ns: u64,
+}
+
+// A single spot worker writes these fixed-size counters. An observer never
+// locks the credit pool or waits for a concurrent transition to finish.
+struct SpotCreditWait {
+    origin: Instant,
+    version: AtomicU64,
+    started: AtomicU64,
+    granted: AtomicU64,
+    stopped: AtomicU64,
+    failed: AtomicU64,
+    total: AtomicU64,
+    max: AtomicU64,
+}
+
+impl SpotCreditWait {
+    const IDLE: u64 = u64::MAX;
+
+    fn new(origin: Instant) -> Self {
+        Self { origin, version: AtomicU64::new(0), started: AtomicU64::new(Self::IDLE),
+            granted: AtomicU64::new(0), stopped: AtomicU64::new(0), failed: AtomicU64::new(0),
+            total: AtomicU64::new(0), max: AtomicU64::new(0) }
+    }
+
+    fn now_ns(&self) -> u64 {
+        self.origin.elapsed().as_nanos().min(u128::from(Self::IDLE - 1)) as u64
+    }
+
+    fn write(&self, update: impl FnOnce()) {
+        let version = self.version.load(Ordering::SeqCst);
+        // Exhaustion permanently makes this generation's summary unavailable.
+        if version > u64::MAX - 2 {
+            self.version.store(u64::MAX, Ordering::SeqCst);
+            return;
+        }
+        self.version.store(version + 1, Ordering::SeqCst);
+        update();
+        self.version.store(version + 2, Ordering::SeqCst);
+    }
+
+    fn begin(&self) {
+        self.write(|| self.started.store(self.now_ns(), Ordering::SeqCst));
+    }
+
+    fn finish(&self, outcome: OfferResult) {
+        let end = self.now_ns();
+        self.write(|| {
+            let start = self.started.swap(Self::IDLE, Ordering::SeqCst);
+            let duration = end.saturating_sub(start);
+            let count = match outcome {
+                OfferResult::Sent => &self.granted,
+                OfferResult::Stopped => &self.stopped,
+                OfferResult::Failed => &self.failed,
+            };
+            count.store(count.load(Ordering::SeqCst).saturating_add(1), Ordering::SeqCst);
+            self.total.store(self.total.load(Ordering::SeqCst).saturating_add(duration), Ordering::SeqCst);
+            self.max.fetch_max(duration, Ordering::SeqCst);
+        });
+    }
+
+    fn snapshot(&self) -> Option<SpotCreditWaitSummary> {
+        self.snapshot_with_time(false).map(|(summary, _)| summary)
+    }
+
+    fn snapshot_with_time(&self, timestamped: bool) -> Option<(SpotCreditWaitSummary, Option<u64>)> {
+        let before = self.version.load(Ordering::SeqCst);
+        if before % 2 != 0 { return None; }
+        let started = self.started.load(Ordering::SeqCst);
+        let mut summary = SpotCreditWaitSummary {
+            granted: self.granted.load(Ordering::SeqCst),
+            stopped: self.stopped.load(Ordering::SeqCst),
+            failed: self.failed.load(Ordering::SeqCst),
+            completed_total_ns: self.total.load(Ordering::SeqCst),
+            completed_max_ns: self.max.load(Ordering::SeqCst),
+            in_flight_age_ns: None,
+        };
+        // Use the same time for the sample and its active wait age. The old
+        // selector still reads the clock only when a wait is active.
+        let sampled_at_ns = (timestamped || started != Self::IDLE).then(|| self.now_ns());
+        if started != Self::IDLE {
+            summary.in_flight_age_ns = Some(sampled_at_ns?.checked_sub(started)?);
+        }
+        (self.version.load(Ordering::SeqCst) == before).then_some((summary, sampled_at_ns))
+    }
+}
+
+#[derive(Clone, Copy, Serialize)]
+pub struct SpotReceiveStages {
+    worker_instance: u64,
+    generation: u64,
+    text_received_ns: u64,
+    worker_observed_ms: i64,
+    offered: bool,
+    dequeued_at_ms: Option<i64>,
+    decoded: u64,
+    gaps_over_one_second: u64,
+    max_text_gap_ns: u64,
+}
+
+#[derive(Default)]
+struct SpotReceiveSlot {
+    latest: Option<(u64, u64, i64)>, // FIFO ordinal, text nanoseconds, original worker milliseconds
+    dequeued_at_ms: Option<i64>,
+    decoded: u64,
+    gaps_over_one_second: u64,
+    max_text_gap_ns: u64,
+}
+
+// The worker offers in its read order, including its pre-ACK buffer. The
+// runtime drains that same per-generation FIFO. Use all-frame ordinals to
+// join the two measurements without widening Event or relying on unique u.
+struct SpotReceiveState {
+    slots: BTreeMap<String, SpotReceiveSlot>,
+    received: u64,
+    offered: u64,
+    dequeued: u64,
+}
+
+impl SpotReceiveState {
+    fn new(symbols: &[String]) -> Self {
+        Self { slots: symbols.iter().map(|symbol| (symbol.clone(), SpotReceiveSlot::default())).collect(),
+            received: 0, offered: 0, dequeued: 0 }
+    }
+
+    fn capture(&mut self, payload: &Value, text_ns: Option<u64>, observed_ms: i64) {
+        if self.received == u64::MAX { return; }
+        self.received += 1;
+        let Some(slot) = payload.get("s").and_then(Value::as_str).and_then(|s| self.slots.get_mut(s)) else { return };
+        let Some(text_ns) = text_ns else { slot.latest = None; return };
+        if let Some((_, previous, _)) = slot.latest {
+            let gap = text_ns.saturating_sub(previous);
+            slot.gaps_over_one_second += u64::from(gap > 1_000_000_000);
+            slot.max_text_gap_ns = slot.max_text_gap_ns.max(gap);
+        }
+        slot.latest = Some((self.received, text_ns, observed_ms));
+        slot.dequeued_at_ms = None;
+        slot.decoded = slot.decoded.saturating_add(1);
+    }
+
+    fn dequeue(&mut self, symbol: &str, processing_ms: i64) {
+        self.dequeued = self.dequeued.saturating_add(1);
+        if let Some(slot) = self.slots.get_mut(symbol) {
+            if slot.latest.is_some_and(|(ordinal, _, _)| ordinal == self.dequeued) {
+                slot.dequeued_at_ms = Some(processing_ms);
+            }
+        }
+    }
+
+    fn sample(&self, worker_instance: u64, generation: u64, symbol: &str) -> Option<SpotReceiveStages> {
+        if self.received == u64::MAX { return None; }
+        let slot = self.slots.get(symbol)?;
+        let (ordinal, text_received_ns, worker_observed_ms) = slot.latest?;
+        Some(SpotReceiveStages { worker_instance, generation, text_received_ns, worker_observed_ms,
+            offered: ordinal <= self.offered.max(self.dequeued), dequeued_at_ms: slot.dequeued_at_ms,
+            decoded: slot.decoded, gaps_over_one_second: slot.gaps_over_one_second,
+            max_text_gap_ns: slot.max_text_gap_ns })
+    }
+}
+
+#[derive(Clone, Copy)]
+enum SpotProbe { Off, Ingress, ReceiveStages }
+
+// One fixed subscription per spot connection generation. Slots are installed
+// during ACK; only the original worker and consumer write atomics afterwards.
+struct SpotIngress {
+    token: String,
+    worker_instance: u64,
+    generation: u64,
+    slots: BTreeMap<String, SpotIngressSlot>,
+    credit_wait: Option<SpotCreditWait>,
+    receive: Option<Mutex<SpotReceiveState>>,
+}
+
+impl SpotIngress {
+    fn for_generation(
+        token: &str,
+        worker_instance: u64,
+        generation: u64,
+        symbols: &[String],
+        credit_origin: Option<Instant>,
+    ) -> Self {
+        Self { token: token.into(), worker_instance, generation,
+            slots: symbols.iter().map(|symbol| (symbol.clone(), SpotIngressSlot::new())).collect(),
+            credit_wait: credit_origin.map(SpotCreditWait::new), receive: None }
+    }
+
+    fn matches(&self, token: &str, generation: u64) -> bool {
+        self.token == token && self.generation == generation
+    }
+
+    fn slot(&self, payload: &Value) -> Option<&SpotIngressSlot> {
+        self.slots.get(payload.get("s")?.as_str()?)
+    }
+
+    fn record_offer(&self) {
+        if let Some(mut state) = self.receive.as_ref().and_then(|state| state.lock().ok()) {
+            state.offered = state.offered.saturating_add(1);
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Control {
     pub wake:WakeSignal,
@@ -122,9 +370,63 @@ pub struct Control {
     pub failure_accounting:Arc<Mutex<Option<Value>>>,
     pub handoff:Option<Arc<Mutex<Slot>>>,
     pub failure_progress:Arc<Mutex<Option<FailureProgress>>>,
+    spot_ingress: Option<Arc<Mutex<Option<Arc<SpotIngress>>>>>,
+    spot_decode_failures: Option<Arc<AtomicU64>>,
 }
-impl Default for Control {fn default()->Self{Self{wake:WakeSignal::default(),physical:Arc::new(Mutex::new(BTreeMap::new())),promotion:Arc::new(Mutex::new(None)),origin:Instant::now(),fixture_wall:Arc::new(AtomicI64::new(0)),failure:Arc::new(Mutex::new(None)),failure_accounting:Arc::new(Mutex::new(None)),handoff:None,failure_progress:Arc::new(Mutex::new(None))}}}
+impl Default for Control {fn default()->Self{Self{wake:WakeSignal::default(),physical:Arc::new(Mutex::new(BTreeMap::new())),promotion:Arc::new(Mutex::new(None)),origin:Instant::now(),fixture_wall:Arc::new(AtomicI64::new(0)),failure:Arc::new(Mutex::new(None)),failure_accounting:Arc::new(Mutex::new(None)),handoff:None,failure_progress:Arc::new(Mutex::new(None)),spot_ingress:None,spot_decode_failures:None}}}
 impl Control {pub fn clock(&self)->Clock {let mut c=clock(self.origin);let wall=self.fixture_wall.load(Ordering::Acquire);if wall!=0{c.wall_ms=wall+c.monotonic_ms;}c}}
+impl Control {
+    fn spot_ingress_generation(&self, token: &str, generation: u64) -> Option<Arc<SpotIngress>> {
+        let current = self.spot_ingress.as_ref()?.lock().ok()?;
+        current.as_ref().filter(|ingress| ingress.matches(token, generation)).cloned()
+    }
+
+    pub fn spot_ingress_clocks(&self, token: &str, generation: u64, symbol: &str) -> Option<SpotIngressClocks> {
+        let current = self.spot_ingress_generation(token, generation)?;
+        Some(current.slots.get(symbol)?.read())
+    }
+
+    pub fn spot_receive_stages(&self, token: &str, generation: u64, symbol: &str) -> Option<SpotReceiveStages> {
+        let current = self.spot_ingress.as_ref()?.try_lock().ok()?;
+        let ingress = current.as_ref().filter(|ingress| ingress.matches(token, generation))?;
+        let state = ingress.receive.as_ref()?.try_lock().ok()?;
+        state.sample(ingress.worker_instance, generation, symbol)
+    }
+
+    pub fn spot_decode_failures(&self) -> Option<u64> {
+        self.spot_decode_failures.as_ref().map(|count| count.load(Ordering::Relaxed))
+    }
+
+    pub fn spot_credit_wait(&self, token: &str, generation: u64) -> Option<SpotCreditWaitSummary> {
+        self.read_spot_credit(token, generation, |_, wait| wait.snapshot())
+    }
+
+    pub fn spot_credit_interval(
+        &self, token: &str, generation: u64,
+    ) -> Option<(SpotCreditWaitSummary, SpotCreditInterval)> {
+        self.read_spot_credit(token, generation, |ingress, wait| {
+            let (summary, sampled_at_ns) = wait.snapshot_with_time(true)?;
+            Some((summary, SpotCreditInterval {
+                worker_instance: ingress.worker_instance,
+                generation: ingress.generation,
+                sampled_at_ns: sampled_at_ns.filter(|&value| value < SpotCreditWait::IDLE - 1)?,
+            }))
+        })
+    }
+
+    fn read_spot_credit<T>(
+        &self,
+        token: &str,
+        generation: u64,
+        read: impl FnOnce(&SpotIngress, &SpotCreditWait) -> Option<T>,
+    ) -> Option<T> {
+        // The caller holds physical truth for the actor's acknowledged route.
+        // Retain the generation guard throughout the diagnostic read.
+        let current = self.spot_ingress.as_ref()?.try_lock().ok()?;
+        let ingress = current.as_ref().filter(|ingress| ingress.matches(token, generation))?;
+        read(ingress, ingress.credit_wait.as_ref()?)
+    }
+}
 pub struct Runtime {
     settings:Settings, workers:BTreeMap<String,Worker>, sender:SyncSender<Event>, receiver:Receiver<Event>,
     failure:Arc<Mutex<Option<String>>>, origin:Instant, next:u64, generations:BTreeMap<String,u64>,
@@ -135,6 +437,7 @@ pub struct Runtime {
     recv_total:Timing, channel_wait:Timing,
     lifecycle:LifecyclePolicy,
     retiring:BTreeMap<String,Worker>, pending_targets:Option<Arc<Plan>>,
+    ingress_mode:IngressMode, ingress_credits:Option<Arc<IngressCredits>>,
 }
 #[derive(Default,Serialize)]
 struct Timing {calls:u64,total_ns:u128,max_ns:u128}
@@ -168,6 +471,120 @@ fn emit_notified<T>(sender:&SyncSender<T>,failure:&Mutex<Option<String>>,wake:&W
     // emit retains the original exact payload release / first-error ordering.
     let sent=emit(sender,failure,event);wake.notify();sent
 }
+// Legacy exact v1 selector; Runtime captures the selected mode once.
+fn ingress_cooperate(value:Option<&std::ffi::OsStr>)->bool {
+    value.and_then(std::ffi::OsStr::to_str)==Some("v1")
+}
+fn yield_raw_ingress(cooperate:bool) {if cooperate {std::thread::yield_now();}}
+// Original admission, returned-payload release and wake finish before scheduling.
+fn emit_cooperatively<T,F:FnOnce()>(sender:&SyncSender<T>,failure:&Mutex<Option<String>>,wake:&WakeSignal,event:T,schedule:F)->bool {
+    let sent=emit_notified(sender,failure,wake,event);if sent {schedule();}sent
+}
+
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+enum IngressMode { Off, V1, V2 }
+fn select_ingress_mode(value:Option<&std::ffi::OsStr>,configured:bool)->Result<IngressMode> {
+    if value.and_then(std::ffi::OsStr::to_str)==Some("v2") {
+        if !configured{return Err("native ingress v2 requires configured whole-plan runtime".into())}
+        return Ok(IngressMode::V2)
+    }
+    Ok(if ingress_cooperate(value){IngressMode::V1}else{IngressMode::Off})
+}
+struct CreditState {free:usize,#[cfg(test)] waiting:usize,#[cfg(test)] parks:u64}
+struct IngressCredits {
+    state:Mutex<CreditState>, ready:Condvar,
+    #[cfg(test)] captures:Mutex<Vec<(u64,Clock)>>,
+    #[cfg(test)] before_receive_wait:Mutex<Option<SyncSender<()>>>,
+}
+impl IngressCredits {
+    fn new()->Arc<Self> {Arc::new(Self{state:Mutex::new(CreditState{free:CAPACITY,#[cfg(test)] waiting:0,#[cfg(test)] parks:0}),ready:Condvar::new(),#[cfg(test)] captures:Mutex::new(Vec::new()),#[cfg(test)] before_receive_wait:Mutex::new(None)})}
+    fn reserve(self:&Arc<Self>,stop:&AtomicBool,failure:&Mutex<Option<String>>,observation:Option<&SpotCreditWait>)->std::result::Result<IngressPermit,OfferResult> {
+        let mut episode = None;
+        let outcome = (|| loop {
+            check_offer(stop,failure)?;
+            let mut state=self.state.lock().map_err(|_|OfferResult::Failed)?;
+            if state.free>0 {state.free-=1;return Ok(IngressPermit{pool:self.clone()})}
+            #[cfg(test)] {state.waiting+=1;state.parks+=1;self.ready.notify_all();}
+            if episode.is_none() {
+                if let Some(wait) = observation {
+                    wait.begin();
+                    episode = Some(wait);
+                }
+            }
+            // The failure/physical locks are never held while this wait parks.
+            state=self.ready.wait_timeout(state,Duration::from_millis(20)).map_err(|_|OfferResult::Failed)?.0;
+            #[cfg(test)] {state.waiting-=1;}
+            drop(state);
+        })();
+        if let Some(wait) = episode {
+            wait.finish(outcome.as_ref().map_or_else(|result| *result, |_| OfferResult::Sent));
+        }
+        outcome
+    }
+    #[cfg(test)]
+    fn observe_capture(&self,payload:&Value,clock:Clock) {
+        let mut captures=self.captures.lock().unwrap();
+        if captures.len()<CAPACITY*2 {captures.push((payload["u"].as_u64().unwrap_or(0),clock));}
+    }
+}
+// A permit can only return to its originating Runtime, exactly once on drop.
+struct IngressPermit {pool:Arc<IngressCredits>}
+impl Drop for IngressPermit {
+    fn drop(&mut self) {
+        let mut state=self.pool.state.lock().unwrap_or_else(|error|error.into_inner());
+        debug_assert!(state.free<CAPACITY);state.free+=1;
+        drop(state);self.pool.ready.notify_one();
+    }
+}
+impl Event {
+    fn with_credit(self,credit:IngressPermit)->Self {
+        match self {
+            Self::Connected{route,token,generation}=>Self::CreditedConnected{route,token,generation,credit},
+            Self::Frame{route,token,generation,payload,clock}=>Self::CreditedFrame{route,token,generation,payload,clock,credit},
+            Self::Disconnected{route,generation}=>Self::CreditedDisconnected{route,generation,credit},
+            _=>unreachable!("an ingress Event is credited only once"),
+        }
+    }
+    fn release_credit(self)->Self {
+        match self {
+            Self::CreditedConnected{route,token,generation,credit}=>{drop(credit);Self::Connected{route,token,generation}},
+            Self::CreditedFrame{route,token,generation,payload,clock,credit}=>{drop(credit);Self::Frame{route,token,generation,payload,clock}},
+            Self::CreditedDisconnected{route,generation,credit}=>{drop(credit);Self::Disconnected{route,generation}},
+            event=>event,
+        }
+    }
+    #[cfg(test)]
+    fn has_credit(&self)->bool {matches!(self,Self::CreditedConnected{..}|Self::CreditedFrame{..}|Self::CreditedDisconnected{..})}
+}
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+enum OfferResult {Sent,Stopped,Failed}
+fn check_offer(stop:&AtomicBool,failure:&Mutex<Option<String>>)->std::result::Result<(),OfferResult> {
+    // Failure wins over intentional cancellation, including a simultaneous stop.
+    if failure.lock().map_or(true,|first|first.is_some()){return Err(OfferResult::Failed)}
+    if stop.load(Ordering::Acquire){return Err(OfferResult::Stopped)}Ok(())
+}
+struct WorkerIngress {mode:IngressMode,credits:Option<Arc<IngressCredits>>,stop:Arc<AtomicBool>}
+impl WorkerIngress {
+    fn offer(&self,sender:&SyncSender<Event>,failure:&Mutex<Option<String>>,wake:&WakeSignal,event:Event)->OfferResult {
+        self.offer_observed(sender, failure, wake, event, None)
+    }
+
+    fn offer_observed(&self,sender:&SyncSender<Event>,failure:&Mutex<Option<String>>,wake:&WakeSignal,mut event:Event,observation:Option<&SpotCreditWait>)->OfferResult {
+        if let Some(credits)=&self.credits {
+            let permit=match credits.reserve(&self.stop,failure,observation) {
+                Ok(permit)=>permit,
+                Err(result)=>{if result==OfferResult::Failed{fail_notified(failure,wake,"native ingress credit acquisition failed; owner incomplete".into());}return result},
+            };
+            if let Err(result)=check_offer(&self.stop,failure){return result}
+            event=event.with_credit(permit);
+            return if emit_notified(sender,failure,wake,event){OfferResult::Sent}else{OfferResult::Failed}
+        }
+        let raw=matches!(event,Event::Frame{..});
+        let sent=if raw{emit_cooperatively(sender,failure,wake,event,||yield_raw_ingress(self.mode==IngressMode::V1))}else{emit_notified(sender,failure,wake,event)};
+        if sent{OfferResult::Sent}else{OfferResult::Failed}
+    }
+}
+
 // Timestamp compatibility only: CPython _PyTime_AsSecondsDouble converts the
 // total signed-i64 nanoseconds before dividing, except at exact whole seconds.
 // A Duration outside that reference domain cannot be a supported native clock.
@@ -181,6 +598,7 @@ fn wall_ms_from_duration(duration:Duration)->i64 {
     cpython_wall_seconds(duration).map_or(0,|seconds|(seconds*1000.0).round_ties_even() as i64)
 }
 fn clock(origin:Instant)->Clock { Clock {wall_ms:wall_ms_from_duration(SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default()),monotonic_ms:origin.elapsed().as_millis() as i64} }
+fn extract_worker_payload(event:&mut Value)->Value {event.get_mut("payload").map(Value::take).unwrap_or(Value::Null)}
 impl Runtime {
     pub fn start(settings:Settings)->Result<Self> {
         Self::start_with_policy(settings,LifecyclePolicy::default())
@@ -188,6 +606,26 @@ impl Runtime {
     pub fn start_configured(settings:Settings)->Result<Self>{Self::start_with_policy_and_handoff(settings,LifecyclePolicy::default(),true)}
     fn start_with_policy(settings:Settings,lifecycle:LifecyclePolicy)->Result<Self>{Self::start_with_policy_and_handoff(settings,lifecycle,false)}
     fn start_with_policy_and_handoff(settings:Settings,lifecycle:LifecyclePolicy,configured:bool)->Result<Self>{
+        let mode=select_ingress_mode(std::env::var_os("CEA_NATIVE_INGRESS_COOPERATE").as_deref(),configured)?;
+        Self::start_with_ingress_mode(settings,lifecycle,configured,mode)
+    }
+    pub fn start_configured_with_spot_probe(settings: Settings) -> Result<Self> {
+        let mode = select_ingress_mode(std::env::var_os("CEA_NATIVE_INGRESS_COOPERATE").as_deref(), true)?;
+        Self::start_with_modes(settings, LifecyclePolicy::default(), true, mode, SpotProbe::Ingress)
+    }
+
+    pub fn start_configured_with_spot_receive_probe(settings: Settings) -> Result<Self> {
+        let mode = select_ingress_mode(std::env::var_os("CEA_NATIVE_INGRESS_COOPERATE").as_deref(), true)?;
+        Self::start_with_modes(settings, LifecyclePolicy::default(), true, mode, SpotProbe::ReceiveStages)
+    }
+
+    fn start_with_ingress_mode(settings:Settings,lifecycle:LifecyclePolicy,configured:bool,ingress_mode:IngressMode)->Result<Self>{
+        Self::start_with_modes(settings, lifecycle, configured, ingress_mode, SpotProbe::Off)
+    }
+
+    fn start_with_modes(settings: Settings, lifecycle: LifecyclePolicy, configured: bool,
+                        ingress_mode: IngressMode, spot_probe: SpotProbe) -> Result<Self> {
+        if ingress_mode==IngressMode::V2&&!configured{return Err("native ingress v2 requires configured whole-plan runtime".into())}
         if settings.session.is_empty()||settings.session.len()>40||!settings.session.bytes().all(|c|c.is_ascii_alphanumeric()||c==b'-')||!matches!(settings.mode.as_str(),"single"|"shadow"|"redundant") {return Err("invalid native session/mode".into())}
         PublicSocket::validate_endpoint(settings.perpetual.address, &settings.perpetual.uri)?;
         let starts_spot = !configured || !settings.spot_symbols.is_empty();
@@ -208,7 +646,13 @@ impl Runtime {
         let memberships=settings.perpetual_symbols.iter().map(|s|(s.clone(),1)).collect();
         let fixture_wall=Arc::new(AtomicI64::new(settings.fixture_wall_ms.unwrap_or(0)));
         let mut control=Control::default();control.fixture_wall=fixture_wall.clone();
-        let mut this=Self {settings,workers:BTreeMap::new(),sender,receiver,failure:control.failure.clone(),origin:control.origin,next:0,generations:BTreeMap::new(),memberships,serials:BTreeMap::new(),supplied:0,retired:0,fixture_wall,anchored:false,received:Arc::new(AtomicU64::new(0)),retired_frames:0,queue_age:AgeStats::default(),source_age:AgeStats::default(),control,recv_total:Timing::default(),channel_wait:Timing::default(),lifecycle,retiring:BTreeMap::new(),pending_targets:None};
+        if !matches!(spot_probe, SpotProbe::Off) {
+            control.spot_ingress = Some(Arc::new(Mutex::new(None)));
+        }
+        if matches!(spot_probe, SpotProbe::ReceiveStages) {
+            control.spot_decode_failures = Some(Arc::new(AtomicU64::new(0)));
+        }
+        let mut this=Self {settings,workers:BTreeMap::new(),sender,receiver,failure:control.failure.clone(),origin:control.origin,next:0,generations:BTreeMap::new(),memberships,serials:BTreeMap::new(),supplied:0,retired:0,fixture_wall,anchored:false,received:Arc::new(AtomicU64::new(0)),retired_frames:0,queue_age:AgeStats::default(),source_age:AgeStats::default(),control,recv_total:Timing::default(),channel_wait:Timing::default(),lifecycle,retiring:BTreeMap::new(),pending_targets:None,ingress_mode,ingress_credits:if ingress_mode==IngressMode::V2{Some(IngressCredits::new())}else{None}};
         this.spawn(0,false,false)?;
         if this.settings.mode!="single" {this.spawn(1,false,false)?;}
         if configured{this.enable_handoff()?;}
@@ -217,19 +661,32 @@ impl Runtime {
     fn spawn(&mut self,slot:u8,spot:bool,replacement:bool)->Result<()> {
         if self.workers.values().chain(self.retiring.values()).filter(|w|w.spot==spot).count()>=if spot{1}else{3}{return Err("native physical slot capacity".into())}
         self.next+=1;let route=format!("{}-{}-{}",if spot{"spot"}else{"perp"},slot,self.next);
+        let worker_instance = self.next;
         let created_ms=self.origin.elapsed().as_millis() as u64;let due_ms=self.lifecycle.rotation.initial_due(created_ms,slot);
         let endpoint=if spot{self.settings.spot.clone()}else if slot==1{self.settings.fixture_backup_endpoint.clone().unwrap_or_else(||self.settings.perpetual.clone())}else{self.settings.perpetual.clone()};
         let symbols=if spot{self.settings.spot_symbols.clone()}else{self.settings.perpetual_symbols.clone()};
         let stop=Arc::new(AtomicBool::new(false));let worker_stop=stop.clone();let failure=self.failure.clone();let sender=self.sender.clone();
         let origin=self.origin;let fixture_wall=self.fixture_wall.clone();let received=self.received.clone();let id=route.clone();let session=self.settings.session.clone();
         let physical=self.control.physical.clone();let wake=self.control.wake.clone();
+        let spot_observer = self.control.spot_ingress.as_ref().filter(|_| spot).cloned();
+        let spot_decode_failures = self.control.spot_decode_failures.as_ref().filter(|_| spot).cloned();
         physical.lock().map_err(|_|"physical truth poisoned")?.insert(route.clone(),json!({"type":"route","route":route,"slot":slot,"spot":spot,"token":"pending","generation":1,"connected":false,"replacement":replacement,"applied":[]}));
         let recovery=self.lifecycle.recovery;
+        let ingress=WorkerIngress{mode:self.ingress_mode,credits:self.ingress_credits.clone(),stop:worker_stop.clone()};
         let join=thread::Builder::new().name(route.clone()).spawn(move||{
-            let mut generation=0;let mut recovery=Recovery::new(recovery);
+            let mut generation=0;let mut recovery=Recovery::new(recovery);let mut exit=WorkerExit::default();
             while !worker_stop.load(Ordering::Acquire) {
                 if failure.lock().map_or(true,|f|f.is_some()){break}
                 generation+=1;let token=format!("{session}-{id}-{generation}");
+                let spot_ingress = spot_observer.as_ref().map(|_| {
+                    let mut observation = SpotIngress::for_generation(&token, worker_instance, generation,
+                        &symbols, ingress.credits.as_ref().map(|_| origin));
+                    if spot_decode_failures.is_some() {
+                        observation.receive = Some(Mutex::new(SpotReceiveState::new(&symbols)));
+                    }
+                    Arc::new(observation)
+                });
+                let credit_wait = spot_ingress.as_ref().and_then(|probe| probe.credit_wait.as_ref());
                 let mut unqualified=0usize;
                 let attempt=(||->Result<()> {
                     let mut socket=PublicSocket::connect(endpoint.address,&endpoint.uri)?;
@@ -239,20 +696,56 @@ impl Runtime {
                     let mut ack=false;let mut before_ack=Vec::new();
                     while !worker_stop.load(Ordering::Acquire) {
                         if !ack&&Instant::now()>ack_deadline{return Err("subscription ACK deadline".into())}
-                        match socket.receive_timeout()? {
+                        let mut text_received_ns = None;
+                        let received_frame = if let Some(failures) = &spot_decode_failures {
+                            socket.receive_timeout_observed(|phase| match phase {
+                                TextDecode::Received => text_received_ns = u64::try_from(origin.elapsed().as_nanos()).ok(),
+                                TextDecode::Failed => { failures.fetch_add(1, Ordering::Relaxed); }
+                            })
+                        } else {
+                            socket.receive_timeout()
+                        }?;
+                        match received_frame {
                             Reception::Idle=>continue,
-                            Reception::Event(event)=>match event["type"].as_str() {
+                            Reception::Event(mut event)=>match event["type"].as_str() {
                                 Some("ack")=>{
                                     ack=true;
-                                    {let mut states=physical.lock().map_err(|_|"physical truth poisoned")?;let state=states.get_mut(&id).ok_or("retired physical owner")?;state["token"]=json!(token);state["generation"]=json!(generation);state["connected"]=json!(true);state["applied"]=json!(symbols);}
-                                    if !emit_notified(&sender,&failure,&wake,Event::Connected{route:id.clone(),token:token.clone(),generation}){return Err("ingress failed".into())}
-                                    for (payload,clock) in before_ack.drain(..) {if !emit_notified(&sender,&failure,&wake,Event::Frame{route:id.clone(),token:token.clone(),generation,payload,clock}){return Err("ingress failed".into())}unqualified-=1;}
+                                    {let mut states=physical.lock().map_err(|_|"physical truth poisoned")?;let state=states.get_mut(&id).ok_or("retired physical owner")?;state["token"]=json!(token);state["generation"]=json!(generation);state["connected"]=json!(true);state["applied"]=json!(symbols);
+                                        if let Some(mut observer) = spot_observer.as_ref().and_then(|observer| observer.lock().ok()) {
+                                            *observer = spot_ingress.clone();
+                                        }
+                                    }
+                                    if ingress.offer_observed(&sender,&failure,&wake,Event::Connected{route:id.clone(),token:token.clone(),generation},credit_wait)!=OfferResult::Sent{return Err("ingress failed".into())}
+                                    for (payload,clock) in before_ack.drain(..) {
+                                        let point = spot_ingress.as_ref().and_then(|probe| probe.slot(&payload));
+                                        if ingress.offer_observed(&sender,&failure,&wake,Event::Frame{route:id.clone(),token:token.clone(),generation,payload,clock},credit_wait)!=OfferResult::Sent{return Err("ingress failed".into())}
+                                        if let Some(point) = point {point.offered.store(clock.monotonic_ms, Ordering::Release);}
+                                        if let Some(probe) = &spot_ingress { probe.record_offer(); }
+                                        unqualified-=1;
+                                    }
                                 },
                                 Some("raw")=>{
                                     received.fetch_add(1,Ordering::Relaxed);
-                                    let payload=event["payload"].clone();let mut clock=clock(origin);let wall=fixture_wall.load(Ordering::Acquire);if wall!=0{clock.wall_ms=wall+clock.monotonic_ms;}
+                                    let payload=extract_worker_payload(&mut event);let mut clock=clock(origin);let wall=fixture_wall.load(Ordering::Acquire);if wall!=0{clock.wall_ms=wall+clock.monotonic_ms;}
+                                    #[cfg(test)]
+                                    if let Some(credits)=&ingress.credits{credits.observe_capture(&payload,clock);}
+                                    let point = spot_ingress.as_ref().and_then(|probe| probe.slot(&payload));
+                                    if let Some(point) = point {point.observed.store(clock.monotonic_ms, Ordering::Release);}
+                                    if let Some(mut stages) = spot_ingress.as_ref()
+                                        .and_then(|probe| probe.receive.as_ref()).and_then(|state| state.lock().ok()) {
+                                        stages.capture(&payload, text_received_ns, clock.monotonic_ms);
+                                    }
                                     if !ack {if before_ack.len()>=CAPACITY{return Err("pre-ACK buffer full".into())}before_ack.push((payload,clock));unqualified+=1;}
-                                    else if !emit_notified(&sender,&failure,&wake,Event::Frame{route:id.clone(),token:token.clone(),generation,payload,clock}) {return Err("ingress failed".into())}
+                                    else {
+                                        match ingress.offer_observed(&sender,&failure,&wake,Event::Frame{route:id.clone(),token:token.clone(),generation,payload,clock},credit_wait) {
+                                            OfferResult::Sent=>{
+                                                if let Some(point) = point {point.offered.store(clock.monotonic_ms, Ordering::Release);}
+                                                if let Some(probe) = &spot_ingress { probe.record_offer(); }
+                                            },
+                                            OfferResult::Stopped=>{exit.canceled_post_ack=1;return Ok(())},
+                                            OfferResult::Failed=>return Err("ingress failed".into()),
+                                        }
+                                    }
                                 },
                                 Some("ping"|"pong")=>{},_=>return Err("unknown physical frame".into()),
                             }
@@ -261,8 +754,13 @@ impl Runtime {
                     let _=socket.close();Ok(())
                 })();
                 if let Ok(mut states)=physical.lock(){if let Some(state)=states.get_mut(&id){state["connected"]=json!(false);state["applied"]=json!([]);}}
+                if let Some(mut observer) = spot_observer.as_ref().and_then(|observer| observer.lock().ok()) {
+                    if observer.as_ref().is_some_and(|probe| probe.matches(&token, generation)) {
+                        *observer = None;
+                    }
+                }
                 if unqualified>0 {fail_notified(&failure,&wake,format!("retired {unqualified} pre-ACK frames; owner incomplete"));}
-                if !emit_notified(&sender,&failure,&wake,Event::Disconnected{route:id.clone(),generation}) {break}
+                if ingress.offer(&sender,&failure,&wake,Event::Disconnected{route:id.clone(),generation})!=OfferResult::Sent {break}
                 if worker_stop.load(Ordering::Acquire)||failure.lock().map_or(true,|f|f.is_some()){break}
                 // Subscription or parse uncertainty cannot resume the same physical generation.
                 let _=attempt;
@@ -270,9 +768,10 @@ impl Runtime {
                 let delay=recovery.retry_delay(origin.elapsed().as_millis() as u64,jitter);
                 if !retry_wait(&worker_stop,&failure,delay){break}
             }
+            exit
         }).map_err(|e|e.to_string())?;
         self.serials.insert(route.clone(),0);
-        self.workers.insert(route,Worker {stop,join:Some(join),slot,spot,replacement,token:String::new(),generation:0,connected:false,created_ms,due_ms});Ok(())
+        self.workers.insert(route,Worker {stop,join:Some(join),slot,spot,replacement,token:String::new(),generation:0,connected:false,created_ms,due_ms,spot_ingress:None});Ok(())
     }
     /// Internal Rust opt-in; existing live headers never call this method.
     pub fn enable_handoff(&mut self)->Result<()> {
@@ -315,11 +814,20 @@ impl Runtime {
         }
         Ok(rows)
     }
+    fn collect_worker_exit(&mut self,exit:WorkerExit)->Result<()> {
+        if exit.canceled_post_ack>1{return Err("native worker cancellation count invalid; owner incomplete".into())}
+        if exit.canceled_post_ack==0{return Ok(())}
+        let first=self.failure.lock().map_err(|_|"native failure lock poisoned")?;
+        if first.is_none() {
+            self.retired_frames=self.retired_frames.checked_add(u64::from(exit.canceled_post_ack)).ok_or("native retired frame count overflow; owner incomplete")?;
+        }
+        Ok(())
+    }
     fn reap_ready(&mut self)->Result<()> {
         let ready:Vec<_>=self.retiring.iter().filter(|(_,w)|w.join.as_ref().is_none_or(JoinHandle::is_finished)).map(|(r,_)|r.clone()).collect();
         for route in ready {
             let mut worker=self.retiring.remove(&route).unwrap();
-            if let Some(join)=worker.join.take(){join.join().map_err(|_|"native retiring worker panicked")?;}
+            if let Some(join)=worker.join.take(){let exit=join.join().map_err(|_|"native retiring worker panicked")?;self.collect_worker_exit(exit)?;}
         }
         Ok(())
     }
@@ -416,7 +924,7 @@ impl Runtime {
     fn retire(&mut self,route:&str)->Result<Vec<Value>> {
         let Some(mut worker)=self.workers.remove(route) else{return Ok(vec![])};
         worker.stop.store(true,Ordering::Release);
-        if let Some(join)=worker.join.take(){join.join().map_err(|_|"native worker panicked")?;}
+        if let Some(join)=worker.join.take(){let exit=join.join().map_err(|_|"native worker panicked")?;self.collect_worker_exit(exit)?;}
         self.control.physical.lock().map_err(|_|"physical truth poisoned")?.remove(route);
         self.retired+=1;self.generations.remove(route);self.serials.remove(route);
         Ok(if worker.spot {vec![json!({"type":"spot_route","token":worker.token,"generation":worker.generation.max(1),"connected":false,"symbols":self.settings.spot_symbols})]}else if worker.generation>0 {vec![json!({"type":"feed","action":{"type":"retire","route":route}})]}else{vec![]})
@@ -462,12 +970,15 @@ impl Runtime {
         }
         let waiting=Instant::now();let received=self.receive_event(timeout);self.channel_wait.record(waiting);
         let Some(event)=received? else{return Ok(vec![])};
-        let route=match &event{Event::Connected{route,..}|Event::Frame{route,..}|Event::Disconnected{route,..}=>route};
+        let route=match &event{Event::Connected{route,..}|Event::Frame{route,..}|Event::Disconnected{route,..}=>route,_=>return Err("native ingress credit retained after dequeue; owner incomplete".into())};
         if !self.workers.contains_key(route){self.retired+=1;if matches!(event,Event::Frame{..}){self.retired_frames+=1;}return Ok(vec![])}
         let mut rows=Vec::new();
         match event {
             Event::Connected{route,token,generation}=>{
                 let worker=self.workers.get_mut(&route).unwrap();worker.token=token.clone();worker.generation=generation;worker.connected=true;self.generations.insert(route.clone(),generation);
+                if worker.spot {
+                    worker.spot_ingress = self.control.spot_ingress_generation(&token, generation);
+                }
                 if worker.spot{rows.push(json!({"type":"spot_route","token":token,"generation":generation,"connected":true,"symbols":self.settings.spot_symbols}));}
                 else{rows.push(json!({"type":"feed","action":{"type":"route","route":route,"slot":worker.slot,"token":token,"generation":generation,"connected":true,"replacement":worker.replacement,"applied":self.settings.perpetual_symbols}}));}
             },
@@ -484,28 +995,40 @@ impl Runtime {
                 let tick=crate::parse_bookticker(&payload,clock.wall_ms,!worker.spot)?;
                 self.supplied+=1;
                 self.queue_age.record(processing.monotonic_ms-clock.monotonic_ms);self.source_age.record(processing.wall_ms-tick.source_ms);
-                if worker.spot{rows.push(json!({"type":"spot_raw","token":token,"generation":generation,"payload":payload,"now_ms":processing.wall_ms,"receive_ms":clock.wall_ms}));}
+                if worker.spot {
+                    if let Some(point) = worker.spot_ingress.as_ref().and_then(|probe| probe.slot(&payload)) {
+                        point.dequeued.store(clock.monotonic_ms, Ordering::Release);
+                    }
+                    if let Some(mut stages) = worker.spot_ingress.as_ref()
+                        .and_then(|probe| probe.receive.as_ref()).and_then(|state| state.lock().ok()) {
+                        stages.dequeue(&tick.symbol, processing.monotonic_ms);
+                    }
+                    rows.push(json!({"type":"spot_raw","token":token,"generation":generation,"payload":payload,"now_ms":processing.wall_ms,"receive_ms":clock.wall_ms}));
+                }
                 else {
                     let membership=*self.memberships.get(&tick.symbol).ok_or("unsubscribed native frame")?;
                     payload["_ptk_connection_id"]=json!(token);payload["_ptk_connection_generation"]=json!(generation);payload["run_time_ms"]=json!(clock.wall_ms);
                     rows.push(json!({"type":"feed","action":{"type":"raw_captured","route":route,"payload":payload,"membership":membership,"serial":self.serials[&route],"wall_ms":processing.wall_ms,"monotonic_ms":processing.monotonic_ms,"ingress_clock":{"wall_ms":clock.wall_ms,"monotonic_ms":clock.monotonic_ms}}}));
                 }
-            }
+            },
+            _=>return Err("native ingress credit retained after dequeue; owner incomplete".into()),
         }
         Ok(rows)
     }
     fn receive_event(&self,timeout:Duration)->Result<Option<Event>> {
         match self.receiver.try_recv() {
-            Ok(event)=>return Ok(Some(event)),
+            Ok(event)=>return Ok(Some(event.release_credit())),
             Err(mpsc::TryRecvError::Disconnected)=>return Err("native ingress disconnected".into()),
             Err(mpsc::TryRecvError::Empty)=>{},
         }
+        #[cfg(test)]
+        if let Some(credits)=&self.ingress_credits{if let Some(reached)=credits.before_receive_wait.lock().unwrap().take(){reached.send(()).unwrap();}}
         if !timeout.is_zero(){self.control.wake.wait(timeout)?;}
         if let Some(error)=self.failure.lock().map_err(|_|"native failure lock poisoned")?.clone(){return Err(error)}
         // One queue check after the single bounded wait, including spurious or
         // control-only wakes; never spin and never consume more than one event.
         match self.receiver.try_recv() {
-            Ok(event)=>Ok(Some(event)),Err(mpsc::TryRecvError::Empty)=>Ok(None),
+            Ok(event)=>Ok(Some(event.release_credit())),Err(mpsc::TryRecvError::Empty)=>Ok(None),
             Err(mpsc::TryRecvError::Disconnected)=>Err("native ingress disconnected".into()),
         }
     }
@@ -522,7 +1045,7 @@ impl Runtime {
         }
         let mut first=None;for route in self.workers.keys().cloned().collect::<Vec<_>>(){if let Err(e)=self.retire(&route){if first.is_none(){first=Some(e)}}}
         if let Err(error)=self.finish_retiring(){if first.is_none(){first=Some(error)}}
-        let mut purged=0;while let Ok(event)=self.receiver.try_recv(){if matches!(event,Event::Frame{..}){purged+=1;}else{self.retired+=1;}}
+        let mut purged=0;while let Ok(event)=self.receiver.try_recv(){let event=event.release_credit();if matches!(event,Event::Frame{..}){purged+=1;}else{self.retired+=1;}}
         if purged>0 {let error=format!("shutdown retained {purged} unconsumed native frames; owner incomplete");fail_notified(&self.failure,&self.control.wake,error.clone());if first.is_none(){first=Some(error)}}
         self.retired_frames+=purged;
         if let Ok(mut retained)=self.control.failure_accounting.lock(){if let Some(report)=retained.as_mut(){report["cleanup"]=json!({"workers_after_shutdown":self.workers.len(),"purged_frames":purged,"retired_frames_total":self.retired_frames});if self.control.handoff.is_some(){report["cleanup"]["active_workers"]=json!(self.workers.len());report["cleanup"]["retiring_workers"]=json!(self.retiring.len());report["cleanup"]["cleanup_complete"]=json!(self.workers.is_empty()&&self.retiring.is_empty()&&purged==0);}}}
@@ -715,6 +1238,55 @@ mod lifecycle_tests {
         for state in truth.values().filter(|s|s["spot"]!=true&&s["replacement"]==true){let id=state["route"].as_str().unwrap();if selector.replacement_ready(id,clock).unwrap(){*control.promotion.lock().unwrap()=Some(id.into());}}
     }
     #[test]
+    fn actual_spot_worker_probe_distinguishes_observed_offer_and_dequeue() {
+        let fixture = Fixture::start(0, 0);
+        fixture.quotes.store(false, Ordering::Release);
+        let mut runtime = Runtime::start_with_modes(
+            fixture.settings("single"), LifecyclePolicy::default(), true, IngressMode::V2, SpotProbe::Ingress,
+        ).unwrap();
+        let control = runtime.control();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while runtime.workers.values().any(|worker| !worker.connected) {
+            assert!(Instant::now() < deadline);
+            runtime.recv(Duration::from_millis(10)).unwrap();
+        }
+        let worker = runtime.workers.values().find(|worker| worker.spot).unwrap();
+        let (token, generation) = (worker.token.clone(), worker.generation);
+        let sample = || control.spot_ingress_clocks(&token, generation, "BTCUSDT");
+        assert_eq!(sample(), Some(SpotIngressClocks { observed: None, offered: None, dequeued: None }));
+        assert_eq!(control.spot_ingress_clocks(&token, generation + 1, "BTCUSDT"), None);
+        assert_eq!(control.spot_ingress_clocks("retired", generation, "BTCUSDT"), None);
+        assert_eq!(control.spot_ingress_clocks(&token, generation, "ETHUSDT"), None);
+
+        fixture.quotes.store(true, Ordering::Release);
+        let queued = loop {
+            let point = sample().unwrap();
+            if point.offered.is_some() { break point; }
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(1));
+        };
+        // No recv call since opening the quote producer.
+        assert!(queued.observed >= queued.offered);
+        assert_eq!(queued.dequeued, None);
+        assert_eq!(runtime.supplied, 0);
+
+        fixture.quiet(&mut runtime);
+        let drained = sample().unwrap();
+        assert!(drained.observed >= queued.observed);
+        assert_eq!(drained.observed, drained.offered);
+        assert_eq!(drained.offered, drained.dequeued);
+        assert_eq!(runtime.received.load(Ordering::Acquire), runtime.supplied);
+        runtime.request_handoff_shutdown().unwrap();
+        let until = Instant::now() + Duration::from_secs(3);
+        while !runtime.handoff_shutdown_ready().unwrap() {
+            assert!(Instant::now() < until);
+            thread::sleep(Duration::from_millis(1));
+        }
+        runtime.shutdown().unwrap();
+        assert_eq!(sample(), None);
+    }
+
+    #[test]
     fn actual_socket_repeated_ack_close_increases_retry_delay_and_spot_reconnects(){
         let fixture=Fixture::start(3,1);let policy=LifecyclePolicy{recovery:RecoveryPolicy{base_ms:25,cap_ms:200,stable_ms:60000,jitter_ms:0},..LifecyclePolicy::default()};let mut runtime=Runtime::start_with_policy(fixture.settings("single"),policy).unwrap();let deadline=Instant::now()+Duration::from_secs(3);
         while Instant::now()<deadline{runtime.recv(Duration::from_millis(5)).unwrap();if runtime.workers.values().any(|w|!w.spot&&w.generation>=4&&w.connected)&&runtime.workers.values().any(|w|w.spot&&w.generation>=2&&w.connected){break}}
@@ -788,7 +1360,7 @@ mod handoff_tests {
     pub(super) fn empty_runtime()->Runtime {
         let settings:Settings=serde_json::from_value(json!({"session":"handoff","mode":"single","perpetual":{"address":"127.0.0.1:1","uri":"ws://127.0.0.1:1"},"spot":{"address":"127.0.0.1:1","uri":"ws://127.0.0.1:1"},"perpetual_symbols":["ETHUSDT"],"spot_symbols":["ETHUSDT"]})).unwrap();
         let control=Control::default();let (sender,receiver)=mpsc::sync_channel(CAPACITY);
-        Runtime{settings,workers:BTreeMap::new(),sender,receiver,failure:control.failure.clone(),origin:control.origin,next:0,generations:BTreeMap::new(),memberships:BTreeMap::from([("ETHUSDT".into(),1)]),serials:BTreeMap::new(),supplied:0,retired:0,fixture_wall:control.fixture_wall.clone(),anchored:false,received:Arc::new(AtomicU64::new(0)),retired_frames:0,queue_age:AgeStats::default(),source_age:AgeStats::default(),control,recv_total:Timing::default(),channel_wait:Timing::default(),lifecycle:LifecyclePolicy::default(),retiring:BTreeMap::new(),pending_targets:None}
+        Runtime{settings,workers:BTreeMap::new(),sender,receiver,failure:control.failure.clone(),origin:control.origin,next:0,generations:BTreeMap::new(),memberships:BTreeMap::from([("ETHUSDT".into(),1)]),serials:BTreeMap::new(),supplied:0,retired:0,fixture_wall:control.fixture_wall.clone(),anchored:false,received:Arc::new(AtomicU64::new(0)),retired_frames:0,queue_age:AgeStats::default(),source_age:AgeStats::default(),control,recv_total:Timing::default(),channel_wait:Timing::default(),lifecycle:LifecyclePolicy::default(),retiring:BTreeMap::new(),pending_targets:None,ingress_mode:IngressMode::Off,ingress_credits:None}
     }
     #[test]
     fn configuration_retirement_progress_keeps_status_responsive_with_real_unfinished_handle(){
@@ -797,8 +1369,8 @@ mod handoff_tests {
         let stopped=Arc::new(AtomicBool::new(false));let physical=runtime.control.physical.clone();
         physical.lock().unwrap().insert("old".into(),json!({"token":"old-token","generation":1,"connected":true,"applied":["ETHUSDT"]}));
         let resurrected=Arc::new(AtomicBool::new(false));let checked=resurrected.clone();
-        let join=thread::spawn(move||{while !release.load(Ordering::Acquire){thread::sleep(Duration::from_millis(1));}if let Some(row)=physical.lock().unwrap().get_mut("old"){row["connected"]=json!(true);checked.store(true,Ordering::Release);}});
-        runtime.workers.insert("old".into(),Worker{stop:stopped.clone(),join:Some(join),slot:0,spot:false,replacement:false,token:"old-token".into(),generation:1,connected:true,created_ms:0,due_ms:u64::MAX});
+        let join=thread::spawn(move||{while !release.load(Ordering::Acquire){thread::sleep(Duration::from_millis(1));}if let Some(row)=physical.lock().unwrap().get_mut("old"){row["connected"]=json!(true);checked.store(true,Ordering::Release);}WorkerExit::default()});
+        runtime.workers.insert("old".into(),Worker{stop:stopped.clone(),join:Some(join),slot:0,spot:false,replacement:false,token:"old-token".into(),generation:1,connected:true,created_ms:0,due_ms:u64::MAX,spot_ingress:None});
         let targets=Targets{perpetual:vec!["BTCUSDT".into()],spot:vec![]};runtime.prepare_handoff(1,targets.clone()).unwrap();
         let slot=runtime.control.handoff.clone().unwrap();
         assert_eq!(slot.lock().unwrap().status().0.unwrap().phase,Phase::Prepared);
@@ -824,9 +1396,9 @@ mod handoff_tests {
     #[test]
     fn configuration_reordered_targets_preserve_worker_identity_and_due_time(){
         let mut runtime=empty_runtime();runtime.settings.perpetual_symbols=vec!["ETHUSDT".into(),"BTCUSDT".into()];runtime.settings.spot_symbols=vec!["ETHUSDT".into(),"BTCUSDT".into()];runtime.memberships.insert("BTCUSDT".into(),1);runtime.enable_handoff().unwrap();
-        runtime.workers.insert("old".into(),Worker{stop:Arc::new(AtomicBool::new(false)),join:None,slot:0,spot:false,replacement:false,token:"token".into(),generation:7,connected:true,created_ms:4,due_ms:99});
+        runtime.workers.insert("old".into(),Worker{stop:Arc::new(AtomicBool::new(false)),join:None,slot:0,spot:false,replacement:false,token:"token".into(),generation:7,connected:true,created_ms:4,due_ms:99,spot_ingress:None});
         runtime.control.physical.lock().unwrap().insert("old".into(),json!({"token":"token","generation":7,"connected":true,"applied":["ETHUSDT","BTCUSDT"]}));
-        runtime.workers.insert("spot".into(),Worker{stop:Arc::new(AtomicBool::new(false)),join:None,slot:0,spot:true,replacement:false,token:"spot-token".into(),generation:8,connected:true,created_ms:5,due_ms:100});
+        runtime.workers.insert("spot".into(),Worker{stop:Arc::new(AtomicBool::new(false)),join:None,slot:0,spot:true,replacement:false,token:"spot-token".into(),generation:8,connected:true,created_ms:5,due_ms:100,spot_ingress:None});
         runtime.control.physical.lock().unwrap().insert("spot".into(),json!({"token":"spot-token","generation":8,"connected":true,"applied":["ETHUSDT","BTCUSDT"]}));
         let memberships=runtime.memberships.clone();let truth=runtime.control.physical.lock().unwrap().clone();
         runtime.prepare_handoff(1,Targets{perpetual:vec!["BTCUSDT".into(),"ETHUSDT".into()],spot:vec!["BTCUSDT".into(),"ETHUSDT".into()]}).unwrap();
@@ -877,7 +1449,7 @@ mod rotation_reclamation_tests {
     impl Drop for Release {fn drop(&mut self){self.release();}}
 
     fn worker(token:&str,generation:u64,replacement:bool)->Worker {
-        Worker{stop:Arc::new(AtomicBool::new(false)),join:None,slot:0,spot:false,replacement,token:token.into(),generation,connected:true,created_ms:0,due_ms:u64::MAX}
+        Worker{stop:Arc::new(AtomicBool::new(false)),join:None,slot:0,spot:false,replacement,token:token.into(),generation,connected:true,created_ms:0,due_ms:u64::MAX,spot_ingress:None}
     }
     fn install(runtime:&mut Runtime,route:&str,worker:Worker) {
         runtime.control.physical.lock().unwrap().insert(route.into(),json!({"type":"route","route":route,"slot":worker.slot,"spot":worker.spot,"token":worker.token,"generation":worker.generation,"connected":true,"replacement":worker.replacement,"applied":["ETHUSDT"]}));
@@ -908,6 +1480,7 @@ mod rotation_reclamation_tests {
                 // Same get_mut-only shape as the real late ACK callback.
                 if let Some(state)=physical.lock().unwrap().get_mut(retired_route){state["connected"]=json!(true);callback.store(true,Ordering::Release);}
             }
+            WorkerExit::default()
         });
         if promote{old.join=Some(join);}else{candidate.join=Some(join);}
         install(&mut runtime,"old",old);install(&mut runtime,"candidate",candidate);
@@ -967,6 +1540,7 @@ mod rotation_reclamation_tests {
             old.join=Some(thread::spawn(move||{
                 started.send(()).unwrap();let guard=held.0.lock().unwrap();
                 drop(held.1.wait_timeout_while(guard,Duration::from_secs(5),|released|!*released).unwrap());
+                WorkerExit::default()
             }));
             install(&mut runtime,"old-slot0",old);
             install(&mut runtime,"current-slot0",worker("test-auto-current",8,false));
@@ -975,6 +1549,7 @@ mod rotation_reclamation_tests {
             other.join=Some(thread::spawn(move||{
                 started_other.send(()).unwrap();let until=Instant::now()+Duration::from_secs(5);
                 while !stop.load(Ordering::Acquire)&&Instant::now()<until{thread::sleep(Duration::from_millis(1));}
+                WorkerExit::default()
             }));
             install(&mut runtime,"other-slot1",other);
             let mut spot=worker("test-auto-spot",3,false);spot.spot=true;install(&mut runtime,"spot",spot);
@@ -1448,5 +2023,1052 @@ mod foundation_promotion_tests {
             "physical contender crossed actual guarded stop site: {observed:?}");
         assert!(stopped&&retired,"actual old worker stop/JoinHandle retirement did not finish");
         assert_eq!(replacement_truth["connected"],false,"post-commit disconnect must remain visible in actual truth");
+    }
+}
+
+#[cfg(test)]
+mod worker_payload_tests {
+    use super::*;
+    use std::hint::black_box;
+
+    const ITERATIONS:usize=8192;
+    const CAPTURED:Clock=Clock{wall_ms:1_800_000_000_123,monotonic_ms:42};
+    type Extraction=fn(&mut Value)->Value;
+
+    fn reference_payload(event:&mut Value)->Value {event["payload"].clone()}
+    fn envelope(sequence:u64)->Value {
+        json!({"type":"raw","transport_note":{"retained":[true,null,"unchanged"]},"payload":{
+            "e":"bookTicker","s":"BTCUSDT","u":sequence,"E":1_800_000_000_100_i64,
+            "T":1_800_000_000_099_i64,"b":"999999999.99999999","a":"1000000000.00000000",
+            "B":"0.00000001","A":"1.23456789","extra":{"array":[null,true,"verbatim"]}
+        }})
+    }
+    fn canonical(payload:&Value,perpetual:bool)->Result<Value> {
+        crate::reject_numeric_bookticker_fields(payload)?;
+        crate::parse_bookticker(payload,CAPTURED.wall_ms,perpetual)
+            .map(|tick|serde_json::to_value(tick).unwrap())
+    }
+    fn frame(payload:Value)->Event {
+        Event::Frame{route:"unit-physical-route".into(),token:"test-worker-connection".into(),generation:7,payload,clock:CAPTURED}
+    }
+
+    #[test]
+    fn values_match_old_index_clone_without_changing_siblings_or_envelope_type() {
+        let mut cases=vec![envelope(17),json!({"type":"raw","other":[1,"retained"]})];
+        for payload in [Value::Null,json!("owned text"),json!(19),json!(true),json!([null,"text",{"b":"1"}])] {
+            cases.push(json!({"type":"raw","payload":payload,"other":{"untouched":[1,null]}}));
+        }
+        cases.extend([Value::Null,json!(false),json!(23),json!("nonobject"),json!(["payload",{"payload":"nested"}])]);
+        for original in cases {
+            let mut reference=original.clone();let mut production=original.clone();
+            let expected=reference_payload(&mut reference);let actual=extract_worker_payload(&mut production);
+            assert_eq!(actual,expected);assert_eq!(reference,original);
+            // Compare every non-payload field and the original JSON variant.
+            if let (Some(before),Some(after))=(original.as_object(),production.as_object()) {
+                assert_eq!(before.len(),after.len());
+                for (key,value) in before {if key!="payload" {assert_eq!(after.get(key),Some(value));}}
+                assert_eq!(before.contains_key("payload"),after.contains_key("payload"));
+            } else {assert_eq!(production,original);}
+        }
+    }
+
+    #[test]
+    fn allocation_identity_transfers_existing_string_and_consumes_only_payload() {
+        let mut owned=envelope(18);
+        let address=owned["payload"]["b"].as_str().unwrap().as_ptr();
+        let reference=reference_payload(&mut owned);
+        assert_ne!(reference["b"].as_str().unwrap().as_ptr(),address,"old clone must allocate distinct live storage");
+        let actual=extract_worker_payload(&mut owned);
+        assert_eq!(actual,reference);
+        // Both the reference clone and the envelope remain live at comparison;
+        // baseline storage cannot be freed and reused by the allocator.
+        black_box(&reference);black_box(&owned);
+        assert_eq!(actual["b"].as_str().unwrap().as_ptr(),address,"worker must transfer the original nonempty String allocation");
+        let mut expected=envelope(18);expected["payload"]=Value::Null;
+        assert_eq!(owned,expected,"only the existing payload slot may become null");
+    }
+
+    #[test]
+    fn explicit_clock_and_canonical_parse_results_and_errors_match() {
+        let base=envelope(19)["payload"].clone();
+        let mut missing_source=base.clone();missing_source.as_object_mut().unwrap().remove("E");missing_source.as_object_mut().unwrap().remove("T");
+        let mut null_e=base.clone();null_e["E"]=Value::Null;
+        let mut malformed=base.clone();malformed["B"]=json!("0.0000000000000000001bad");
+        let mut crossed=base.clone();crossed["b"]=json!("1000000000.00000001");
+        let mut numeric=base.clone();numeric["a"]=json!(1000000000);
+        let mut invalid_time=base.clone();invalid_time["E"]=json!("1800000000100");
+        let cases=[(base,true,true),(null_e,true,true),(missing_source.clone(),false,true),
+            (missing_source,true,false),(malformed,true,false),(crossed,true,false),
+            (numeric,true,false),(invalid_time,true,false),(Value::Null,true,false)];
+        for (payload,perpetual,valid) in cases {
+            let mut original=json!({"type":"raw","payload":payload});let mut owned=original.clone();
+            let reference=reference_payload(&mut original);let actual=extract_worker_payload(&mut owned);
+            let expected=canonical(&reference,perpetual);let received=canonical(&actual,perpetual);
+            assert_eq!(received,expected);assert_eq!(received.is_ok(),valid);
+            if let Ok(tick)=received {
+                assert_eq!(tick["receive_ms"],CAPTURED.wall_ms);
+                assert_eq!(tick["bid"],"999999999.99999999");assert_eq!(tick["ask"],"1000000000.00000000");
+                assert_eq!(tick["bid_size"],"0.00000001");assert_eq!(tick["ask_size"],"1.23456789");
+                let source=if perpetual {reference["E"].as_i64().or_else(||reference["T"].as_i64()).unwrap()}else{CAPTURED.wall_ms};
+                assert_eq!(tick["source_ms"],source);
+            }
+        }
+        assert_eq!((CAPTURED.wall_ms,CAPTURED.monotonic_ms),(1_800_000_000_123,42));
+    }
+
+    #[test]
+    fn actual_bounded_frame_handoff_keeps_payload_token_generation_and_clock() {
+        assert_eq!(CAPACITY,4096);
+        let (sender,receiver)=mpsc::sync_channel::<Event>(CAPACITY);
+        let failure=Mutex::new(None);let wake=WakeSignal::default();
+        let mut owned=envelope(20);let expected=reference_payload(&mut owned);
+        let payload=extract_worker_payload(&mut owned);
+        // Controlled pre-ACK ownership, using the same owned (payload,Clock)
+        // tuple and actual Event::Frame/emit seam; no socket or selector claim.
+        let mut before_ack=vec![(payload,CAPTURED)];
+        for (payload,clock) in before_ack.drain(..) {
+            assert!(emit_notified(&sender,&failure,&wake,Event::Frame{route:"unit-physical-route".into(),token:"test-worker-connection".into(),generation:7,payload,clock}));
+        }
+        let Event::Frame{route,token,generation,payload,clock}=receiver.try_recv().ok().unwrap() else{panic!("expected actual Frame")};
+        assert_eq!(route,"unit-physical-route");assert_eq!(token,"test-worker-connection");assert_eq!(generation,7);
+        assert_eq!((clock.wall_ms,clock.monotonic_ms),(CAPTURED.wall_ms,CAPTURED.monotonic_ms));
+        assert_eq!(payload,expected);assert_eq!(canonical(&payload,true),canonical(&expected,true));
+        assert!(before_ack.is_empty());assert!(failure.lock().unwrap().is_none());
+        assert!(*wake.state.0.lock().unwrap());assert!(matches!(receiver.try_recv(),Err(mpsc::TryRecvError::Empty)));
+    }
+
+    fn check_actual_full(prior:Option<&str>) {
+        let (sender,receiver)=mpsc::sync_channel::<Event>(CAPACITY);
+        let failure=Mutex::new(prior.map(str::to_owned));let wake=WakeSignal::default();
+        for _ in 0..CAPACITY {assert!(emit(&sender,&failure,frame(Value::Null)));}
+        let mut owned=envelope(21);let payload=extract_worker_payload(&mut owned);
+        assert!(!emit_notified(&sender,&failure,&wake,frame(payload)));
+        let expected=prior.unwrap_or("native ingress full; owner incomplete");
+        assert_eq!(failure.lock().unwrap().as_deref(),Some(expected));
+        fail_notified(&failure,&wake,"later failure".into());
+        assert_eq!(failure.lock().unwrap().as_deref(),Some(expected));assert!(*wake.state.0.lock().unwrap());
+        let mut received=0;
+        while let Ok(event)=receiver.try_recv() {let Event::Frame{payload,..}=event else{panic!("expected queued Frame")};assert!(payload.is_null());received+=1;}
+        assert_eq!(received,CAPACITY);
+    }
+    struct ReturnedFrame<'a> {
+        frame:Option<Event>,failure:&'a Mutex<Option<String>>,wake:&'a WakeSignal,
+        observed:&'a Mutex<Option<(bool,bool)>>,
+    }
+    impl Drop for ReturnedFrame<'_> {
+        fn drop(&mut self) {
+            // Release the real payload first, then observe the unmodified
+            // production generic emit's failure-latch / wake boundary.
+            drop(self.frame.take());
+            *self.observed.lock().unwrap()=Some((self.failure.lock().unwrap().is_none(),!*self.wake.state.0.lock().unwrap()));
+        }
+    }
+    #[test]
+    fn full_releases_returned_frame_before_latching_or_waking_and_keeps_first_error() {
+        check_actual_full(None);check_actual_full(Some("original first error"));
+        let failure=Mutex::new(None);let wake=WakeSignal::default();let observed=Mutex::new(None);
+        let (sender,receiver)=mpsc::sync_channel::<Option<ReturnedFrame<'_>>>(CAPACITY);
+        for _ in 0..CAPACITY {sender.try_send(None).ok().unwrap();}
+        let mut owned=envelope(22);let payload=extract_worker_payload(&mut owned);
+        let returned=ReturnedFrame{frame:Some(frame(payload)),failure:&failure,wake:&wake,observed:&observed};
+        assert!(!emit_notified(&sender,&failure,&wake,Some(returned)));
+        assert_eq!(*observed.lock().unwrap(),Some((true,true)));
+        assert_eq!(failure.lock().unwrap().as_deref(),Some("native ingress full; owner incomplete"));
+        assert!(*wake.state.0.lock().unwrap());drop(receiver);
+    }
+
+    fn prepared_envelopes()->Vec<Value> {(1..=ITERATIONS as u64).map(envelope).collect()}
+    fn observe_component(envelopes:&mut [Value],extract:Extraction)->(u128,u64) {
+        let mut outputs=Vec::with_capacity(ITERATIONS);
+        let started=Instant::now();
+        for envelope in envelopes {outputs.push(black_box(extract(black_box(envelope))));}
+        let total_wall_ns=started.elapsed().as_nanos();
+        // Full-value checksum and destruction are outside the extraction range.
+        let checksum=outputs.iter().flat_map(|payload|serde_json::to_vec(payload).unwrap())
+            .fold(0_u64,|sum,byte|sum.wrapping_mul(31).wrapping_add(u64::from(byte)));
+        black_box(&outputs);(total_wall_ns,black_box(checksum))
+    }
+    #[test]
+    fn fixed_same_input_component_cost_in_two_predeclared_orders() {
+        let orders:[(&str,[(&str,Extraction);2]);2]=[
+            ("reference_then_production",[("reference",reference_payload),("production",extract_worker_payload)]),
+            ("production_then_reference",[("production",extract_worker_payload),("reference",reference_payload)]),
+        ];
+        let mut common_checksum=None;
+        for (order,branches) in orders {
+            // Both branches own the same 8192 inputs before either timer starts.
+            let mut prepared=[prepared_envelopes(),prepared_envelopes()];
+            for ((branch,extract),envelopes) in branches.into_iter().zip(prepared.iter_mut()) {
+                assert_eq!(envelopes.len(),ITERATIONS);
+                let (total_wall_ns,checksum)=observe_component(envelopes,extract);
+                if let Some(expected)=common_checksum {assert_eq!(checksum,expected);} else{common_checksum=Some(checksum);}
+                eprintln!("worker_payload_component order={order} branch={branch} iterations={ITERATIONS} total_wall_ns={total_wall_ns} checksum={checksum}");
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod cooperative_ingress_tests {
+    use super::*;
+
+    const FRAMES:usize=8;
+    fn payload(sequence:u64)->Value {
+        json!({"e":"bookTicker","s":"BTCUSDT","u":sequence,"E":1_800_000_000_100_i64,
+            "b":"999999999.99999999","a":"1000000000.00000000",
+            "B":"0.00000001","A":"1.23456789","extra":[null,true,"verbatim"]})
+    }
+    fn frame(sequence:u64)->(Event,usize) {
+        let mut raw=json!({"type":"raw","payload":payload(sequence)});
+        let address=raw["payload"]["b"].as_str().unwrap().as_ptr() as usize;
+        let payload=extract_worker_payload(&mut raw);
+        assert!(raw["payload"].is_null());
+        (Event::Frame{route:"unit-cooperative-route".into(),token:"test-cooperative-connection".into(),
+            generation:7,payload,clock:Clock{wall_ms:1_800_000_000_123+sequence as i64,monotonic_ms:42+sequence as i64}},address)
+    }
+    fn observe_frame(event:Event,sequence:u64)->usize {
+        let Event::Frame{route,token,generation,payload:received,clock}=event else{panic!("expected actual raw Frame")};
+        assert_eq!(route,"unit-cooperative-route");assert_eq!(token,"test-cooperative-connection");assert_eq!(generation,7);
+        assert_eq!(received,payload(sequence));
+        assert_eq!((clock.wall_ms,clock.monotonic_ms),(1_800_000_000_123+sequence as i64,42+sequence as i64));
+        received["b"].as_str().unwrap().as_ptr() as usize
+    }
+
+    #[test]
+    fn exact_v1_gate_defaults_off_without_environment_mutation() {
+        assert!(!ingress_cooperate(None));
+        for value in ["","v0","v2","V1","1","true"," v1","v1 ","v1\n","v1\0"] {
+            assert!(!ingress_cooperate(Some(std::ffi::OsStr::new(value))),"unexpected opt-in: {value:?}");
+        }
+        assert!(ingress_cooperate(Some(std::ffi::OsStr::new("v1"))));
+        #[cfg(unix)] {
+            use std::os::unix::ffi::OsStrExt;
+            assert!(!ingress_cooperate(Some(std::ffi::OsStr::from_bytes(b"v1\xff"))));
+            assert!(!ingress_cooperate(Some(std::ffi::OsStr::from_bytes(b"\xff"))));
+        }
+    }
+
+    #[test]
+    fn successful_frames_preserve_fifo_identity_clock_and_schedule_after_wake() {
+        assert_eq!(CAPACITY,4096);
+        let (sender,receiver)=mpsc::sync_channel::<Event>(CAPACITY);
+        let failure=Mutex::new(None);let wake=WakeSignal::default();let mut scheduled=0;
+        let mut expected=Vec::new();
+        for sequence in 0..FRAMES as u64 {
+            let (event,address)=frame(sequence);expected.push(address);
+            assert!(emit_cooperatively(&sender,&failure,&wake,event,||{
+                assert!(failure.try_lock().expect("failure lock retained during scheduling").is_none());
+                let mut pending=wake.state.0.try_lock().expect("wake lock retained during scheduling");
+                assert!(*pending,"original wake must precede scheduling");*pending=false;drop(pending);
+                scheduled+=1;
+                // Keep earlier frames queued until the final callback, so this
+                // observes both actual enqueue-before-callback and FIFO order.
+                if sequence+1==FRAMES as u64 {
+                    for (sequence,address) in expected.iter().enumerate() {
+                        let event=receiver.try_recv().ok().expect("successful frame absent at scheduling callback");
+                        assert_eq!(observe_frame(event,sequence as u64),*address);
+                    }
+                    assert!(matches!(receiver.try_recv(),Err(mpsc::TryRecvError::Empty)));
+                }
+            }));
+        }
+        assert_eq!(scheduled,FRAMES);assert!(failure.lock().unwrap().is_none());
+        drop(sender);assert!(matches!(receiver.try_recv(),Err(mpsc::TryRecvError::Disconnected)));
+    }
+
+    fn rejected_event(disconnected:bool,prior:Option<&str>) {
+        let failure=Mutex::new(prior.map(str::to_owned));let wake=WakeSignal::default();
+        let (sender,receiver)=mpsc::sync_channel::<Event>(CAPACITY);
+        let receiver=if disconnected {drop(receiver);None}else{Some(receiver)};
+        let mut queued=Vec::new();
+        if !disconnected {
+            for sequence in 0..CAPACITY as u64 {
+                let (event,address)=frame(sequence);queued.push(address);assert!(emit(&sender,&failure,event));
+            }
+        }
+        let mut scheduled=0;let (event,_)=frame(CAPACITY as u64);
+        assert!(!emit_cooperatively(&sender,&failure,&wake,event,||scheduled+=1));
+        assert_eq!(scheduled,0);
+        let reason=if disconnected {"native ingress receiver disconnected; owner incomplete"}else{"native ingress full; owner incomplete"};
+        let expected=prior.unwrap_or(reason);
+        assert_eq!(failure.try_lock().unwrap().as_deref(),Some(expected));
+        assert!(*wake.state.0.try_lock().unwrap());
+        fail_notified(&failure,&wake,"later failure must not replace first".into());
+        assert_eq!(failure.lock().unwrap().as_deref(),Some(expected));
+        if let Some(receiver)=receiver {
+            for (sequence,address) in queued.iter().enumerate() {
+                assert_eq!(observe_frame(receiver.try_recv().ok().expect("queued frame lost"),sequence as u64),*address);
+            }
+            assert_eq!(queued.len(),CAPACITY);
+            assert!(matches!(receiver.try_recv(),Err(mpsc::TryRecvError::Empty)));
+        }
+    }
+    struct ReturnedFrame<'a> {
+        frame:Option<Event>,failure:&'a Mutex<Option<String>>,wake:&'a WakeSignal,
+        observed:&'a Mutex<Option<(Option<String>,bool)>>,
+    }
+    impl Drop for ReturnedFrame<'_> {
+        fn drop(&mut self) {
+            // Destroy the actual raw payload before observing the unchanged
+            // original emit's first-failure and wake boundary.
+            drop(self.frame.take());
+            let first=self.failure.try_lock().expect("failure lock held while releasing returned frame").clone();
+            let pending=*self.wake.state.0.try_lock().expect("wake lock held while releasing returned frame");
+            *self.observed.lock().unwrap()=Some((first,pending));
+        }
+    }
+    fn rejected_release(disconnected:bool,prior:Option<&str>) {
+        let failure=Mutex::new(prior.map(str::to_owned));let wake=WakeSignal::default();let observed=Mutex::new(None);
+        let (sender,receiver)=mpsc::sync_channel::<Option<ReturnedFrame<'_>>>(CAPACITY);
+        let receiver=if disconnected {drop(receiver);None}else{Some(receiver)};
+        if !disconnected {for _ in 0..CAPACITY {sender.try_send(None).ok().unwrap();}}
+        let (event,_)=frame(CAPACITY as u64);let mut scheduled=0;
+        let returned=ReturnedFrame{frame:Some(event),failure:&failure,wake:&wake,observed:&observed};
+        assert!(!emit_cooperatively(&sender,&failure,&wake,Some(returned),||scheduled+=1));
+        assert_eq!(scheduled,0);assert_eq!(*observed.lock().unwrap(),Some((prior.map(str::to_owned),false)));
+        let reason=if disconnected {"native ingress receiver disconnected; owner incomplete"}else{"native ingress full; owner incomplete"};
+        assert_eq!(failure.try_lock().unwrap().as_deref(),Some(prior.unwrap_or(reason)));
+        assert!(*wake.state.0.try_lock().unwrap());drop(receiver);
+    }
+    #[test]
+    fn full_and_disconnected_preserve_release_first_failure_wake_without_scheduling() {
+        assert_eq!(CAPACITY,4096);
+        for disconnected in [false,true] {for prior in [None,Some("original first error")] {
+            rejected_event(disconnected,prior);rejected_release(disconnected,prior);
+        }}
+    }
+
+    #[test]
+    fn real_yield_wrapper_preserves_bounded_threaded_raw_fifo_and_cleanup() {
+        assert_eq!(CAPACITY,4096);
+        for (value,enabled) in [(None,false),(Some(std::ffi::OsStr::new("v1")),true)] {
+            let cooperate=ingress_cooperate(value);assert_eq!(cooperate,enabled);
+            let (sender,receiver)=mpsc::sync_channel::<Event>(CAPACITY);
+            let failure=Arc::new(Mutex::new(None));let worker_failure=failure.clone();
+            let wake=WakeSignal::default();let worker_wake=wake.clone();
+            let producer=thread::spawn(move||{
+                let mut addresses=Vec::new();let mut callbacks=0;
+                for sequence in 0..FRAMES as u64 {
+                    let (event,address)=frame(sequence);addresses.push(address);
+                    assert!(emit_cooperatively(&sender,&worker_failure,&worker_wake,event,||{
+                        yield_raw_ingress(cooperate);callbacks+=1;
+                    }));
+                }
+                // Dropping this sole sender closes the bounded receiver.
+                (addresses,callbacks)
+            });
+            let consumer=thread::spawn(move||{
+                let mut addresses=Vec::new();
+                while let Ok(event)=receiver.recv() {addresses.push(observe_frame(event,addresses.len() as u64));}
+                addresses
+            });
+            let sent=producer.join();let received=consumer.join();
+            let (expected,callbacks)=sent.expect("raw producer panicked");let actual=received.expect("raw consumer panicked");
+            assert_eq!(actual,expected);assert_eq!(actual.len(),FRAMES);assert_eq!(callbacks,FRAMES);
+            assert!(failure.try_lock().unwrap().is_none());assert!(*wake.state.0.try_lock().unwrap());
+            // Both real threads have joined; no timing or capacity claim follows
+            // from exercising the actual std yield wrapper in either mode.
+        }
+    }
+}
+
+#[cfg(test)]
+mod ingress_credit_v2_tests {
+    use super::*;
+    use super::handoff_tests::empty_runtime;
+    use std::net::TcpListener;
+    use tungstenite::Message;
+
+    const LIMIT:Duration=Duration::from_secs(10);
+    const WALL:i64=1_800_000_000_000;
+    fn payload(sequence:u64)->Value {
+        json!({"s":"ETHUSDT","u":sequence,"E":WALL,"T":WALL-1,
+            "b":"999999999.99999999","a":"1000000000.00000000",
+            "B":"0.00000001","A":"1.23456789","extra":[null,true,"verbatim"]})
+    }
+    fn frame(sequence:u64)->Event {
+        Event::Frame{route:"credit-route".into(),token:"test-credit-connection".into(),generation:7,
+            payload:payload(sequence),clock:Clock{wall_ms:WALL+sequence as i64,monotonic_ms:sequence as i64}}
+    }
+    fn ingress(pool:&Arc<IngressCredits>,stop:Arc<AtomicBool>)->WorkerIngress {
+        WorkerIngress{mode:IngressMode::V2,credits:Some(pool.clone()),stop}
+    }
+    fn free(pool:&IngressCredits)->usize {pool.state.lock().unwrap().free}
+    fn await_pressure(pool:&IngressCredits) {
+        let until=Instant::now()+LIMIT;let mut state=pool.state.lock().unwrap();
+        while state.waiting==0 {
+            let remaining=until.saturating_duration_since(Instant::now());assert!(!remaining.is_zero(),"no genuine credit wait");
+            state=pool.ready.wait_timeout(state,remaining).unwrap().0;
+        }
+        assert_eq!(state.free,0);
+    }
+    fn await_finished(runtime:&Runtime,route:&str) {
+        let until=Instant::now()+LIMIT;
+        while runtime.retiring[route].join.as_ref().is_some_and(|join|!join.is_finished()) {
+            assert!(Instant::now()<until,"worker failed bounded cooperative exit");thread::yield_now();
+        }
+    }
+    fn configured(pool:&Arc<IngressCredits>)->Runtime {
+        let mut runtime=empty_runtime();runtime.enable_handoff().unwrap();
+        runtime.ingress_mode=IngressMode::V2;runtime.ingress_credits=Some(pool.clone());runtime
+    }
+
+    #[test]
+    fn exact_v2_selection_requires_configured_constructor_without_environment_mutation() {
+        for configured in [false,true] {
+            assert_eq!(select_ingress_mode(None,configured).unwrap(),IngressMode::Off);
+            assert_eq!(select_ingress_mode(Some(std::ffi::OsStr::new("v1")),configured).unwrap(),IngressMode::V1);
+            for value in ["","V2","v2 "," v2","v2\n","v2\0","true"] {
+                assert_eq!(select_ingress_mode(Some(std::ffi::OsStr::new(value)),configured).unwrap(),IngressMode::Off);
+            }
+        }
+        assert!(select_ingress_mode(Some(std::ffi::OsStr::new("v2")),false).is_err());
+        assert_eq!(select_ingress_mode(Some(std::ffi::OsStr::new("v2")),true).unwrap(),IngressMode::V2);
+        #[cfg(unix)] {
+            use std::os::unix::ffi::OsStrExt;
+            assert_eq!(select_ingress_mode(Some(std::ffi::OsStr::from_bytes(b"v2\xff")),true).unwrap(),IngressMode::Off);
+        }
+        let runtime=empty_runtime();let settings=runtime.settings.clone();
+        assert!(Runtime::start_with_ingress_mode(settings,LifecyclePolicy::default(),false,IngressMode::V2).is_err());
+        assert!(runtime.ingress_credits.is_none());
+    }
+
+    #[test]
+    fn real_4096_credits_preserve_fifo_identity_and_return_on_both_pops_and_drop() {
+        assert_eq!(CAPACITY,4096);
+        let pool=IngressCredits::new();let other=IngressCredits::new();let runtime=configured(&pool);
+        let stop=Arc::new(AtomicBool::new(false));let producer=ingress(&pool,stop.clone());
+        let reserved=other.reserve(&stop,&runtime.failure,None).ok().unwrap();
+        assert_eq!((free(&pool),free(&other)),(CAPACITY,CAPACITY-1));
+        drop(reserved);assert_eq!(free(&other),CAPACITY);
+        let mut addresses=Vec::with_capacity(CAPACITY);
+        for sequence in 0..CAPACITY as u64 {
+            let event=frame(sequence);let Event::Frame{payload,..}=&event else{unreachable!()};
+            addresses.push(payload["b"].as_str().unwrap().as_ptr() as usize);
+            assert_eq!(producer.offer(&runtime.sender,&runtime.failure,&runtime.control.wake,event),OfferResult::Sent);
+        }
+        assert_eq!(free(&pool)+CAPACITY,CAPACITY);
+        let sender=runtime.sender.clone();let failure=runtime.failure.clone();let wake=runtime.control.wake.clone();
+        let (sent,finished)=mpsc::sync_channel(1);
+        let join=thread::spawn(move||{let result=producer.offer(&sender,&failure,&wake,frame(CAPACITY as u64));sent.send(result).unwrap();});
+        await_pressure(&pool);assert!(matches!(finished.try_recv(),Err(mpsc::TryRecvError::Empty)));
+        for (sequence,address) in addresses.into_iter().enumerate() {
+            let event=runtime.receive_event(Duration::ZERO).unwrap().unwrap();
+            if sequence==0 {assert_eq!(finished.recv_timeout(LIMIT).unwrap(),OfferResult::Sent);}
+            assert!(!event.has_credit());
+            let Event::Frame{route,token,generation,payload:actual,clock}=event else{panic!("expected frame")};
+            assert_eq!((route.as_str(),token.as_str(),generation),("credit-route","test-credit-connection",7));
+            assert_eq!(actual,payload(sequence as u64));assert_eq!(actual["b"].as_str().unwrap().as_ptr() as usize,address);
+            assert_eq!((clock.wall_ms,clock.monotonic_ms),(WALL+sequence as i64,sequence as i64));
+        }
+        join.join().unwrap();drop(runtime.receive_event(Duration::ZERO).unwrap().unwrap());assert_eq!(free(&pool),CAPACITY);
+        // The explicit observation is after the first empty try_recv, forcing
+        // the other successful receive path without a scheduling-time guess.
+        *runtime.control.wake.state.0.lock().unwrap()=false;
+        let (reached,observed)=mpsc::sync_channel(1);*pool.before_receive_wait.lock().unwrap()=Some(reached);
+        let sender=runtime.sender.clone();let failure=runtime.failure.clone();let wake=runtime.control.wake.clone();let producer=ingress(&pool,stop.clone());
+        let join=thread::spawn(move||{observed.recv_timeout(LIMIT).unwrap();assert_eq!(producer.offer(&sender,&failure,&wake,frame(99)),OfferResult::Sent);});
+        let event=runtime.receive_event(LIMIT).unwrap().unwrap();join.join().unwrap();assert_eq!(free(&pool),CAPACITY);
+        assert!(!event.has_credit());assert!(matches!(event,Event::Frame{..}));drop(event);
+        let permit=pool.reserve(&stop,&runtime.failure,None).ok().unwrap();assert_eq!(free(&pool)+1,CAPACITY);
+        let unsent=frame(100).with_credit(permit);drop(unsent);assert_eq!(free(&pool),CAPACITY);
+        let producer=ingress(&pool,stop);let (sender,receiver)=mpsc::sync_channel(CAPACITY);
+        for sequence in 0..CAPACITY as u64 {assert_eq!(producer.offer(&sender,&runtime.failure,&runtime.control.wake,frame(sequence)),OfferResult::Sent);}
+        assert_eq!(free(&pool),0);drop(receiver);assert_eq!(free(&pool),CAPACITY);drop(sender);
+        drop(runtime);assert_eq!((free(&pool),free(&other)),(CAPACITY,CAPACITY));
+    }
+
+    #[test]
+    fn v2_actual_full_disconnected_and_wait_cancellation_preserve_first_fatal() {
+        for disconnected in [false,true] {
+            let pool=IngressCredits::new();let stop=Arc::new(AtomicBool::new(false));let producer=ingress(&pool,stop);
+            let (sender,receiver)=mpsc::sync_channel(CAPACITY);let failure=Mutex::new(None);let wake=WakeSignal::default();
+            let receiver=if disconnected{drop(receiver);None}else{Some(receiver)};
+            // Deliberately inconsistent channel: these existing legacy offers
+            // own no credits. A real try_send Full still fails, never retries.
+            if !disconnected {for sequence in 0..CAPACITY as u64 {assert!(emit(&sender,&failure,frame(sequence)));}}
+            assert_eq!(producer.offer(&sender,&failure,&wake,frame(9000)),OfferResult::Failed);
+            let expected=if disconnected{"native ingress receiver disconnected; owner incomplete"}else{"native ingress full; owner incomplete"};
+            assert_eq!(failure.lock().unwrap().as_deref(),Some(expected));assert_eq!(free(&pool),CAPACITY);assert!(*wake.state.0.lock().unwrap());
+            fail_notified(&failure,&wake,"later".into());assert_eq!(failure.lock().unwrap().as_deref(),Some(expected));drop(receiver);
+        }
+        for fatal in [false,true] {
+            let pool=IngressCredits::new();let stop=Arc::new(AtomicBool::new(false));let failure=Arc::new(Mutex::new(None));
+            let permits:Vec<_>=(0..CAPACITY).map(|_|pool.reserve(&stop,&failure,None).ok().unwrap()).collect();
+            let producer=ingress(&pool,stop.clone());let worker_failure=failure.clone();let (sender,receiver)=mpsc::sync_channel(CAPACITY);let wake=WakeSignal::default();
+            let join=thread::spawn(move||producer.offer(&sender,&worker_failure,&wake,frame(1)));
+            await_pressure(&pool);
+            if fatal {fail(&failure,"original first-fatal".into());}stop.store(true,Ordering::Release);
+            assert_eq!(join.join().unwrap(),if fatal{OfferResult::Failed}else{OfferResult::Stopped});
+            assert!(matches!(receiver.try_recv(),Err(mpsc::TryRecvError::Disconnected)));assert_eq!(free(&pool),0);
+            drop(permits);assert_eq!(free(&pool),CAPACITY);
+            assert_eq!(failure.lock().unwrap().as_deref(),if fatal{Some("original first-fatal")}else{None});
+        }
+    }
+
+    struct Fixture {endpoint:Endpoint,ack:SyncSender<()>,go:SyncSender<()>,following:SyncSender<()>,sent:Receiver<()>,done:SyncSender<()>,join:Option<JoinHandle<Result<()>>>}
+    impl Fixture {
+        fn start(frames:u64,pre_ack:bool)->Self {
+            Self::start_with_pause(frames, pre_ack, false)
+        }
+
+        fn start_with_pause(frames:u64,pre_ack:bool,pause_after_first:bool)->Self {
+            let listener=TcpListener::bind("127.0.0.1:0").unwrap();let address=listener.local_addr().unwrap();listener.set_nonblocking(true).unwrap();
+            let (ack,acknowledged)=mpsc::sync_channel(1);let (go,started)=mpsc::sync_channel(1);let (sent,finished)=mpsc::sync_channel(1);let (done,closed)=mpsc::sync_channel(1);
+            let (following, resume)=mpsc::sync_channel(1);
+            let join=thread::spawn(move||->Result<()> {
+                let until=Instant::now()+LIMIT;
+                let stream=loop {match listener.accept(){Ok((stream,_))=>break stream,Err(error)if error.kind()==std::io::ErrorKind::WouldBlock=>{if Instant::now()>=until{return Err("credit fixture accept timeout".into())}thread::yield_now();},Err(error)=>return Err(error.to_string())}};
+                stream.set_read_timeout(Some(LIMIT)).map_err(|error|error.to_string())?;stream.set_write_timeout(Some(LIMIT)).map_err(|error|error.to_string())?;
+                let mut socket=tungstenite::accept(stream).map_err(|error|error.to_string())?;
+                let request:Value=serde_json::from_str(&socket.read().map_err(|error|error.to_string())?.into_text().map_err(|error|error.to_string())?).map_err(|error|error.to_string())?;
+                if request["params"]!=json!(["ethusdt@bookTicker"]){return Err("credit fixture subscription mismatch".into())}
+                acknowledged.recv_timeout(LIMIT).map_err(|error|error.to_string())?;
+                if pre_ack {socket.send(Message::Text(payload(0).to_string().into())).map_err(|error|error.to_string())?;}
+                socket.send(Message::Text(json!({"id":request["id"],"result":null}).to_string().into())).map_err(|error|error.to_string())?;
+                started.recv_timeout(LIMIT).map_err(|error|error.to_string())?;
+                for sequence in (if pre_ack{1}else{0})..frames {
+                    if pause_after_first && sequence == 1 { resume.recv_timeout(LIMIT).map_err(|error|error.to_string())?; }
+                    socket.send(Message::Text(payload(sequence).to_string().into())).map_err(|error|error.to_string())?;
+                }
+                sent.send(()).map_err(|error|error.to_string())?;let _=closed.recv_timeout(LIMIT);Ok(())
+            });
+            Self{endpoint:Endpoint{address,uri:format!("ws://localhost:{}/credit",address.port())},ack,go,following,sent:finished,done,join:Some(join)}
+        }
+        fn settings(&self)->Settings {Settings{session:"credit-fixture".into(),mode:"single".into(),perpetual:self.endpoint.clone(),spot:self.endpoint.clone(),perpetual_symbols:vec!["ETHUSDT".into()],spot_symbols:vec![],fixture_wall_ms:Some(WALL),fixture_backup_endpoint:None}}
+        fn finish(&mut self)->Result<()> {let _=self.ack.try_send(());let _=self.go.try_send(());let _=self.following.try_send(());let _=self.done.try_send(());self.join.take().ok_or("fixture already joined")?.join().map_err(|_|"credit fixture panicked")?}
+    }
+    impl Drop for Fixture {fn drop(&mut self){if self.join.is_some(){let _=self.finish();}}}
+    fn start(fixture:&Fixture)->Runtime {let runtime=Runtime::start_with_ingress_mode(fixture.settings(),LifecyclePolicy::default(),true,IngressMode::V2).unwrap();fixture.ack.send(()).unwrap();runtime}
+    fn await_ack(runtime:&mut Runtime) {
+        let until=Instant::now()+LIMIT;
+        while runtime.workers.values().any(|worker|!worker.connected){assert!(Instant::now()<until);runtime.recv(Duration::from_millis(20)).unwrap();}
+    }
+    fn drain_retired(runtime:&mut Runtime,count:usize) {
+        for _ in 0..count {assert!(runtime.recv(Duration::ZERO).unwrap().is_empty());}
+    }
+
+    fn start_spot(perp: &Fixture, spot: &Fixture) -> (Runtime, String, Arc<SpotIngress>) {
+        let mut settings = perp.settings();
+        settings.spot = spot.endpoint.clone();
+        settings.spot_symbols = settings.perpetual_symbols.clone();
+        let mut runtime = Runtime::start_with_modes(settings, LifecyclePolicy::default(), true, IngressMode::V2, SpotProbe::Ingress).unwrap();
+        perp.ack.send(()).unwrap();
+        spot.ack.send(()).unwrap();
+        await_ack(&mut runtime);
+        perp.go.send(()).unwrap();
+        perp.sent.recv_timeout(LIMIT).unwrap();
+        let (route, worker) = runtime.workers.iter().find(|(_, worker)| worker.spot).unwrap();
+        let route = route.clone();
+        let probe = worker.spot_ingress.clone().expect("original spot ACK installs the probe");
+        (runtime, route, probe)
+    }
+
+    fn hold_credits(runtime: &Runtime, pool: &Arc<IngressCredits>) -> Vec<IngressPermit> {
+        assert_eq!(CAPACITY, 4096);
+        assert_eq!(free(pool), CAPACITY);
+        let stop = AtomicBool::new(false);
+        (0..CAPACITY).map(|_| pool.reserve(&stop, &runtime.failure, None).ok().unwrap()).collect()
+    }
+
+    fn next_spot_frame(runtime: &mut Runtime, probe: &SpotIngress, sequence: u64) {
+        let until = Instant::now() + LIMIT;
+        loop {
+            assert!(Instant::now() < until, "real spot frame did not drain");
+            let rows = runtime.recv(Duration::from_millis(20)).unwrap();
+            let Some(row) = rows.first() else { continue };
+            assert_eq!(rows.len(), 1);
+            assert_eq!(row["type"], "spot_raw");
+            assert_eq!(row["token"], probe.token);
+            assert_eq!(row["generation"], probe.generation);
+            assert_eq!(row["payload"], payload(sequence));
+            break;
+        }
+    }
+
+    #[test]
+    fn actual_spot_receive_stages_bind_duplicate_sequence_and_reconnect() {
+        let mut perp = Fixture::start(0, false);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let (commands, next) = mpsc::sync_channel(1);
+        let spot = thread::spawn(move || {
+            for generation in 1..=2 {
+                let end = Instant::now() + LIMIT;
+                let stream = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(Instant::now() < end, "missing real spot connection");
+                            thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(error) => panic!("spot fixture accept: {error}"),
+                    }
+                };
+                stream.set_read_timeout(Some(LIMIT)).unwrap();
+                stream.set_write_timeout(Some(LIMIT)).unwrap();
+                let mut socket = tungstenite::accept(stream).unwrap();
+                let request: Value = serde_json::from_str(&socket.read().unwrap().into_text().unwrap()).unwrap();
+                assert_eq!(request["id"], generation);
+                assert_eq!(request["params"], json!(["ethusdt@bookTicker"]));
+                if generation == 1 {
+                    socket.send(Message::Text(payload(0).to_string().into())).unwrap();
+                }
+                socket.send(Message::Text(json!({"id": generation, "result": null}).to_string().into())).unwrap();
+                loop {
+                    match next.recv_timeout(LIMIT).unwrap() {
+                        "quote" => socket.send(Message::Text(payload(0).to_string().into())).unwrap(),
+                        "bad" => {
+                            socket.send(Message::Text("invalid json".into())).unwrap();
+                            break;
+                        }
+                        "stop" => return,
+                        _ => panic!("invalid spot fixture command"),
+                    }
+                }
+            }
+        });
+
+        let mut settings = perp.settings();
+        settings.spot = Endpoint { address, uri: format!("ws://localhost:{}/receive", address.port()) };
+        settings.spot_symbols = settings.perpetual_symbols.clone();
+        let mut runtime = Runtime::start_with_modes(settings, LifecyclePolicy::default(), true,
+            IngressMode::V2, SpotProbe::ReceiveStages).unwrap();
+        perp.ack.send(()).unwrap();
+        await_ack(&mut runtime);
+        perp.go.send(()).unwrap();
+        perp.sent.recv_timeout(LIMIT).unwrap();
+        let control = runtime.control();
+        let current = |runtime: &Runtime| runtime.workers.values().find(|worker| worker.spot).unwrap()
+            .spot_ingress.clone().unwrap();
+        let first = current(&runtime);
+        let sample = |probe: &SpotIngress| control.spot_receive_stages(&probe.token, probe.generation, "ETHUSDT");
+        let after_dequeue = |probe: &SpotIngress| {
+            let end = Instant::now() + Duration::from_secs(1);
+            loop {
+                if let Some(row) = sample(probe) { return row; }
+                assert!(Instant::now() < end, "dequeued frame has no stable stages");
+                thread::sleep(Duration::from_millis(1));
+            }
+        };
+        let assert_dequeued = |row: SpotReceiveStages| {
+            assert!(row.offered);
+            assert!(row.text_received_ns / 1_000_000 <= row.worker_observed_ms as u64);
+            assert!(row.worker_observed_ms <= row.dequeued_at_ms.unwrap());
+            row
+        };
+        next_spot_frame(&mut runtime, &first, 0);
+        let initial = assert_dequeued(after_dequeue(&first));
+        assert_eq!((initial.decoded, initial.gaps_over_one_second), (1, 0));
+        assert_eq!(control.spot_decode_failures(), Some(0));
+
+        thread::sleep(Duration::from_millis(1050));
+        commands.send("quote").unwrap();
+        next_spot_frame(&mut runtime, &first, 0);
+        let later = assert_dequeued(after_dequeue(&first));
+        assert_eq!((later.decoded, later.gaps_over_one_second), (2, 1));
+        assert_eq!(later.max_text_gap_ns, later.text_received_ns - initial.text_received_ns);
+        assert!(later.max_text_gap_ns > 1_000_000_000);
+
+        commands.send("bad").unwrap();
+        let end = Instant::now() + LIMIT;
+        while runtime.workers.values().any(|worker| worker.spot && worker.generation != 2) {
+            assert!(Instant::now() < end, "real spot generation did not reconnect");
+            runtime.recv(Duration::from_millis(20)).unwrap();
+        }
+        let second = current(&runtime);
+        assert_eq!((second.worker_instance, second.generation), (first.worker_instance, first.generation + 1));
+        assert!(sample(&first).is_none());
+        assert!(sample(&second).is_none());
+        assert_eq!(control.spot_decode_failures(), Some(1));
+        commands.send("quote").unwrap();
+        next_spot_frame(&mut runtime, &second, 0);
+        let fresh = assert_dequeued(after_dequeue(&second));
+        assert_eq!((fresh.decoded, fresh.gaps_over_one_second), (1, 0));
+        assert_eq!(fresh.generation, second.generation);
+        assert_eq!((runtime.received.load(Ordering::Acquire), runtime.supplied, runtime.retired_frames), (3, 3, 0));
+
+        runtime.request_handoff_shutdown().unwrap();
+        for route in runtime.retiring.keys() { await_finished(&runtime, route); }
+        assert!(runtime.handoff_shutdown_ready().unwrap());
+        runtime.shutdown().unwrap();
+        assert!(sample(&second).is_none());
+        commands.send("stop").unwrap();
+        spot.join().unwrap();
+        perp.finish().unwrap();
+    }
+
+    #[test]
+    fn spot_receive_stages_never_joins_a_new_text_to_an_old_dequeue() {
+        let mut state = SpotReceiveState::new(&["ETHUSDT".into()]);
+        state.capture(&payload(0), Some(100), 0);
+        state.offered = 1;
+        state.capture(&payload(0), Some(1_100_000), 1);
+        state.dequeue("ETHUSDT", 2);
+        let pending = state.sample(3, 4, "ETHUSDT").unwrap();
+        assert_eq!((pending.text_received_ns, pending.offered, pending.dequeued_at_ms), (1_100_000, false, None));
+
+        // The channel receiver can win the race with offer's return.
+        state.dequeue("ETHUSDT", 3);
+        let complete = state.sample(3, 4, "ETHUSDT").unwrap();
+        assert_eq!((complete.offered, complete.dequeued_at_ms), (true, Some(3)));
+    }
+
+    #[test]
+    fn actual_spot_credit_wait_repeated_park_then_grant_preserves_fifo() {
+        let mut perp = Fixture::start(0, false);
+        let mut spot = Fixture::start_with_pause(2, false, true);
+        let (mut runtime, _, probe) = start_spot(&perp, &spot);
+        let control = runtime.control();
+        let sample = || control.spot_credit_wait(&probe.token, probe.generation).unwrap();
+        assert_eq!(sample(), SpotCreditWaitSummary { granted: 0, stopped: 0, failed: 0,
+            completed_total_ns: 0, completed_max_ns: 0, in_flight_age_ns: None });
+        assert!(control.spot_credit_wait("wrong-token", probe.generation).is_none());
+        assert!(control.spot_credit_wait(&probe.token, probe.generation + 1).is_none());
+        let pool = runtime.ingress_credits.clone().unwrap();
+        let mut held = hold_credits(&runtime, &pool);
+        spot.go.send(()).unwrap();
+        await_pressure(&pool);
+        let age = sample().in_flight_age_ns.unwrap();
+        {
+            let until = Instant::now() + LIMIT;
+            let mut state = pool.state.lock().unwrap();
+            let target = state.parks + 2;
+            while state.parks < target {
+                assert!(Instant::now() < until, "worker did not re-park with zero free credits");
+                pool.ready.notify_all();
+                state = pool.ready.wait_timeout(state, until.saturating_duration_since(Instant::now())).unwrap().0;
+            }
+            assert_eq!((state.free, state.waiting), (0, 1));
+        }
+        let active = sample();
+        assert!(active.in_flight_age_ns.unwrap() >= age);
+        assert_eq!((active.granted, active.stopped, active.failed, active.completed_total_ns, active.completed_max_ns), (0, 0, 0, 0, 0));
+        assert_eq!((runtime.received.load(Ordering::Acquire), runtime.supplied), (1, 0));
+        drop(held.pop().unwrap());
+        next_spot_frame(&mut runtime, &probe, 0);
+        let granted = sample();
+        assert_eq!((granted.granted, granted.stopped, granted.failed, granted.in_flight_age_ns), (1, 0, 0, None));
+        assert!(granted.completed_total_ns >= active.in_flight_age_ns.unwrap());
+        assert!(granted.completed_total_ns > 0);
+        assert_eq!(granted.completed_total_ns, granted.completed_max_ns);
+        // The first dequeue returned the one released permit for the next frame.
+        spot.following.send(()).unwrap();
+        next_spot_frame(&mut runtime, &probe, 1);
+        spot.sent.recv_timeout(LIMIT).unwrap();
+        assert_eq!(sample(), granted);
+        assert_eq!((runtime.received.load(Ordering::Acquire), runtime.supplied, runtime.retired_frames), (2, 2, 0));
+        drop(held);
+        runtime.request_handoff_shutdown().unwrap();
+        for route in runtime.retiring.keys() { await_finished(&runtime, route); }
+        assert!(runtime.handoff_shutdown_ready().unwrap());
+        runtime.shutdown().unwrap();
+        assert_eq!(free(&pool), CAPACITY);
+        assert!(control.spot_credit_wait(&probe.token, probe.generation).is_none());
+        spot.finish().unwrap();
+        perp.finish().unwrap();
+    }
+
+    #[test]
+    fn actual_spot_credit_wait_classifies_stop_and_failure() {
+        for fatal in [false, true] {
+            let mut perp = Fixture::start(0, false);
+            let mut spot = Fixture::start(1, false);
+            let (mut runtime, route, probe) = start_spot(&perp, &spot);
+            let pool = runtime.ingress_credits.clone().unwrap();
+            let held = hold_credits(&runtime, &pool);
+            spot.go.send(()).unwrap();
+            await_pressure(&pool);
+            let active = probe.credit_wait.as_ref().unwrap().snapshot().unwrap();
+            assert!(active.in_flight_age_ns.is_some());
+            assert_eq!(runtime.received.load(Ordering::Acquire), 1);
+            if fatal { fail(&runtime.failure, "original spot credit failure".into()); }
+            runtime.detach_handoff(vec![route.clone()]).unwrap();
+            await_finished(&runtime, &route);
+            runtime.reap_ready().unwrap();
+            let completed = probe.credit_wait.as_ref().unwrap().snapshot().unwrap();
+            assert_eq!((completed.granted, completed.stopped, completed.failed, completed.in_flight_age_ns),
+                (0, if fatal { 0 } else { 1 }, if fatal { 1 } else { 0 }, None));
+            assert!(completed.completed_total_ns >= active.in_flight_age_ns.unwrap());
+            assert!(completed.completed_total_ns > 0);
+            assert_eq!(completed.completed_total_ns, completed.completed_max_ns);
+            assert!(runtime.control.spot_credit_wait(&probe.token, probe.generation).is_none());
+            assert_eq!((runtime.supplied, runtime.retired_frames), (0, if fatal { 0 } else { 1 }));
+            assert_eq!(free(&pool), 0);
+            drop(held);
+            runtime.request_handoff_shutdown().unwrap();
+            for route in runtime.retiring.keys() { await_finished(&runtime, route); }
+            if fatal {
+                assert_eq!(runtime.handoff_shutdown_ready().unwrap_err(), "original spot credit failure");
+                assert_eq!(runtime.failure.lock().unwrap().as_deref(), Some("original spot credit failure"));
+            } else {
+                assert!(runtime.handoff_shutdown_ready().unwrap());
+                assert!(runtime.failure.lock().unwrap().is_none());
+            }
+            runtime.shutdown().unwrap();
+            assert_eq!(free(&pool), CAPACITY);
+            spot.sent.recv_timeout(LIMIT).unwrap();
+            spot.finish().unwrap();
+            perp.finish().unwrap();
+        }
+    }
+
+    #[test]
+    fn spot_credit_wait_snapshot_rejects_unstable_transition() {
+        let origin = Instant::now();
+        let wait = SpotCreditWait::new(origin);
+        wait.write(|| assert!(wait.snapshot().is_none()));
+        assert!(wait.snapshot().unwrap().in_flight_age_ns.is_none());
+        wait.version.store(u64::MAX - 1, Ordering::SeqCst);
+        wait.write(|| panic!("exhausted diagnostic must stay unavailable"));
+        assert!(wait.snapshot().is_none());
+    }
+
+    #[test]
+    fn actual_spot_credit_interval_uses_acknowledged_worker_and_runtime_clock() {
+        let mut perp = Fixture::start(0, false);
+        let mut spot = Fixture::start(1, false);
+        let (mut runtime, route, probe) = start_spot(&perp, &spot);
+        let control = runtime.control();
+        let sample = || control.spot_credit_interval(&probe.token, probe.generation).unwrap();
+        let captured = control.clock();
+        let (first_wait, first) = sample();
+        assert_eq!(first.worker_instance, runtime.next);
+        assert_eq!(first.generation, runtime.workers[&route].generation);
+        assert!(first.sampled_at_ns / 1_000_000 >= captured.monotonic_ms as u64);
+        assert_eq!(json!(first), json!({
+            "worker_instance": runtime.next, "generation": probe.generation,
+            "sampled_at_ns": first.sampled_at_ns,
+        }));
+        assert_eq!(control.spot_credit_wait(&probe.token, probe.generation), Some(first_wait));
+        assert!(control.spot_credit_interval("stale-token", probe.generation).is_none());
+        assert!(control.spot_credit_interval(&probe.token, probe.generation + 1).is_none());
+
+        let pool = runtime.ingress_credits.clone().unwrap();
+        let mut held = hold_credits(&runtime, &pool);
+        spot.go.send(()).unwrap();
+        await_pressure(&pool);
+        let (active_wait, active) = sample();
+        let started = probe.credit_wait.as_ref().unwrap().started.load(Ordering::SeqCst);
+        assert_eq!(active_wait.in_flight_age_ns, active.sampled_at_ns.checked_sub(started));
+        assert!(active_wait.in_flight_age_ns.is_some());
+        assert!(active.sampled_at_ns > first.sampled_at_ns);
+        drop(held.pop().unwrap());
+        next_spot_frame(&mut runtime, &probe, 0);
+        spot.sent.recv_timeout(LIMIT).unwrap();
+        let (completed_wait, completed) = sample();
+        assert_eq!((completed.worker_instance, completed.generation), (first.worker_instance, first.generation));
+        assert!(completed.sampled_at_ns > active.sampled_at_ns);
+        assert!(u128::from(completed.sampled_at_ns) <= control.origin.elapsed().as_nanos());
+        assert_eq!((completed_wait.granted, completed_wait.in_flight_age_ns), (1, None));
+        assert_eq!(control.spot_credit_wait(&probe.token, probe.generation), Some(completed_wait));
+
+        drop(held);
+        runtime.request_handoff_shutdown().unwrap();
+        for route in runtime.retiring.keys() { await_finished(&runtime, route); }
+        assert!(runtime.handoff_shutdown_ready().unwrap());
+        runtime.shutdown().unwrap();
+        assert!(control.spot_credit_interval(&probe.token, probe.generation).is_none());
+        spot.finish().unwrap();
+        perp.finish().unwrap();
+    }
+
+    #[test]
+    fn spot_credit_interval_distinguishes_reused_generation_and_rejects_unstable_snapshot() {
+        let mut control = Control::default();
+        let first = Arc::new(SpotIngress::for_generation("first", 2, 1, &[], Some(control.origin)));
+        let replacement = Arc::new(SpotIngress::for_generation("replacement", 3, 1, &[], Some(control.origin)));
+        let registration = Arc::new(Mutex::new(Some(first)));
+        control.spot_ingress = Some(registration.clone());
+        let (_, first) = control.spot_credit_interval("first", 1).unwrap();
+        *registration.lock().unwrap() = Some(replacement.clone());
+        let (_, second) = control.spot_credit_interval("replacement", 1).unwrap();
+        assert_eq!(first.generation, second.generation);
+        assert_ne!(first.worker_instance, second.worker_instance);
+        assert!(control.spot_credit_interval("first", 1).is_none());
+        replacement.credit_wait.as_ref().unwrap().write(|| {
+            assert!(control.spot_credit_interval("replacement", 1).is_none());
+        });
+        assert!(control.spot_credit_interval("replacement", 1).is_some());
+        *registration.lock().unwrap() = Some(Arc::new(SpotIngress::for_generation("v1", 4, 1, &[], None)));
+        assert!(control.spot_credit_interval("v1", 1).is_none());
+    }
+
+    #[test]
+    fn configured_loopback_5000_actual_frames_resume_after_pressure_with_exact_capture_clocks() {
+        let mut fixture=Fixture::start(5000,false);let mut runtime=start(&fixture);await_ack(&mut runtime);
+        let pool=runtime.ingress_credits.clone().unwrap();fixture.go.send(()).unwrap();await_pressure(&pool);
+        assert_eq!(runtime.received.load(Ordering::Acquire),CAPACITY as u64+1);assert_eq!((runtime.supplied,runtime.retired_frames),(0,0));
+        let until=Instant::now()+LIMIT;let mut sequence=0;
+        while sequence<5000 {
+            assert!(Instant::now()<until,"actual burst did not drain");
+            for row in runtime.recv(Duration::from_millis(20)).unwrap() {
+                let action=&row["action"];if action["type"]!="raw_captured"{continue}
+                assert_eq!(action["payload"]["u"],sequence);assert_eq!(action["membership"],1);assert_eq!(action["serial"],0);
+                let captures=pool.captures.lock().unwrap();let (captured_sequence,captured)=captures[sequence as usize];
+                assert_eq!(captured_sequence,sequence);assert_eq!(action["ingress_clock"],json!({"wall_ms":captured.wall_ms,"monotonic_ms":captured.monotonic_ms}));
+                assert_eq!(action["payload"]["run_time_ms"],captured.wall_ms);
+                let mut expected=payload(sequence);expected["run_time_ms"]=json!(captured.wall_ms);
+                let route=action["route"].as_str().unwrap();let worker=&runtime.workers[route];
+                expected["_ptk_connection_id"]=json!(worker.token);expected["_ptk_connection_generation"]=json!(worker.generation);
+                assert_eq!(action["payload"],expected);assert_eq!(captured.wall_ms,WALL+captured.monotonic_ms);sequence+=1;
+            }
+        }
+        fixture.sent.recv_timeout(LIMIT).unwrap();assert_eq!(pool.captures.lock().unwrap().len(),5000);
+        assert_eq!((runtime.received.load(Ordering::Acquire),runtime.supplied,runtime.retired_frames),(5000,5000,0));assert_eq!(free(&pool),CAPACITY);
+        runtime.request_handoff_shutdown().unwrap();let route=runtime.retiring.keys().next().unwrap().clone();await_finished(&runtime,&route);
+        assert!(runtime.handoff_shutdown_ready().unwrap());runtime.shutdown().unwrap();fixture.finish().unwrap();
+        assert_eq!((runtime.workers.len(),runtime.retiring.len(),free(&pool)),(0,0,CAPACITY));assert!(runtime.failure.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn actual_held_post_ack_stop_retires_once_at_join_and_fatal_never_retires_it() {
+        for fatal in [false,true] {
+            let mut fixture=Fixture::start(CAPACITY as u64+1,false);let mut runtime=start(&fixture);await_ack(&mut runtime);
+            let pool=runtime.ingress_credits.clone().unwrap();let memberships=runtime.memberships.clone();
+            fixture.go.send(()).unwrap();await_pressure(&pool);fixture.sent.recv_timeout(LIMIT).unwrap();
+            let route=runtime.workers.keys().next().unwrap().clone();assert_eq!((runtime.supplied,runtime.retired_frames),(0,0));
+            if fatal {
+                fail(&runtime.failure,"original waiting-worker failure".into());runtime.retire(&route).unwrap();assert_eq!(runtime.retired_frames,0);
+                assert!(runtime.shutdown().is_err());assert_eq!(runtime.retired_frames,CAPACITY as u64);
+                assert_eq!(runtime.failure.lock().unwrap().as_deref(),Some("original waiting-worker failure"));
+            }else {
+                runtime.detach_handoff(vec![route.clone()]).unwrap();assert_eq!(runtime.retired_frames,0);
+                await_finished(&runtime,&route);runtime.reap_ready().unwrap();assert_eq!(runtime.retired_frames,1);
+                for _ in 0..3 {runtime.reap_ready().unwrap();assert_eq!(runtime.retired_frames,1);}
+                assert!(!runtime.generations.contains_key(&route)&&!runtime.serials.contains_key(&route));assert!(!runtime.control.physical.lock().unwrap().contains_key(&route));
+                drain_retired(&mut runtime,CAPACITY);assert_eq!(runtime.retired_frames,CAPACITY as u64+1);assert_eq!(runtime.supplied,0);
+                runtime.shutdown().unwrap();assert!(runtime.failure.lock().unwrap().is_none());
+            }
+            assert_eq!(runtime.memberships,memberships);assert_eq!(runtime.received.load(Ordering::Acquire),CAPACITY as u64+1);
+            assert_eq!((runtime.workers.len(),runtime.retiring.len(),free(&pool)),(0,0,CAPACITY));fixture.finish().unwrap();
+        }
+    }
+
+    #[test]
+    fn actual_pre_ack_credit_cancellation_retains_unqualified_failure_and_zero_summary() {
+        let mut fixture=Fixture::start(1,true);let mut runtime=Runtime::start_with_ingress_mode(fixture.settings(),LifecyclePolicy::default(),true,IngressMode::V2).unwrap();let pool=runtime.ingress_credits.clone().unwrap();
+        // The controlled reservations delay Connected; pre-ACK buffering itself
+        // consumes no credit and has already captured the sole real raw frame.
+        let stop=AtomicBool::new(false);let held:Vec<_>=(0..CAPACITY).map(|_|pool.reserve(&stop,&runtime.failure,None).ok().unwrap()).collect();
+        fixture.ack.send(()).unwrap();await_pressure(&pool);assert_eq!(runtime.received.load(Ordering::Acquire),1);assert_eq!(pool.captures.lock().unwrap().len(),1);
+        let route=runtime.workers.keys().next().unwrap().clone();runtime.detach_handoff(vec![route.clone()]).unwrap();await_finished(&runtime,&route);
+        runtime.reap_ready().unwrap();assert_eq!((runtime.supplied,runtime.retired_frames),(0,0));
+        assert_eq!(runtime.failure.lock().unwrap().as_deref(),Some("retired 1 pre-ACK frames; owner incomplete"));
+        assert!(runtime.handoff_shutdown_ready().is_err());drop(held);assert_eq!(free(&pool),CAPACITY);fixture.finish().unwrap();
+    }
+
+    #[test]
+    fn actual_v2_environment_public_constructors_preserve_ack_flush_cancellation() {
+        if std::env::var_os("CEA_NATIVE_INGRESS_COOPERATE").as_deref()!=Some(std::ffi::OsStr::new("v2")) {
+            const METHOD:&str="runtime::ingress_credit_v2_tests::actual_v2_environment_public_constructors_preserve_ack_flush_cancellation";
+            const OUTPUT_LIMIT:usize=64*1024;
+            type Captured=(Vec<u8>,Option<String>);
+            struct OwnedChild {child:std::process::Child,stdout:Option<JoinHandle<Captured>>,stderr:Option<JoinHandle<Captured>>}
+            impl OwnedChild {
+                fn capture<R:Read+Send+'static>(stream:R,overflow:Arc<AtomicBool>)->JoinHandle<Captured> {
+                    thread::spawn(move||{
+                        let mut bytes=Vec::new();
+                        let error=stream.take((OUTPUT_LIMIT+1) as u64).read_to_end(&mut bytes).err().map(|error|error.to_string());
+                        if bytes.len()>OUTPUT_LIMIT {overflow.store(true,Ordering::Release);}
+                        (bytes,error)
+                    })
+                }
+                fn joined(handle:Option<JoinHandle<Captured>>)->Captured {
+                    match handle {
+                        Some(join)=>join.join().unwrap_or_else(|_|(Vec::new(),Some("child capture thread panicked".into()))),
+                        None=>(Vec::new(),Some("child capture handle missing".into())),
+                    }
+                }
+            }
+            impl Drop for OwnedChild {
+                fn drop(&mut self) {
+                    if !matches!(self.child.try_wait(),Ok(Some(_))){let _=self.child.kill();}
+                    let _=self.child.wait();
+                    if self.stdout.is_some(){let _=Self::joined(self.stdout.take());}
+                    if self.stderr.is_some(){let _=Self::joined(self.stderr.take());}
+                }
+            }
+            let deadline=Instant::now()+Duration::from_secs(20);
+            let child=std::process::Command::new(std::env::current_exe().expect("current actual test executable"))
+                .args(["--exact",METHOD,"--nocapture","--test-threads=1","--color=never"])
+                .env("CEA_NATIVE_INGRESS_COOPERATE","v2")
+                .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().expect("spawn owned exact-method v2 child");
+            let mut owned=OwnedChild{child,stdout:None,stderr:None};
+            let overflow=Arc::new(AtomicBool::new(false));
+            let stdout=owned.child.stdout.take().expect("owned child stdout pipe");
+            owned.stdout=Some(OwnedChild::capture(stdout,overflow.clone()));
+            let stderr=owned.child.stderr.take().expect("owned child stderr pipe");
+            owned.stderr=Some(OwnedChild::capture(stderr,overflow.clone()));
+            let outcome:std::result::Result<std::process::ExitStatus,String>=loop {
+                if overflow.load(Ordering::Acquire){break Err("owned child output exceeded finite limit".into())}
+                if Instant::now()>=deadline{break Err("owned exact-method child exceeded 20s deadline".into())}
+                match owned.child.try_wait(){Ok(Some(status))=>break Ok(status),Ok(None)=>{},Err(error)=>break Err(error.to_string())}
+                thread::sleep(deadline.saturating_duration_since(Instant::now()).min(Duration::from_millis(10)));
+            };
+            if outcome.is_err(){let _=owned.child.kill();}
+            let reaped=owned.child.wait();
+            let (stdout,stdout_error)=OwnedChild::joined(owned.stdout.take());
+            let (stderr,stderr_error)=OwnedChild::joined(owned.stderr.take());
+            eprintln!("ingress_credit_v2_child={}",json!({"method":METHOD,"pid":owned.child.id(),"wrapper_error":outcome.as_ref().err(),
+                "exit_code":reaped.as_ref().ok().and_then(|status|status.code()),"wait_error":reaped.as_ref().err().map(|error|error.to_string()),
+                "output_limit_bytes":OUTPUT_LIMIT,"stdout":String::from_utf8_lossy(&stdout),"stderr":String::from_utf8_lossy(&stderr),
+                "stdout_bytes":stdout.len(),"stderr_bytes":stderr.len(),"stdout_error":stdout_error.as_deref(),"stderr_error":stderr_error.as_deref()}));
+            assert!(outcome.is_ok(),"actual owned child failed bounded wait: {outcome:?}");
+            assert!(stdout_error.is_none()&&stderr_error.is_none(),"actual child capture failed");
+            assert!(stdout.len()<=OUTPUT_LIMIT&&stderr.len()<=OUTPUT_LIMIT,"actual child output exceeded finite limit");
+            assert!(reaped.expect("reap owned exact-method child").success(),"actual exact-method child failed");
+            let stdout=std::str::from_utf8(&stdout).expect("actual child libtest stdout must be UTF-8");
+            let passed=format!("test {METHOD} ... ok");
+            assert_eq!(stdout.lines().filter(|line|*line=="running 1 test").count(),1);
+            assert!(stdout.lines().any(|line|line==passed.as_str()),"actual exact method did not pass in child");
+            assert_eq!(stdout.lines().filter(|line|line.starts_with("test result: ")).count(),1);
+            assert!(stdout.lines().any(|line|line.starts_with("test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; ")),"actual child did not report one genuine pass");
+            return
+        }
+        assert_eq!(std::env::var_os("CEA_NATIVE_INGRESS_COOPERATE").as_deref(),Some(std::ffi::OsStr::new("v2")));
+        let mut fixture=Fixture::start(1,true);
+        let rejected=Runtime::start(fixture.settings()).err();
+        assert_eq!(rejected.as_deref(),Some("native ingress v2 requires configured whole-plan runtime"));
+        let mut runtime=Runtime::start_configured(fixture.settings()).unwrap();
+        assert_eq!(runtime.ingress_mode,IngressMode::V2);assert!(runtime.handoff_enabled());assert_eq!(runtime.workers.len(),1);
+        let pool=runtime.ingress_credits.clone().expect("public configured constructor must select v2 credits");
+        let stop=AtomicBool::new(false);
+        let held:Vec<_>=(0..CAPACITY-1).map(|_|pool.reserve(&stop,&runtime.failure,None).ok().unwrap()).collect();
+        assert_eq!(held.len(),CAPACITY-1);assert_eq!(free(&pool),1);
+        // The real ACK follows its pre-ACK Raw only after these reservations.
+        // Connected consumes the last credit and remains queued through join.
+        fixture.ack.send(()).unwrap();await_pressure(&pool);
+        let captured={let captures=pool.captures.lock().unwrap();assert_eq!(captures.len(),1);captures[0]};
+        assert_eq!(captured.0,0);assert!(captured.1.monotonic_ms>=0);assert_eq!(captured.1.wall_ms,WALL+captured.1.monotonic_ms);
+        assert_eq!((runtime.received.load(Ordering::Acquire),runtime.supplied,runtime.retired_frames),(1,0,0));
+        assert!(runtime.failure.lock().unwrap().is_none());
+        let route=runtime.workers.keys().next().unwrap().clone();
+        let physical=runtime.control.physical.lock().unwrap()[&route].clone();
+        assert_eq!(physical["connected"],true);assert_eq!(physical["applied"],json!(["ETHUSDT"]));
+        runtime.detach_handoff(vec![route.clone()]).unwrap();await_finished(&runtime,&route);runtime.reap_ready().unwrap();
+        assert_eq!((runtime.workers.len(),runtime.retiring.len()),(0,0));assert!(runtime.control.physical.lock().unwrap().is_empty());
+        assert_eq!((runtime.received.load(Ordering::Acquire),runtime.supplied,runtime.retired_frames),(1,0,0));
+        assert_eq!(runtime.failure.lock().unwrap().as_deref(),Some("retired 1 pre-ACK frames; owner incomplete"));
+        assert_eq!(runtime.handoff_shutdown_ready().unwrap_err(),"retired 1 pre-ACK frames; owner incomplete");
+        {let state=pool.state.lock().unwrap();assert_eq!((state.free,state.waiting),(0,0));}
+        // Only the worker's actual Connected can own the final credit here;
+        // no dequeue occurred while the buffered Raw was waiting or stopping.
+        let queued=runtime.receiver.try_recv().ok().expect("actual Connected must remain queued after stopped ACK flush");
+        match &queued {
+            Event::CreditedConnected{route:queued_route,token,generation,..}=>{
+                assert_eq!(queued_route,&route);assert_eq!(json!(token),physical["token"]);assert_eq!(json!(generation),physical["generation"]);
+            },
+            _=>panic!("ACK flush must leave only actual credited Connected, never enqueue Raw"),
+        }
+        drop(queued.release_credit());assert_eq!(free(&pool),1);
+        assert!(matches!(runtime.receiver.try_recv(),Err(mpsc::TryRecvError::Empty)));
+        {let captures=pool.captures.lock().unwrap();assert_eq!(captures.len(),1);assert_eq!((captures[0].0,captures[0].1.wall_ms,captures[0].1.monotonic_ms),(captured.0,captured.1.wall_ms,captured.1.monotonic_ms));}
+        drop(held);assert_eq!(free(&pool),CAPACITY);
+        fixture.finish().unwrap();assert!(fixture.join.is_none());
+        assert_eq!((runtime.received.load(Ordering::Acquire),runtime.supplied,runtime.retired_frames),(1,0,0));
+        assert_eq!(runtime.failure.lock().unwrap().as_deref(),Some("retired 1 pre-ACK frames; owner incomplete"));
+        drop(runtime);assert_eq!(free(&pool),CAPACITY);
     }
 }

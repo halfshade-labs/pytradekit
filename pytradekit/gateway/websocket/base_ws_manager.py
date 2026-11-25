@@ -1,8 +1,14 @@
 import json
+import os
+import ssl
+import sys
+from errno import EBADF, ENOTCONN
+from socket import SHUT_RDWR, SOL_SOCKET, SO_SNDTIMEO, socket
+from struct import pack
 from threading import Event, Lock, Semaphore, Thread, current_thread
 from uuid import uuid4
 
-from websocket import WebSocketApp
+from websocket import WebSocket, WebSocketApp as _LibraryWebSocketApp
 from websocket._abnf import ABNF
 
 from pytradekit.utils.dynamic_types import WebsocketStatus
@@ -50,6 +56,71 @@ class _TransportEvidence:
         self.context = context
         self.callback_sequence = 0
         self.terminal_logged = False
+
+
+class WebSocketApp(_LibraryWebSocketApp):
+    """Apply an opening timeout to this app's core without changing library globals."""
+
+    _opening_deadline_ns = None
+
+    @property
+    def sock(self):
+        return self._core
+
+    @sock.setter
+    def sock(self, core):
+        # websocket-client 1.3 assigns the core, sets its default timeout, then
+        # calls connect. Only the public HTX/OKX run path sets this deadline.
+        if core is not None and self._opening_deadline_ns is not None:
+            original_connect = core.connect
+
+            def connect(*args, **kwargs):
+                del core.connect
+                self._steady_timeout = core.gettimeout()
+                remaining = (self._opening_deadline_ns - get_monotonic_timestamp_ns()) / 1_000_000_000
+                if remaining <= 0:
+                    raise TimeoutError('public socket opening deadline elapsed')
+                kwargs['timeout'] = (remaining if self._steady_timeout is None
+                                     else min(remaining, self._steady_timeout))
+                return original_connect(*args, **kwargs)
+
+            core.connect = connect
+        self._core = core
+
+    def restore_open_timeout(self):
+        if self._opening_deadline_ns is not None and self.sock is not None:
+            self.sock.settimeout(self._steady_timeout)
+            self._opening_deadline_ns = None
+
+
+class _OpeningTLS:
+    """Apply the opening deadline with the existing CA and hostname checks."""
+
+    def __init__(self, deadline_ns, venue):
+        self._deadline_ns = deadline_ns
+        self._venue = venue
+        self._context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ca_bundle = os.environ.get('WEBSOCKET_CLIENT_CA_BUNDLE')
+        if ca_bundle and os.path.isfile(ca_bundle):
+            self._context.load_verify_locations(cafile=ca_bundle)
+        elif ca_bundle and os.path.isdir(ca_bundle):
+            self._context.load_verify_locations(capath=ca_bundle)
+        else:
+            self._context.load_default_certs(ssl.Purpose.SERVER_AUTH)
+
+    def wrap_socket(self, transport, **kwargs):
+        previous = transport.gettimeout()
+        remaining = (self._deadline_ns - get_monotonic_timestamp_ns()) / 1_000_000_000
+        if remaining <= 0:
+            raise TimeoutError(f'{self._venue} public TLS opening deadline elapsed')
+        transport.settimeout(min(remaining, previous) if previous is not None else remaining)
+        secured = self._context.wrap_socket(transport, **kwargs)
+        remaining = (self._deadline_ns - get_monotonic_timestamp_ns()) / 1_000_000_000
+        if remaining <= 0:
+            secured.close()
+            raise TimeoutError(f'{self._venue} public TLS opening deadline elapsed')
+        secured.settimeout(min(remaining, previous) if previous is not None else remaining)
+        return secured
 
 
 class BaseWebsocketManager:
@@ -473,10 +544,52 @@ class BaseWebsocketManager:
                 self.reconnect(ws)
         return wrapped
 
+    def _run_socket(self, ws):
+        ws.run_forever(ping_interval=self._ping_interval)
+
+    def _run_bounded_public_socket(self, ws, venue):
+        options = {}
+        deadline_ns = get_monotonic_timestamp_ns() + int(self._connect_timeout_s * 1_000_000_000)
+        ws._opening_deadline_ns = deadline_ns
+        if sys.platform == 'linux':
+            # websocket-client does not publish the transport during TCP connect.
+            microseconds = max(1, int(self._connect_timeout_s * 1_000_000))
+            timeout = pack('@ll', *divmod(microseconds, 1_000_000))
+            options['sockopt'] = [(SOL_SOCKET, SO_SNDTIMEO, timeout)]
+        if ws.url.startswith('wss://'):
+            options['sslopt'] = {'context': _OpeningTLS(deadline_ns, venue)}
+        ws.run_forever(ping_interval=self._ping_interval, **options)
+
+    @staticmethod
+    def _clear_public_socket_opening_timeout(ws):
+        if isinstance(ws, _LibraryWebSocketApp) and hasattr(ws, 'restore_open_timeout'):
+            ws.restore_open_timeout()
+        if sys.platform != 'linux':
+            return
+        core = getattr(ws, 'sock', None)
+        if isinstance(core, WebSocket) and isinstance(core.sock, socket):
+            core.sock.setsockopt(SOL_SOCKET, SO_SNDTIMEO, pack('@ll', 0, 0))
+
+    def _interrupt_public_socket_on_stop(self, ws, evidence):
+        if not self._stop_event.is_set():
+            return
+        core = getattr(ws, 'sock', None)
+        transport = core.sock if isinstance(core, WebSocket) else None
+        if not isinstance(transport, socket):
+            return
+        # The reader can stay blocked when the close-frame write fails.
+        try:
+            transport.shutdown(SHUT_RDWR)
+        except OSError as error:
+            if error.errno not in (EBADF, ENOTCONN):
+                with self._state_lock:
+                    self._socket_close_error_type = type(error).__name__
+                self._log_transport_event('close_error', ws, error, evidence)
+
     def _run_websocket(self, ws, evidence=None):
         evidence = evidence or self._capture_transport(ws)
         try:
-            ws.run_forever(ping_interval=self._ping_interval)
+            self._run_socket(ws)
         except Exception as error:
             self._log_transport_event('run_error', ws, error, evidence)
         finally:
