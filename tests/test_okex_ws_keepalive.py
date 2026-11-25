@@ -1,5 +1,10 @@
 """OKX application heartbeat and authenticated subscription readiness."""
 import json
+import base64
+import hashlib
+import socket
+import ssl
+import subprocess
 from socket import socketpair, timeout
 from threading import Event, Thread
 from types import SimpleNamespace
@@ -10,6 +15,7 @@ from websocket import WebSocket, WebSocketApp
 from websocket._abnf import ABNF
 
 from pytradekit.gateway.websocket.base_ws_manager import _TransportEvidence
+from pytradekit.gateway.websocket import base_ws_manager
 from pytradekit.utils.dynamic_types import OkexAuxiliary, WebsocketStatus
 from pytradekit.ws.okex_ws import OkexWsManager
 
@@ -94,6 +100,87 @@ def test_close_interrupts_pending_upgrade_only_for_public_stream(is_public):
         else:
             with pytest.raises(timeout):
                 peer.recv(1)
+
+
+def _read_opening_headers(peer):
+    data = bytearray()
+    while not data.endswith(b'\r\n\r\n'):
+        part = peer.recv(1024)
+        assert part and len(data) + len(part) <= 4096
+        data.extend(part)
+    return bytes(data)
+
+
+@pytest.mark.parametrize('phase', ['proxy_connect', 'tls_to_upgrade', 'opened'])
+def test_public_opening_read_deadline_and_restore(phase, tmp_path, monkeypatch):
+    for name in ('HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY'):
+        monkeypatch.delenv(name, raising=False)
+        monkeypatch.delenv(name.lower(), raising=False)
+    manager = OkexWsManager(Mock(), is_public=True)
+    manager._connect_timeout_s = 1.0
+    completed = Event()
+    steady_timeouts = []
+
+    def on_open(ws):
+        manager._on_open(ws)
+        steady_timeouts.append((ws.sock.gettimeout(), ws.sock.sock.gettimeout()))
+        completed.set()
+
+    with socket.socket() as listener:
+        listener.bind(('127.0.0.1', 0))
+        listener.listen(1)
+        listener.settimeout(3)
+        port = listener.getsockname()[1]
+        if phase == 'proxy_connect':
+            monkeypatch.setenv('https_proxy', f'http://127.0.0.1:{port}')
+            url = 'wss://public.example.invalid/quotes'
+        else:
+            cert, key = tmp_path / 'cert.pem', tmp_path / 'key.pem'
+            subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1',
+                            '-subj', '/CN=localhost', '-addext', 'subjectAltName=IP:127.0.0.1',
+                            '-keyout', str(key), '-out', str(cert)], timeout=10, check=True,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            server = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            server.load_cert_chain(cert, key)
+            monkeypatch.setenv('WEBSOCKET_CLIENT_CA_BUNDLE', str(cert))
+            url = f'wss://127.0.0.1:{port}/quotes'
+        app = base_ws_manager.WebSocketApp(url, on_open=on_open)
+        manager.ws = app
+        worker = Thread(target=manager._run_socket, args=(app,))
+        worker.start()
+        try:
+            peer, _ = listener.accept()
+            with peer:
+                peer.settimeout(3)
+                if phase == 'proxy_connect':
+                    assert _read_opening_headers(peer).startswith(b'CONNECT public.example.invalid:443 ')
+                    assert app.sock is not None and app.sock.sock is None
+                    manager.close()
+                    worker.join(2)
+                    assert not worker.is_alive()
+                else:
+                    assert peer.recv(1, socket.MSG_PEEK) == b'\x16'
+                    if phase == 'tls_to_upgrade':
+                        assert app.sock is not None and app.sock.sock is None
+                        manager.close()
+                    with server.wrap_socket(peer, server_side=True) as tls:
+                        request = _read_opening_headers(tls)
+                        assert request.startswith(b'GET /quotes HTTP/1.1')
+                        if phase == 'opened':
+                            ws_key, = [line.split(b':', 1)[1].strip() for line in request.splitlines()
+                                       if line.lower().startswith(b'sec-websocket-key:')]
+                            accept = base64.b64encode(hashlib.sha1(
+                                ws_key + b'258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest())
+                            tls.sendall(b'HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n'
+                                        b'Connection: Upgrade\r\nSec-WebSocket-Accept: ' + accept + b'\r\n\r\n')
+                            assert completed.wait(2)
+                            assert steady_timeouts == [(None, None)]
+                            manager.close()
+                        worker.join(2)
+                        assert not worker.is_alive()
+        finally:
+            manager.close()
+            worker.join(3)
 
 
 def test_immediate_pong_is_not_overwritten_by_send_completion(monkeypatch):
