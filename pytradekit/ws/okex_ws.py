@@ -52,6 +52,18 @@ class OkexWsManager(WsManager):
             'stream_kind': 'public' if self._is_public else 'private', 'market': 'spot',
         }
 
+    def _run_socket(self, ws):
+        if not self._is_public:
+            return super()._run_socket(ws)
+        self._run_bounded_public_socket(ws, ExchangeId.OKX.name)
+
+    def _close_socket(self, ws, evidence=None):
+        try:
+            if self._is_public:
+                self._interrupt_public_socket_on_stop(ws, evidence)
+        finally:
+            super()._close_socket(ws, evidence)
+
     def get_signature(self, params):
         mac = hmac.new(bytes(self._api_secret, encoding='utf8'), bytes(params, encoding='utf-8'), digestmod='sha256')
         return base64.b64encode(mac.digest())
@@ -129,6 +141,8 @@ class OkexWsManager(WsManager):
         with self._state_lock:
             if self._stop_event.is_set() or ws is not self.ws:
                 return
+            if self._is_public:
+                self._clear_public_socket_opening_timeout(ws)
             self._pending_pong_socket = None
             self._session_socket = ws
             self._logged_on = False

@@ -1,8 +1,14 @@
 import json
+import os
+import ssl
+import sys
+from errno import EBADF, ENOTCONN
+from socket import SHUT_RDWR, SOL_SOCKET, SO_SNDTIMEO, socket
+from struct import pack
 from threading import Event, Lock, Semaphore, Thread, current_thread
 from uuid import uuid4
 
-from websocket import WebSocketApp
+from websocket import WebSocket, WebSocketApp
 from websocket._abnf import ABNF
 
 from pytradekit.utils.dynamic_types import WebsocketStatus
@@ -50,6 +56,32 @@ class _TransportEvidence:
         self.context = context
         self.callback_sequence = 0
         self.terminal_logged = False
+
+
+class _OpeningTLS:
+    """Apply the opening deadline with the existing CA and hostname checks."""
+
+    def __init__(self, deadline_ns, venue):
+        self._deadline_ns = deadline_ns
+        self._venue = venue
+        self._context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ca_bundle = os.environ.get('WEBSOCKET_CLIENT_CA_BUNDLE')
+        if ca_bundle and os.path.isfile(ca_bundle):
+            self._context.load_verify_locations(cafile=ca_bundle)
+        elif ca_bundle and os.path.isdir(ca_bundle):
+            self._context.load_verify_locations(capath=ca_bundle)
+        else:
+            self._context.load_default_certs(ssl.Purpose.SERVER_AUTH)
+
+    def wrap_socket(self, transport, **kwargs):
+        previous = transport.gettimeout()
+        remaining = (self._deadline_ns - get_monotonic_timestamp_ns()) / 1_000_000_000
+        if remaining <= 0:
+            raise TimeoutError(f'{self._venue} public TLS opening deadline elapsed')
+        transport.settimeout(min(remaining, previous) if previous is not None else remaining)
+        secured = self._context.wrap_socket(transport, **kwargs)
+        secured.settimeout(previous)
+        return secured
 
 
 class BaseWebsocketManager:
@@ -473,10 +505,49 @@ class BaseWebsocketManager:
                 self.reconnect(ws)
         return wrapped
 
+    def _run_socket(self, ws):
+        ws.run_forever(ping_interval=self._ping_interval)
+
+    def _run_bounded_public_socket(self, ws, venue):
+        options = {}
+        if sys.platform == 'linux':
+            # websocket-client does not publish the transport during TCP connect.
+            microseconds = max(1, int(self._connect_timeout_s * 1_000_000))
+            timeout = pack('@ll', *divmod(microseconds, 1_000_000))
+            options['sockopt'] = [(SOL_SOCKET, SO_SNDTIMEO, timeout)]
+        if ws.url.startswith('wss://'):
+            deadline_ns = get_monotonic_timestamp_ns() + int(self._connect_timeout_s * 1_000_000_000)
+            options['sslopt'] = {'context': _OpeningTLS(deadline_ns, venue)}
+        ws.run_forever(ping_interval=self._ping_interval, **options)
+
+    @staticmethod
+    def _clear_public_socket_opening_timeout(ws):
+        if sys.platform != 'linux':
+            return
+        core = getattr(ws, 'sock', None)
+        if isinstance(core, WebSocket) and isinstance(core.sock, socket):
+            core.sock.setsockopt(SOL_SOCKET, SO_SNDTIMEO, pack('@ll', 0, 0))
+
+    def _interrupt_public_socket_on_stop(self, ws, evidence):
+        if not self._stop_event.is_set():
+            return
+        core = getattr(ws, 'sock', None)
+        transport = core.sock if isinstance(core, WebSocket) else None
+        if not isinstance(transport, socket):
+            return
+        # The reader can stay blocked when the close-frame write fails.
+        try:
+            transport.shutdown(SHUT_RDWR)
+        except OSError as error:
+            if error.errno not in (EBADF, ENOTCONN):
+                with self._state_lock:
+                    self._socket_close_error_type = type(error).__name__
+                self._log_transport_event('close_error', ws, error, evidence)
+
     def _run_websocket(self, ws, evidence=None):
         evidence = evidence or self._capture_transport(ws)
         try:
-            ws.run_forever(ping_interval=self._ping_interval)
+            self._run_socket(ws)
         except Exception as error:
             self._log_transport_event('run_error', ws, error, evidence)
         finally:

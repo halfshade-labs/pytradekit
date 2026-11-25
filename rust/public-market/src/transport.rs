@@ -73,6 +73,8 @@ fn is_timeout(error: &tungstenite::Error) -> bool {
 
 pub enum Reception { Event(Value), Idle }
 
+pub(crate) enum TextDecode { Received, Failed }
+
 pub struct PublicSocket {
     socket: WebSocket<MaybeTlsStream<DeadlineStream>>,
     pending: Option<u64>,
@@ -140,6 +142,10 @@ impl PublicSocket {
         match self.receive_timeout()? { Reception::Event(value)=>Ok(value),Reception::Idle=>Err("physical receive timeout".into()) }
     }
     pub fn receive_timeout(&mut self) -> Result<Reception> {
+        self.receive_timeout_observed(|_| {})
+    }
+
+    pub(crate) fn receive_timeout_observed(&mut self, mut observe: impl FnMut(TextDecode)) -> Result<Reception> {
         self.begin_operation()?;
         let message=match self.socket.read() {
             Ok(message)=>message,
@@ -149,7 +155,11 @@ impl PublicSocket {
         let result: Result<Value>=match message {
             Message::Text(raw)=>{
                 self.messages+=1;self.bytes+=raw.len() as u64;
-                let v: Value=crate::json::parse(raw.as_bytes()).map_err(|e|e.to_string())?;
+                observe(TextDecode::Received);
+                let v: Value=crate::json::parse(raw.as_bytes()).map_err(|error| {
+                    observe(TextDecode::Failed);
+                    error.to_string()
+                })?;
                 if let Some(id)=v.get("id").and_then(Value::as_u64) {
                     if self.pending!=Some(id) {return Err("unknown subscription ACK".into())}
                     if v.get("result")!=Some(&Value::Null) {return Err("subscription rejected".into())}

@@ -1,10 +1,12 @@
 """OKX application heartbeat and authenticated subscription readiness."""
 import json
+from socket import socketpair, timeout
 from threading import Event, Thread
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+from websocket import WebSocket, WebSocketApp
 from websocket._abnf import ABNF
 
 from pytradekit.gateway.websocket.base_ws_manager import _TransportEvidence
@@ -74,6 +76,24 @@ def test_public_health_and_subscription_replay_do_not_require_login():
     manager._reconnect_streams()
     manager.send_json.assert_called_once_with(manager._subs[0])
     assert manager.get_connection_health()['connected']
+
+
+@pytest.mark.parametrize('is_public', [True, False])
+def test_close_interrupts_pending_upgrade_only_for_public_stream(is_public):
+    manager = OkexWsManager(Mock(), is_public=is_public)
+    app = WebSocketApp('ws://127.0.0.1')
+    app.sock = WebSocket()
+    owned, peer = socketpair()
+    with owned, peer:
+        app.sock.sock = owned
+        manager.ws = app
+        peer.settimeout(0.1)
+        manager.close()
+        if is_public:
+            assert peer.recv(1) == b''
+        else:
+            with pytest.raises(timeout):
+                peer.recv(1)
 
 
 def test_immediate_pong_is_not_overwritten_by_send_completion(monkeypatch):
