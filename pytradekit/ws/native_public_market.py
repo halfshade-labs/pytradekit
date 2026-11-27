@@ -572,14 +572,16 @@ class NativePublicMarket:
             return result.get("market_snapshot")
         return None
 
-    def feed_view(self, symbol=None, *, spot=False):
+    def feed_view(self, symbol=None, *, spot=False, venue=None):
         """Read one original Snapshot-selected leg; confers no owner permission."""
         deadline = get_monotonic_timestamp_ns() + 250_000_000
-        if type(spot) is not bool or (symbol is not None and type(symbol) is not str):
+        if (type(spot) is not bool or (symbol is not None and type(symbol) is not str)
+                or (venue is not None and (not spot or venue not in ("HTX", "OKX")))):
             raise ValueError("invalid native feed view scope")
         if not getattr(self, "_feed_views", False) or not getattr(self, "_receipt_ready", False):
             raise RuntimeError("native feed views capability unavailable")
-        identity = {"session": self.session, "leg": "spot" if spot else "feed", "symbol": symbol}
+        leg = {"HTX": "htx_spot", "OKX": "okx_spot"}.get(venue, "spot" if spot else "feed")
+        identity = {"session": self.session, "leg": leg, "symbol": symbol}
         # A character consumes at least one wire byte. Use the smallest legal
         # request ID to reject only scopes that cannot fit any valid frame,
         # before the shared helper serializes potentially enormous input.
@@ -597,7 +599,7 @@ class NativePublicMarket:
                 or row["type"] != "feed_view" or type(row["request"]) is not int
                 or not 0 < row["request"] <= 2**64-1 or row["request"] != request
                 or type(row["session"]) is not str or row["session"] != self.session
-                or type(row["leg"]) is not str or row["leg"] not in {"feed", "spot"}
+                or type(row["leg"]) is not str or row["leg"] not in {"feed", "spot", "htx_spot", "okx_spot"}
                 or (row["symbol"] is not None and type(row["symbol"]) is not str)
                 or any(row[key] != metadata["identity"][key] for key in ("session", "leg", "symbol"))
                 or type(row["state"]) is not dict

@@ -1,15 +1,39 @@
 //! Internal opt-in seam only. No wire configuration protocol is enabled here.
 use crate::Result;
+use crate::transport::{SpotInstruments, SpotVenue};
 use serde::Serialize;
 use std::collections::BTreeMap;
 use serde_json::Value;
 use std::sync::Arc;
 
-#[derive(Clone,Debug,PartialEq,Eq)]
-pub struct Targets {pub perpetual:Vec<String>,pub spot:Vec<String>}
+#[derive(Clone,Debug,Default,PartialEq,Eq)]
+pub struct Targets {
+    pub perpetual: Vec<String>,
+    pub spot: Vec<String>,
+    pub native_spot: BTreeMap<SpotVenue, SpotInstruments>,
+}
 impl Targets {pub(super) fn normalize(mut self)->Self{self.perpetual.sort();self.spot.sort();self}}
+
+impl Targets {
+    pub(super) fn applied(&self, state: &Value) -> Option<std::collections::BTreeSet<&str>> {
+        if let Some(venue) = state.get("venue") {
+            let venue: SpotVenue = serde_json::from_value(venue.clone()).ok()?;
+            return Some(self.native_spot.get(&venue)?.keys().map(String::as_str).collect());
+        }
+        let symbols = if state["spot"] == true { &self.spot } else { &self.perpetual };
+        Some(symbols.iter().map(String::as_str).collect())
+    }
+}
 #[derive(Clone)]
 pub(super) struct Plan {pub operation:u64,pub before:Targets,pub after:Targets}
+impl Plan {
+    pub(super) fn requires_ack(&self, state: &Value) -> bool {
+        let Some(venue) = state.get("venue").and_then(|value| serde_json::from_value::<SpotVenue>(value.clone()).ok()) else {
+            return true;
+        };
+        self.before.native_spot.get(&venue) != self.after.native_spot.get(&venue)
+    }
+}
 #[derive(Clone,Copy,Debug,PartialEq,Eq,Serialize)]
 #[serde(rename_all="SCREAMING_SNAKE_CASE")]
 pub enum Phase {Prepared,Committed,Applying,Ready,Active,Aborted,Rejected,Failed}
@@ -47,18 +71,18 @@ impl Slot {
         if receipt.phase!=Phase::Committed{return None}
         receipt.phase=Phase::Applying;Some(plan.clone())
     }
-    pub(super) fn ready(&mut self,truth:&BTreeMap<String,Value>){if let Some((_,r))=&mut self.current{if matches!(r.phase,Phase::Applying|Phase::Ready){r.phase=Phase::Ready;self.acknowledged=truth.iter().map(|(id,s)|(id.clone(),(s["token"].as_str().unwrap_or_default().into(),s["generation"].as_u64().unwrap_or(0)))).collect();}}}
+    pub(super) fn ready(&mut self,truth:&BTreeMap<String,Value>){if let Some((plan,r))=&mut self.current{if matches!(r.phase,Phase::Applying|Phase::Ready){r.phase=Phase::Ready;self.acknowledged=truth.iter().filter(|(_,state)|plan.requires_ack(state)).map(|(id,s)|(id.clone(),(s["token"].as_str().unwrap_or_default().into(),s["generation"].as_u64().unwrap_or(0)))).collect();}}}
+    pub(super) fn requires_ack(&self,state:&Value)->bool {self.current.as_ref().is_none_or(|(plan,_)|plan.requires_ack(state))}
     pub(super) fn not_ready(&mut self){if let Some((_,r))=&mut self.current{if r.phase==Phase::Ready{r.phase=Phase::Applying;self.acknowledged.clear();}}}
     pub fn revalidate(&self,before:&Targets)->Result<()> {let (plan,r)=self.current.as_ref().ok_or("missing configuration preparation")?;if r.phase!=Phase::Prepared||&plan.before!=before{return Err("configuration physical baseline changed".into())}Ok(())}
     pub fn activate(&mut self,operation:u64,truth:&BTreeMap<String,Value>)->Result<()> {
         let (plan,r)=self.current.as_mut().ok_or("missing configuration operation")?;
         if r.operation!=operation{return Err("configuration activation mismatch".into())}
         if r.phase==Phase::Active{return Ok(())}
-        if r.phase!=Phase::Ready||self.acknowledged.len()!=truth.len()||!self.acknowledged.iter().all(|(id,(token,generation))|truth.get(id).is_some_and(|s|s["connected"]==true&&s["token"]==*token&&s["generation"]==*generation)){return Err("configuration is not current ACK ready".into())}
-        if !truth.values().all(|s|{
-            let targets=if s["spot"]==true{&plan.after.spot}else{&plan.after.perpetual};
+        if r.phase!=Phase::Ready||self.acknowledged.len()!=truth.values().filter(|state|plan.requires_ack(state)).count()||!self.acknowledged.iter().all(|(id,(token,generation))|truth.get(id).is_some_and(|s|s["connected"]==true&&s["token"]==*token&&s["generation"]==*generation)){return Err("configuration is not current ACK ready".into())}
+        if !truth.values().filter(|state|plan.requires_ack(state)).all(|s|{
             let applied=s["applied"].as_array().and_then(|a|a.iter().map(Value::as_str).collect::<Option<std::collections::BTreeSet<_>>>());
-            applied==Some(targets.iter().map(String::as_str).collect())
+            applied.is_some() && applied==plan.after.applied(s)
         }){return Err("configuration ACK target mismatch".into())}
         r.phase=Phase::Active;Ok(())
     }

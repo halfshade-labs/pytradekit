@@ -5,7 +5,114 @@ use std::net::SocketAddr;
 use tungstenite::{client::IntoClientRequest, Message};
 
 mod wire;
+mod htx;
+mod okx;
 use wire::Wire;
+
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use tungstenite::handshake::client::Request;
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+pub enum SpotVenue {
+    #[serde(rename = "HTX")]
+    Htx,
+    #[serde(rename = "OKX")]
+    Okx,
+}
+
+/// The control plane provides the existing CEA symbol and the PTK-converted
+/// venue instrument together. The receiving adapter checks both routing fields.
+pub type SpotInstruments = BTreeMap<String, String>;
+const MAX_SPOT_PRICE_TEXT: usize = 128;
+
+impl SpotVenue {
+    pub fn name(self) -> &'static str {
+        match self { Self::Htx => "HTX", Self::Okx => "OKX" }
+    }
+
+    pub(crate) fn max_quote_rows(self) -> usize {
+        match self { Self::Htx => 1, Self::Okx => okx::MAX_TICKER_ROWS }
+    }
+}
+
+#[derive(Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SpotQuote {
+    pub symbol: String,
+    pub bid: String,
+    pub ask: String,
+    pub source_ms: i64,
+    pub receive_ms: i64,
+    pub sequence: Option<i64>,
+}
+
+pub(crate) enum SpotReception {
+    Idle,
+    Acknowledged,
+    Quotes(Vec<SpotQuote>),
+}
+
+pub(crate) enum SpotSocket {
+    Htx(htx::Socket),
+    Okx(okx::Socket),
+}
+
+impl SpotSocket {
+    pub(crate) fn validate(venue: SpotVenue, address: SocketAddr, uri: &str, instruments: &SpotInstruments) -> Result<()> {
+        match venue {
+            SpotVenue::Htx => htx::request(address, uri).and_then(|_| htx::validate_instruments(instruments)),
+            SpotVenue::Okx => okx::request(address, uri).and_then(|_| okx::validate_instruments(instruments)),
+        }
+    }
+
+    pub(crate) fn connect(venue: SpotVenue, address: SocketAddr, uri: &str, instruments: &SpotInstruments) -> Result<Self> {
+        match venue {
+            SpotVenue::Htx => htx::Socket::connect(address, uri, instruments).map(Self::Htx),
+            SpotVenue::Okx => okx::Socket::connect(address, uri, instruments).map(Self::Okx),
+        }
+    }
+
+    pub(crate) fn receive(&mut self, receive_ms: impl FnOnce() -> i64) -> Result<SpotReception> {
+        match self {
+            Self::Htx(socket) => socket.receive(receive_ms),
+            Self::Okx(socket) => socket.receive(receive_ms),
+        }
+    }
+
+    pub(crate) fn close(self) -> Result<()> {
+        match self {
+            Self::Htx(socket) => socket.close(),
+            Self::Okx(socket) => socket.close(),
+        }
+    }
+}
+
+fn spot_request(address: SocketAddr, uri: &str, approve: impl FnOnce(&tungstenite::http::Uri) -> bool) -> Result<Request> {
+    let request = uri.into_client_request().map_err(|_| "invalid public websocket endpoint URI")?;
+    let uri = request.uri();
+    if address.ip().is_loopback() && matches!(uri.scheme_str(), Some("ws" | "wss")) {
+        return Ok(request);
+    }
+    if uri.scheme_str() != Some("wss") || uri.query().is_some()
+        || uri.authority().is_some_and(|authority| authority.as_str().contains('@')) || !approve(uri)
+    {
+        return Err("unapproved public endpoint".into());
+    }
+    Ok(request)
+}
+
+fn validate_instruments(instruments: &SpotInstruments, valid: impl Fn(&str, &str) -> bool) -> Result<()> {
+    let mut seen = std::collections::BTreeSet::new();
+    if instruments.len() > crate::MAX_SYMBOLS
+        || instruments.iter().any(|(symbol, instrument)| {
+            !crate::symbol_valid(symbol) || !valid(symbol, instrument) || !seen.insert(instrument)
+        })
+    {
+        return Err("invalid public spot targets".into());
+    }
+    Ok(())
+}
 
 pub enum Reception { Event(Value), Idle }
 

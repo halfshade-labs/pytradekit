@@ -84,6 +84,10 @@ def test_public_health_and_subscription_replay_do_not_require_login():
     assert manager.get_connection_health()['connected']
 
 
+def test_public_default_uses_okx_port_443():
+    assert make_manager(is_public=True)._get_url() == "wss://ws.okx.com/ws/v5/public"
+
+
 @pytest.mark.parametrize('is_public', [True, False])
 def test_close_interrupts_pending_upgrade_only_for_public_stream(is_public):
     manager = OkexWsManager(Mock(), is_public=is_public)

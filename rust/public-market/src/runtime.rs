@@ -3,7 +3,7 @@
 use crate::{Clock, Result, CAPACITY, MAX_SYMBOLS};
 pub mod handoff;
 use handoff::{Slot,Targets,Plan};
-use crate::transport::{PublicSocket, Reception, TextDecode};
+use crate::transport::{PublicSocket, Reception, SpotInstruments, SpotQuote, SpotReception, SpotSocket, SpotVenue, TextDecode};
 use serde::{Deserialize,Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -68,17 +68,29 @@ pub struct Settings {
     #[serde(default)] pub fixture_wall_ms:Option<i64>,
     #[serde(default)] pub fixture_backup_endpoint:Option<Endpoint>,
 }
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SpotSubscription {
+    pub endpoint: Endpoint,
+    pub instruments: SpotInstruments,
+}
+
+pub type SpotSubscriptions = BTreeMap<SpotVenue, SpotSubscription>;
+
 enum Event {
     Connected { route:String, token:String, generation:u64 },
     Frame { route:String, token:String, generation:u64, payload:Value, clock:Clock },
+    VenueQuote { route: String, token: String, generation: u64, quote: SpotQuote, clock: Clock, batch_has_more: bool },
     Disconnected { route:String, generation:u64 },
     CreditedConnected { route:String, token:String, generation:u64, credit:IngressPermit },
     CreditedFrame { route:String, token:String, generation:u64, payload:Value, clock:Clock, credit:IngressPermit },
+    CreditedVenueQuote { route: String, token: String, generation: u64, quote: SpotQuote, clock: Clock, batch_has_more: bool, credit: IngressPermit },
     CreditedDisconnected { route:String, generation:u64, credit:IngressPermit },
 }
 #[derive(Default)]
-struct WorkerExit { canceled_post_ack:u8 }
+struct WorkerExit { canceled_post_ack:usize }
 struct Worker { stop:Arc<AtomicBool>, join:Option<JoinHandle<WorkerExit>>, slot:u8, spot:bool,
+    venue: Option<SpotVenue>,
     replacement:bool, token:String, generation:u64, connected:bool, created_ms:u64,due_ms:u64,
     spot_ingress:Option<Arc<SpotIngress>> }
 fn promotion_current(worker:&Worker,state:&Value,targets:&[String])->bool{
@@ -319,7 +331,7 @@ impl SpotReceiveState {
 }
 
 #[derive(Clone, Copy)]
-enum SpotProbe { Off, Ingress, ReceiveStages }
+pub enum SpotProbe { Off, Ingress, ReceiveStages }
 
 // One fixed subscription per spot connection generation. Slots are installed
 // during ACK; only the original worker and consumer write atomics afterwards.
@@ -429,6 +441,8 @@ impl Control {
 }
 pub struct Runtime {
     settings:Settings, workers:BTreeMap<String,Worker>, sender:SyncSender<Event>, receiver:Receiver<Event>,
+    native_spot: SpotSubscriptions,
+    native_spot_generation: Arc<AtomicU64>,
     failure:Arc<Mutex<Option<String>>>, origin:Instant, next:u64, generations:BTreeMap<String,u64>,
     memberships:BTreeMap<String,u64>, serials:BTreeMap<String,u64>, supplied:u64, retired:u64,
     fixture_wall:Arc<AtomicI64>, anchored:bool,
@@ -541,6 +555,7 @@ impl Event {
         match self {
             Self::Connected{route,token,generation}=>Self::CreditedConnected{route,token,generation,credit},
             Self::Frame{route,token,generation,payload,clock}=>Self::CreditedFrame{route,token,generation,payload,clock,credit},
+            Self::VenueQuote{route,token,generation,quote,clock,batch_has_more}=>Self::CreditedVenueQuote{route,token,generation,quote,clock,batch_has_more,credit},
             Self::Disconnected{route,generation}=>Self::CreditedDisconnected{route,generation,credit},
             _=>unreachable!("an ingress Event is credited only once"),
         }
@@ -549,12 +564,14 @@ impl Event {
         match self {
             Self::CreditedConnected{route,token,generation,credit}=>{drop(credit);Self::Connected{route,token,generation}},
             Self::CreditedFrame{route,token,generation,payload,clock,credit}=>{drop(credit);Self::Frame{route,token,generation,payload,clock}},
+            Self::CreditedVenueQuote{route,token,generation,quote,clock,batch_has_more,credit}=>{drop(credit);Self::VenueQuote{route,token,generation,quote,clock,batch_has_more}},
             Self::CreditedDisconnected{route,generation,credit}=>{drop(credit);Self::Disconnected{route,generation}},
             event=>event,
         }
     }
+    fn is_quote(&self)->bool {matches!(self, Self::Frame{..} | Self::VenueQuote{..})}
     #[cfg(test)]
-    fn has_credit(&self)->bool {matches!(self,Self::CreditedConnected{..}|Self::CreditedFrame{..}|Self::CreditedDisconnected{..})}
+    fn has_credit(&self)->bool {matches!(self,Self::CreditedConnected{..}|Self::CreditedFrame{..}|Self::CreditedVenueQuote{..}|Self::CreditedDisconnected{..})}
 }
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 enum OfferResult {Sent,Stopped,Failed}
@@ -579,10 +596,42 @@ impl WorkerIngress {
             event=event.with_credit(permit);
             return if emit_notified(sender,failure,wake,event){OfferResult::Sent}else{OfferResult::Failed}
         }
-        let raw=matches!(event,Event::Frame{..});
+        if matches!(event, Event::VenueQuote { .. }) {
+            if let Err(result)=check_offer(&self.stop,failure){return result}
+        }
+        let raw=event.is_quote();
         let sent=if raw{emit_cooperatively(sender,failure,wake,event,||yield_raw_ingress(self.mode==IngressMode::V1))}else{emit_notified(sender,failure,wake,event)};
         if sent{OfferResult::Sent}else{OfferResult::Failed}
     }
+}
+
+fn offer_venue_batch<T>(
+    quotes: Vec<T>, received: &AtomicU64, mut offer: impl FnMut(T, bool) -> OfferResult,
+) -> Result<usize> {
+    let captured = quotes.len();
+    received.fetch_add(captured as u64, Ordering::Relaxed);
+    for (index, quote) in quotes.into_iter().enumerate() {
+        match offer(quote, index + 1 < captured) {
+            OfferResult::Sent => {},
+            OfferResult::Stopped => return Ok(captured - index),
+            OfferResult::Failed => return Err("ingress failed".into()),
+        }
+    }
+    Ok(0)
+}
+
+fn buffered_quote_is_old(prior: &SpotQuote, incoming: &SpotQuote) -> bool {
+    if let (Some(prior), Some(incoming)) = (prior.sequence, incoming.sequence) {
+        return incoming <= prior;
+    }
+    let equal_price = |left: &str, right: &str| {
+        use crate::decimal::PositiveDecimal;
+        left == right || PositiveDecimal::parse(left).zip(PositiveDecimal::parse(right))
+            .is_some_and(|(left, right)| left.compare(&right).is_eq())
+    };
+    incoming.source_ms < prior.source_ms
+        || (incoming.source_ms == prior.source_ms
+            && equal_price(&prior.bid, &incoming.bid) && equal_price(&prior.ask, &incoming.ask))
 }
 
 // Timestamp compatibility only: CPython _PyTime_AsSecondsDouble converts the
@@ -599,6 +648,42 @@ fn wall_ms_from_duration(duration:Duration)->i64 {
 }
 fn clock(origin:Instant)->Clock { Clock {wall_ms:wall_ms_from_duration(SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default()),monotonic_ms:origin.elapsed().as_millis() as i64} }
 fn extract_worker_payload(event:&mut Value)->Value {event.get_mut("payload").map(Value::take).unwrap_or(Value::Null)}
+
+enum WorkerSocket {
+    Binance(PublicSocket),
+    Venue(SpotSocket),
+}
+impl WorkerSocket {
+    fn close(self) -> Result<()> {
+        match self {
+            Self::Binance(socket) => socket.close(),
+            Self::Venue(socket) => socket.close(),
+        }
+    }
+}
+
+fn capture_clock(origin: Instant, fixture_wall: &AtomicI64) -> Clock {
+    let mut captured = clock(origin);
+    let wall = fixture_wall.load(Ordering::Acquire);
+    if wall != 0 { captured.wall_ms = wall + captured.monotonic_ms; }
+    captured
+}
+
+fn venue_current(control: &Control, route: &str, token: &str, generation: u64) -> Result<bool> {
+    let truth = control.physical.lock().map_err(|_| "physical truth poisoned")?;
+    Ok(truth.get(route).is_some_and(|state| {
+        state["connected"] == true && state["token"] == token && state["generation"] == generation
+    }))
+}
+
+fn spot_route_row(worker: &Worker, connected: bool, bn_symbols: &[String], native_spot: &SpotSubscriptions) -> Value {
+    if let Some(venue) = worker.venue {
+        let symbols: Vec<_> = native_spot[&venue].instruments.keys().collect();
+        json!({"type":"native_spot_route","venue":venue,"token":worker.token,"generation":worker.generation,"connected":connected,"symbols":symbols})
+    } else {
+        json!({"type":"spot_route","token":worker.token,"generation":worker.generation.max(1),"connected":connected,"symbols":bn_symbols})
+    }
+}
 impl Runtime {
     pub fn start(settings:Settings)->Result<Self> {
         Self::start_with_policy(settings,LifecyclePolicy::default())
@@ -619,12 +704,27 @@ impl Runtime {
         Self::start_with_modes(settings, LifecyclePolicy::default(), true, mode, SpotProbe::ReceiveStages)
     }
 
+    pub fn start_configured_with_native_spot(settings: Settings, native_spot: SpotSubscriptions) -> Result<Self> {
+        Self::start_configured_with_native_spot_probe(settings, native_spot, SpotProbe::Off)
+    }
+
+    /// Install the optional ingress probe on the original Binance spot worker.
+    pub fn start_configured_with_native_spot_probe(settings: Settings, native_spot: SpotSubscriptions, probe: SpotProbe) -> Result<Self> {
+        let mode = select_ingress_mode(std::env::var_os("CEA_NATIVE_INGRESS_COOPERATE").as_deref(), true)?;
+        Self::start_with_subscriptions(settings, LifecyclePolicy::default(), true, mode, probe, native_spot)
+    }
+
     fn start_with_ingress_mode(settings:Settings,lifecycle:LifecyclePolicy,configured:bool,ingress_mode:IngressMode)->Result<Self>{
         Self::start_with_modes(settings, lifecycle, configured, ingress_mode, SpotProbe::Off)
     }
 
     fn start_with_modes(settings: Settings, lifecycle: LifecyclePolicy, configured: bool,
                         ingress_mode: IngressMode, spot_probe: SpotProbe) -> Result<Self> {
+        Self::start_with_subscriptions(settings, lifecycle, configured, ingress_mode, spot_probe, BTreeMap::new())
+    }
+
+    fn start_with_subscriptions(settings: Settings, lifecycle: LifecyclePolicy, configured: bool,
+                                ingress_mode: IngressMode, spot_probe: SpotProbe, native_spot: SpotSubscriptions) -> Result<Self> {
         if ingress_mode==IngressMode::V2&&!configured{return Err("native ingress v2 requires configured whole-plan runtime".into())}
         if settings.session.is_empty()||settings.session.len()>40||!settings.session.bytes().all(|c|c.is_ascii_alphanumeric()||c==b'-')||!matches!(settings.mode.as_str(),"single"|"shadow"|"redundant") {return Err("invalid native session/mode".into())}
         PublicSocket::validate_endpoint(settings.perpetual.address, &settings.perpetual.uri)?;
@@ -642,6 +742,16 @@ impl Runtime {
         for (spot,symbols) in [(false,&settings.perpetual_symbols),(true,&settings.spot_symbols)] {
             if (symbols.is_empty()&&!(configured&&spot))||symbols.len()>MAX_SYMBOLS||symbols.iter().any(|s|!crate::symbol_valid(s))||symbols.iter().collect::<BTreeSet<_>>().len()!=symbols.len(){return Err("invalid native subscriptions".into())}
         }
+        for (&venue, subscription) in &native_spot {
+            let endpoint = &subscription.endpoint;
+            SpotSocket::validate(venue, endpoint.address, &endpoint.uri, &subscription.instruments)?;
+            if settings.fixture_wall_ms.is_some() && !endpoint.address.ip().is_loopback() {
+                return Err("fixture clock requires loopback endpoints".into());
+            }
+            if subscription.instruments.keys().any(|symbol| !settings.perpetual_symbols.contains(symbol)) {
+                return Err("native spot target lacks perpetual binding".into());
+            }
+        }
         let (sender,receiver)=mpsc::sync_channel(CAPACITY);
         let memberships=settings.perpetual_symbols.iter().map(|s|(s.clone(),1)).collect();
         let fixture_wall=Arc::new(AtomicI64::new(settings.fixture_wall_ms.unwrap_or(0)));
@@ -652,32 +762,48 @@ impl Runtime {
         if matches!(spot_probe, SpotProbe::ReceiveStages) {
             control.spot_decode_failures = Some(Arc::new(AtomicU64::new(0)));
         }
-        let mut this=Self {settings,workers:BTreeMap::new(),sender,receiver,failure:control.failure.clone(),origin:control.origin,next:0,generations:BTreeMap::new(),memberships,serials:BTreeMap::new(),supplied:0,retired:0,fixture_wall,anchored:false,received:Arc::new(AtomicU64::new(0)),retired_frames:0,queue_age:AgeStats::default(),source_age:AgeStats::default(),control,recv_total:Timing::default(),channel_wait:Timing::default(),lifecycle,retiring:BTreeMap::new(),pending_targets:None,ingress_mode,ingress_credits:if ingress_mode==IngressMode::V2{Some(IngressCredits::new())}else{None}};
+        let mut this=Self {settings,workers:BTreeMap::new(),sender,receiver,native_spot,native_spot_generation:Arc::new(AtomicU64::new(0)),failure:control.failure.clone(),origin:control.origin,next:0,generations:BTreeMap::new(),memberships,serials:BTreeMap::new(),supplied:0,retired:0,fixture_wall,anchored:false,received:Arc::new(AtomicU64::new(0)),retired_frames:0,queue_age:AgeStats::default(),source_age:AgeStats::default(),control,recv_total:Timing::default(),channel_wait:Timing::default(),lifecycle,retiring:BTreeMap::new(),pending_targets:None,ingress_mode,ingress_credits:if ingress_mode==IngressMode::V2{Some(IngressCredits::new())}else{None}};
         this.spawn(0,false,false)?;
         if this.settings.mode!="single" {this.spawn(1,false,false)?;}
         if configured{this.enable_handoff()?;}
-        if starts_spot{this.spawn(0,true,false)?;}Ok(this)
+        if starts_spot{this.spawn(0,true,false)?;}
+        for venue in this.native_spot.iter().filter_map(|(&venue, sub)| (!sub.instruments.is_empty()).then_some(venue)).collect::<Vec<_>>() {
+            this.spawn_worker(0, true, false, Some(venue))?;
+        }
+        Ok(this)
     }
     fn spawn(&mut self,slot:u8,spot:bool,replacement:bool)->Result<()> {
-        if self.workers.values().chain(self.retiring.values()).filter(|w|w.spot==spot).count()>=if spot{1}else{3}{return Err("native physical slot capacity".into())}
+        self.spawn_worker(slot, spot, replacement, None)
+    }
+    fn spawn_worker(&mut self,slot:u8,spot:bool,replacement:bool,venue:Option<SpotVenue>)->Result<()> {
+        if self.workers.values().chain(self.retiring.values()).filter(|w|w.spot==spot && w.venue==venue).count()>=if spot{1}else{3}{return Err("native physical slot capacity".into())}
         self.next+=1;let route=format!("{}-{}-{}",if spot{"spot"}else{"perp"},slot,self.next);
         let worker_instance = self.next;
         let created_ms=self.origin.elapsed().as_millis() as u64;let due_ms=self.lifecycle.rotation.initial_due(created_ms,slot);
-        let endpoint=if spot{self.settings.spot.clone()}else if slot==1{self.settings.fixture_backup_endpoint.clone().unwrap_or_else(||self.settings.perpetual.clone())}else{self.settings.perpetual.clone()};
-        let symbols=if spot{self.settings.spot_symbols.clone()}else{self.settings.perpetual_symbols.clone()};
+        let subscription = venue.map(|venue| self.native_spot[&venue].clone());
+        let endpoint=if let Some(sub)=&subscription {sub.endpoint.clone()}else if spot{self.settings.spot.clone()}else if slot==1{self.settings.fixture_backup_endpoint.clone().unwrap_or_else(||self.settings.perpetual.clone())}else{self.settings.perpetual.clone()};
+        let symbols=if let Some(sub)=&subscription {sub.instruments.keys().cloned().collect()}else if spot{self.settings.spot_symbols.clone()}else{self.settings.perpetual_symbols.clone()};
+        let native_generation = self.native_spot_generation.clone();
         let stop=Arc::new(AtomicBool::new(false));let worker_stop=stop.clone();let failure=self.failure.clone();let sender=self.sender.clone();
         let origin=self.origin;let fixture_wall=self.fixture_wall.clone();let received=self.received.clone();let id=route.clone();let session=self.settings.session.clone();
         let physical=self.control.physical.clone();let wake=self.control.wake.clone();
-        let spot_observer = self.control.spot_ingress.as_ref().filter(|_| spot).cloned();
-        let spot_decode_failures = self.control.spot_decode_failures.as_ref().filter(|_| spot).cloned();
-        physical.lock().map_err(|_|"physical truth poisoned")?.insert(route.clone(),json!({"type":"route","route":route,"slot":slot,"spot":spot,"token":"pending","generation":1,"connected":false,"replacement":replacement,"applied":[]}));
+        let spot_observer = self.control.spot_ingress.as_ref().filter(|_| spot && venue.is_none()).cloned();
+        let spot_decode_failures = self.control.spot_decode_failures.as_ref().filter(|_| spot && venue.is_none()).cloned();
+        let mut initial = json!({"type":"route","route":route,"slot":slot,"spot":spot,"token":"pending","generation":1,"connected":false,"replacement":replacement,"applied":[]});
+        if let Some(venue) = venue { initial["venue"] = json!(venue); }
+        physical.lock().map_err(|_|"physical truth poisoned")?.insert(route.clone(), initial);
         let recovery=self.lifecycle.recovery;
         let ingress=WorkerIngress{mode:self.ingress_mode,credits:self.ingress_credits.clone(),stop:worker_stop.clone()};
         let join=thread::Builder::new().name(route.clone()).spawn(move||{
             let mut generation=0;let mut recovery=Recovery::new(recovery);let mut exit=WorkerExit::default();
             while !worker_stop.load(Ordering::Acquire) {
                 if failure.lock().map_or(true,|f|f.is_some()){break}
-                generation+=1;let token=format!("{session}-{id}-{generation}");
+                if venue.is_some() {
+                    let previous = native_generation.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| value.checked_add(1));
+                    let Ok(previous) = previous else {fail_notified(&failure,&wake,"native spot generation exhausted; owner incomplete".into());break};
+                    generation = previous + 1;
+                } else { generation += 1; }
+                let token=format!("{session}-{id}-{generation}");
                 let spot_ingress = spot_observer.as_ref().map(|_| {
                     let mut observation = SpotIngress::for_generation(&token, worker_instance, generation,
                         &symbols, ingress.credits.as_ref().map(|_| origin));
@@ -687,23 +813,92 @@ impl Runtime {
                     Arc::new(observation)
                 });
                 let credit_wait = spot_ingress.as_ref().and_then(|probe| probe.credit_wait.as_ref());
+                let offer_route_event = |event, observation| {
+                    // Off/v1 use only immediate bounded offers. Serialize the
+                    // native control send with detach; v2 reserves outside truth.
+                    let _truth = if venue.is_some() && ingress.credits.is_none() {
+                        match physical.lock() {
+                            Ok(truth) => Some(truth),
+                            Err(_) => {
+                                fail_notified(&failure, &wake, "physical truth poisoned".into());
+                                return OfferResult::Failed;
+                            }
+                        }
+                    } else { None };
+                    if venue.is_some() {
+                        if let Err(result) = check_offer(&worker_stop, &failure) { return result; }
+                    }
+                    ingress.offer_observed(&sender, &failure, &wake, event, observation)
+                };
                 let mut unqualified=0usize;
                 let attempt=(||->Result<()> {
-                    let mut socket=PublicSocket::connect(endpoint.address,&endpoint.uri)?;
-                    recovery.opened(origin.elapsed().as_millis() as u64);
-                    socket.subscribe(generation,&symbols)?;
+                    let mut socket = if let (Some(venue), Some(subscription)) = (venue, &subscription) {
+                        let socket = SpotSocket::connect(venue, endpoint.address, &endpoint.uri, &subscription.instruments)?;
+                        recovery.opened(origin.elapsed().as_millis() as u64);
+                        WorkerSocket::Venue(socket)
+                    } else {
+                        let mut socket = PublicSocket::connect(endpoint.address, &endpoint.uri)?;
+                        recovery.opened(origin.elapsed().as_millis() as u64);
+                        socket.subscribe(generation, &symbols)?;
+                        WorkerSocket::Binance(socket)
+                    };
                     let ack_deadline=Instant::now()+Duration::from_secs(5);
                     let mut ack=false;let mut before_ack=Vec::new();
+                    // Only individually ACKed native quotes enter this buffer.
+                    // Replaced or unqualified captures never enter ingress accounting.
+                    let mut before_venue_ack: Vec<(SpotQuote, Clock)> = Vec::new();
+                    let offer_venue_quote = |quote, clock, batch_has_more| {
+                        ingress.offer(&sender, &failure, &wake, Event::VenueQuote {
+                            route:id.clone(),token:token.clone(),generation,quote,clock,batch_has_more,
+                        })
+                    };
                     while !worker_stop.load(Ordering::Acquire) {
                         if !ack&&Instant::now()>ack_deadline{return Err("subscription ACK deadline".into())}
                         let mut text_received_ns = None;
-                        let received_frame = if let Some(failures) = &spot_decode_failures {
-                            socket.receive_timeout_observed(|phase| match phase {
-                                TextDecode::Received => text_received_ns = u64::try_from(origin.elapsed().as_nanos()).ok(),
-                                TextDecode::Failed => { failures.fetch_add(1, Ordering::Relaxed); }
-                            })
-                        } else {
-                            socket.receive_timeout()
+                        let received_frame = match &mut socket {
+                            WorkerSocket::Venue(socket) => {
+                                let mut captured = None;
+                                match socket.receive(|| {
+                                    let time = capture_clock(origin, &fixture_wall);
+                                    captured = Some(time);
+                                    time.wall_ms
+                                })? {
+                                    SpotReception::Idle => continue,
+                                    SpotReception::Acknowledged => Ok(Reception::Event(json!({"type":"ack"}))),
+                                    SpotReception::Quotes(quotes) => {
+                                        let clock = captured.ok_or("native spot frame missing receive time")?;
+                                        if !ack {
+                                            for quote in quotes {
+                                                if let Some(index) = before_venue_ack.iter().position(|(prior, _)| prior.symbol == quote.symbol) {
+                                                    if buffered_quote_is_old(&before_venue_ack[index].0, &quote) {
+                                                        continue;
+                                                    }
+                                                    before_venue_ack.remove(index);
+                                                }
+                                                if before_venue_ack.len() == MAX_SYMBOLS {
+                                                    return Err("native spot pre-ACK symbol capacity".into());
+                                                }
+                                                before_venue_ack.push((quote, clock));
+                                            }
+                                            continue;
+                                        }
+                                        exit.canceled_post_ack = offer_venue_batch(quotes, &received,
+                                            |quote, has_more| offer_venue_quote(quote, clock, venue == Some(SpotVenue::Okx) && has_more))?;
+                                        if exit.canceled_post_ack != 0 {
+                                            return Ok(());
+                                        }
+                                        continue;
+                                    }
+                                }
+                            }
+                            WorkerSocket::Binance(socket) => if let Some(failures) = &spot_decode_failures {
+                                socket.receive_timeout_observed(|phase| match phase {
+                                    TextDecode::Received => text_received_ns = u64::try_from(origin.elapsed().as_nanos()).ok(),
+                                    TextDecode::Failed => { failures.fetch_add(1, Ordering::Relaxed); }
+                                })
+                            } else {
+                                socket.receive_timeout()
+                            }
                         }?;
                         match received_frame {
                             Reception::Idle=>continue,
@@ -715,7 +910,20 @@ impl Runtime {
                                             *observer = spot_ingress.clone();
                                         }
                                     }
-                                    if ingress.offer_observed(&sender,&failure,&wake,Event::Connected{route:id.clone(),token:token.clone(),generation},credit_wait)!=OfferResult::Sent{return Err("ingress failed".into())}
+                                    match offer_route_event(Event::Connected{route:id.clone(),token:token.clone(),generation}, credit_wait) {
+                                        OfferResult::Sent => {},
+                                        OfferResult::Stopped if venue.is_some() => return Ok(()),
+                                        _ => return Err("ingress failed".into()),
+                                    }
+                                    if !before_venue_ack.is_empty() {
+                                        exit.canceled_post_ack = offer_venue_batch(
+                                            std::mem::take(&mut before_venue_ack), &received,
+                                            |(quote, clock), _| offer_venue_quote(quote, clock, false),
+                                        )?;
+                                        if exit.canceled_post_ack != 0 {
+                                            return Ok(());
+                                        }
+                                    }
                                     for (payload,clock) in before_ack.drain(..) {
                                         let point = spot_ingress.as_ref().and_then(|probe| probe.slot(&payload));
                                         if ingress.offer_observed(&sender,&failure,&wake,Event::Frame{route:id.clone(),token:token.clone(),generation,payload,clock},credit_wait)!=OfferResult::Sent{return Err("ingress failed".into())}
@@ -726,7 +934,7 @@ impl Runtime {
                                 },
                                 Some("raw")=>{
                                     received.fetch_add(1,Ordering::Relaxed);
-                                    let payload=extract_worker_payload(&mut event);let mut clock=clock(origin);let wall=fixture_wall.load(Ordering::Acquire);if wall!=0{clock.wall_ms=wall+clock.monotonic_ms;}
+                                    let payload=extract_worker_payload(&mut event);let clock=capture_clock(origin,&fixture_wall);
                                     #[cfg(test)]
                                     if let Some(credits)=&ingress.credits{credits.observe_capture(&payload,clock);}
                                     let point = spot_ingress.as_ref().and_then(|probe| probe.slot(&payload));
@@ -760,7 +968,7 @@ impl Runtime {
                     }
                 }
                 if unqualified>0 {fail_notified(&failure,&wake,format!("retired {unqualified} pre-ACK frames; owner incomplete"));}
-                if ingress.offer(&sender,&failure,&wake,Event::Disconnected{route:id.clone(),generation})!=OfferResult::Sent {break}
+                if offer_route_event(Event::Disconnected{route:id.clone(),generation},None)!=OfferResult::Sent {break}
                 if worker_stop.load(Ordering::Acquire)||failure.lock().map_or(true,|f|f.is_some()){break}
                 // Subscription or parse uncertainty cannot resume the same physical generation.
                 let _=attempt;
@@ -771,14 +979,18 @@ impl Runtime {
             exit
         }).map_err(|e|e.to_string())?;
         self.serials.insert(route.clone(),0);
-        self.workers.insert(route,Worker {stop,join:Some(join),slot,spot,replacement,token:String::new(),generation:0,connected:false,created_ms,due_ms,spot_ingress:None});Ok(())
+        self.workers.insert(route,Worker {stop,join:Some(join),slot,spot,venue,replacement,token:String::new(),generation:0,connected:false,created_ms,due_ms,spot_ingress:None});Ok(())
     }
     /// Internal Rust opt-in; existing live headers never call this method.
     pub fn enable_handoff(&mut self)->Result<()> {
         if self.control.handoff.is_some(){return Err("configuration handoff already enabled".into())}
         self.control.handoff=Some(Arc::new(Mutex::new(Slot::default())));Ok(())
     }
-    fn target_state(&self)->Targets {Targets{perpetual:self.settings.perpetual_symbols.clone(),spot:self.settings.spot_symbols.clone()}.normalize()}
+    fn target_state(&self)->Targets {Targets {
+        perpetual:self.settings.perpetual_symbols.clone(),
+        spot:self.settings.spot_symbols.clone(),
+        native_spot:self.native_spot.iter().map(|(&venue, sub)| (venue, sub.instruments.clone())).collect(),
+    }.normalize()}
     pub fn handoff_enabled(&self)->bool{self.control.handoff.is_some()}
     fn check_handoff(&self,targets:&Targets)->Result<()> {
         if self.pending_targets.is_some()||!self.retiring.is_empty()||self.workers.values().any(|w|w.replacement){return Err("configuration physical operation busy".into())}
@@ -786,6 +998,16 @@ impl Runtime {
             if symbols.len()>MAX_SYMBOLS||symbols.iter().any(|s|!crate::symbol_valid(s))||symbols.iter().collect::<BTreeSet<_>>().len()!=symbols.len(){return Err("invalid configuration targets".into())}
         }
         if targets.perpetual.is_empty(){return Err("empty configuration perpetual targets".into())}
+        if !targets.native_spot.keys().eq(self.native_spot.keys()) {
+            return Err("configuration native spot owners cannot change".into());
+        }
+        for (&venue, instruments) in &targets.native_spot {
+            let endpoint = &self.native_spot[&venue].endpoint;
+            SpotSocket::validate(venue, endpoint.address, &endpoint.uri, instruments)?;
+            if instruments.keys().any(|symbol| !targets.perpetual.contains(symbol)) {
+                return Err("native spot target lacks perpetual binding".into());
+            }
+        }
         let prospective:BTreeSet<_>=self.memberships.keys().chain(targets.perpetual.iter()).collect();
         if prospective.len()>MAX_SYMBOLS{return Err("lifetime subscription capacity".into())}
         Ok(())
@@ -807,19 +1029,20 @@ impl Runtime {
         for route in routes {
             let Some(worker)=self.workers.remove(&route) else{continue};
             worker.stop.store(true,Ordering::Release);truth.remove(&route);
-            if worker.spot {if worker.generation>0&&!worker.token.is_empty(){rows.push(json!({"type":"spot_route","token":worker.token,"generation":worker.generation,"connected":false,"symbols":self.settings.spot_symbols}));}}
+            if worker.spot {if worker.generation>0&&!worker.token.is_empty(){rows.push(spot_route_row(&worker,false,&self.settings.spot_symbols,&self.native_spot));}}
             else if worker.generation>0 {rows.push(json!({"type":"feed","action":{"type":"retire","route":route}}));}
             self.generations.remove(&route);self.serials.remove(&route);self.retired+=1;
             self.retiring.insert(route,worker);
         }
         Ok(rows)
     }
-    fn collect_worker_exit(&mut self,exit:WorkerExit)->Result<()> {
-        if exit.canceled_post_ack>1{return Err("native worker cancellation count invalid; owner incomplete".into())}
+    fn collect_worker_exit(&mut self,exit:WorkerExit,venue:Option<SpotVenue>)->Result<()> {
+        let max_canceled = venue.map_or(1, |venue| venue.max_quote_rows().max(MAX_SYMBOLS));
+        if exit.canceled_post_ack>max_canceled{return Err("native worker cancellation count invalid; owner incomplete".into())}
         if exit.canceled_post_ack==0{return Ok(())}
         let first=self.failure.lock().map_err(|_|"native failure lock poisoned")?;
         if first.is_none() {
-            self.retired_frames=self.retired_frames.checked_add(u64::from(exit.canceled_post_ack)).ok_or("native retired frame count overflow; owner incomplete")?;
+            self.retired_frames=self.retired_frames.checked_add(exit.canceled_post_ack as u64).ok_or("native retired frame count overflow; owner incomplete")?;
         }
         Ok(())
     }
@@ -827,7 +1050,7 @@ impl Runtime {
         let ready:Vec<_>=self.retiring.iter().filter(|(_,w)|w.join.as_ref().is_none_or(JoinHandle::is_finished)).map(|(r,_)|r.clone()).collect();
         for route in ready {
             let mut worker=self.retiring.remove(&route).unwrap();
-            if let Some(join)=worker.join.take(){let exit=join.join().map_err(|_|"native retiring worker panicked")?;self.collect_worker_exit(exit)?;}
+            if let Some(join)=worker.join.take(){let exit=join.join().map_err(|_|"native retiring worker panicked")?;self.collect_worker_exit(exit,worker.venue)?;}
         }
         Ok(())
     }
@@ -846,27 +1069,40 @@ impl Runtime {
             if plan.before!=self.target_state(){return Err("configuration physical baseline changed".into())}
             self.check_handoff(&plan.after)?;
             let perp=plan.before.perpetual!=plan.after.perpetual;let spot=plan.before.spot!=plan.after.spot;
-            let routes=self.workers.iter().filter(|(_,w)|if w.spot{spot}else{perp}).map(|(r,_)|r.clone()).collect();
+            let routes=self.workers.iter().filter(|(_,w)|match w.venue {
+                Some(venue) => plan.before.native_spot.get(&venue) != plan.after.native_spot.get(&venue),
+                None if w.spot => spot,
+                None => perp,
+            }).map(|(r,_)|r.clone()).collect();
             rows.extend(self.detach_handoff(routes)?);
             if perp {
                 for s in plan.before.perpetual.iter().chain(&plan.after.perpetual){if plan.before.perpetual.contains(s)!=plan.after.perpetual.contains(s){*self.memberships.entry(s.clone()).or_default()+=1;}}
                 rows.push(json!({"type":"feed","action":{"type":"targets","symbols":plan.after.perpetual}}));
             }
-            if perp{self.settings.perpetual_symbols=plan.after.perpetual.clone();}if spot{self.settings.spot_symbols=plan.after.spot.clone();}self.pending_targets=Some(plan);
+            if perp{self.settings.perpetual_symbols=plan.after.perpetual.clone();}if spot{self.settings.spot_symbols=plan.after.spot.clone();}
+            for (&venue, instruments) in &plan.after.native_spot {self.native_spot.get_mut(&venue).unwrap().instruments=instruments.clone();}
+            self.pending_targets=Some(plan);
         }
         self.reap_ready()?;
         if self.retiring.is_empty() {
             if let Some(plan)=self.pending_targets.take() {
                 if plan.before.perpetual!=plan.after.perpetual {self.spawn(0,false,false)?;if self.settings.mode!="single"{self.spawn(1,false,false)?;}}
                 if plan.before.spot!=plan.after.spot&&!plan.after.spot.is_empty(){self.spawn(0,true,false)?;}
+                for (&venue, instruments) in &plan.after.native_spot {
+                    if !instruments.is_empty() && plan.before.native_spot.get(&venue) != Some(instruments) {
+                        self.spawn_worker(0,true,false,Some(venue))?;
+                    }
+                }
             }
             let truth=self.control.physical.lock().map_err(|_|"physical truth poisoned")?;
+            let mut slot=slot.lock().map_err(|_|"configuration slot poisoned")?;
             let required_perpetual=if self.settings.mode=="single"{1}else{2};
-            let qualified=self.workers.values().filter(|w|!w.spot).count()==required_perpetual&&self.workers.values().filter(|w|w.spot).count()==usize::from(!self.settings.spot_symbols.is_empty())&&self.workers.iter().all(|(route,w)| {
-                let targets=if w.spot{&self.settings.spot_symbols}else{&self.settings.perpetual_symbols};
-                truth.get(route).is_some_and(|s|w.connected&&s["connected"]==true&&s["token"]==w.token&&s["generation"]==w.generation&&s["applied"].as_array().and_then(|a|a.iter().map(Value::as_str).collect::<Option<BTreeSet<_>>>())==Some(targets.iter().map(String::as_str).collect()))
+            let expected_spot = usize::from(!self.settings.spot_symbols.is_empty()) + self.native_spot.values().filter(|sub| !sub.instruments.is_empty()).count();
+            let targets = self.target_state();
+            let qualified=self.workers.values().filter(|w|!w.spot).count()==required_perpetual&&self.workers.values().filter(|w|w.spot).count()==expected_spot&&self.workers.iter().all(|(route,w)| {
+                truth.get(route).is_some_and(|s|!slot.requires_ack(s)||(w.connected&&s["connected"]==true&&s["token"]==w.token&&s["generation"]==w.generation&&s["applied"].as_array().and_then(|a|a.iter().map(Value::as_str).collect::<Option<BTreeSet<_>>>())==targets.applied(s)))
             });
-            if qualified {slot.lock().map_err(|_|"configuration slot poisoned")?.ready(&truth);}else{slot.lock().map_err(|_|"configuration slot poisoned")?.not_ready();}
+            if qualified {slot.ready(&truth);}else{slot.not_ready();}
         }
         Ok(rows)
     }
@@ -911,6 +1147,7 @@ impl Runtime {
     /// Subscription changes retire all old subscription truth before reconnect.
     /// Perpetual make-before-break is reserved for rotations with identical targets.
     pub fn targets(&mut self,perpetual:Vec<String>,spot:Vec<String>)->Result<Vec<Value>> {
+        if !self.native_spot.is_empty() {return Err("native spot targets require whole-plan handoff".into())}
         if self.handoff_fenced(){return Err("configuration physical operation busy".into())}
         if !self.retiring.is_empty(){return Err("native physical retirement busy".into())}
         for symbols in [&perpetual,&spot]{if symbols.is_empty()||symbols.len()>MAX_SYMBOLS||symbols.iter().any(|s|!crate::symbol_valid(s))||symbols.iter().collect::<BTreeSet<_>>().len()!=symbols.len(){return Err("invalid target change".into())}}
@@ -924,10 +1161,10 @@ impl Runtime {
     fn retire(&mut self,route:&str)->Result<Vec<Value>> {
         let Some(mut worker)=self.workers.remove(route) else{return Ok(vec![])};
         worker.stop.store(true,Ordering::Release);
-        if let Some(join)=worker.join.take(){let exit=join.join().map_err(|_|"native worker panicked")?;self.collect_worker_exit(exit)?;}
+        if let Some(join)=worker.join.take(){let exit=join.join().map_err(|_|"native worker panicked")?;self.collect_worker_exit(exit,worker.venue)?;}
         self.control.physical.lock().map_err(|_|"physical truth poisoned")?.remove(route);
         self.retired+=1;self.generations.remove(route);self.serials.remove(route);
-        Ok(if worker.spot {vec![json!({"type":"spot_route","token":worker.token,"generation":worker.generation.max(1),"connected":false,"symbols":self.settings.spot_symbols})]}else if worker.generation>0 {vec![json!({"type":"feed","action":{"type":"retire","route":route}})]}else{vec![]})
+        Ok(if worker.spot {vec![spot_route_row(&worker,false,&self.settings.spot_symbols,&self.native_spot)]}else if worker.generation>0 {vec![json!({"type":"feed","action":{"type":"retire","route":route}})]}else{vec![]})
     }
     pub fn recv(&mut self,timeout:Duration)->Result<Vec<Value>> {
         let start=Instant::now();let result=self.recv_inner(timeout);self.recv_total.record(start);result
@@ -970,22 +1207,41 @@ impl Runtime {
         }
         let waiting=Instant::now();let received=self.receive_event(timeout);self.channel_wait.record(waiting);
         let Some(event)=received? else{return Ok(vec![])};
-        let route=match &event{Event::Connected{route,..}|Event::Frame{route,..}|Event::Disconnected{route,..}=>route,_=>return Err("native ingress credit retained after dequeue; owner incomplete".into())};
-        if !self.workers.contains_key(route){self.retired+=1;if matches!(event,Event::Frame{..}){self.retired_frames+=1;}return Ok(vec![])}
+        let route=match &event{Event::Connected{route,..}|Event::Frame{route,..}|Event::VenueQuote{route,..}|Event::Disconnected{route,..}=>route,_=>return Err("native ingress credit retained after dequeue; owner incomplete".into())};
+        if !self.workers.contains_key(route){self.retired+=1;if event.is_quote(){self.retired_frames+=1;}return Ok(vec![])}
         let mut rows=Vec::new();
         match event {
             Event::Connected{route,token,generation}=>{
-                let worker=self.workers.get_mut(&route).unwrap();worker.token=token.clone();worker.generation=generation;worker.connected=true;self.generations.insert(route.clone(),generation);
-                if worker.spot {
+                let worker=self.workers.get_mut(&route).unwrap();
+                if worker.venue.is_some() && (generation<=worker.generation || !venue_current(&self.control, &route, &token, generation)?) {
+                    return Ok(vec![]);
+                }
+                worker.token=token.clone();worker.generation=generation;worker.connected=true;self.generations.insert(route.clone(),generation);
+                if worker.spot && worker.venue.is_none() {
                     worker.spot_ingress = self.control.spot_ingress_generation(&token, generation);
                 }
-                if worker.spot{rows.push(json!({"type":"spot_route","token":token,"generation":generation,"connected":true,"symbols":self.settings.spot_symbols}));}
+                if worker.spot{rows.push(spot_route_row(worker,true,&self.settings.spot_symbols,&self.native_spot));}
                 else{rows.push(json!({"type":"feed","action":{"type":"route","route":route,"slot":worker.slot,"token":token,"generation":generation,"connected":true,"replacement":worker.replacement,"applied":self.settings.perpetual_symbols}}));}
             },
             Event::Disconnected{route,generation}=>{
                 let worker=self.workers.get_mut(&route).unwrap();if worker.generation!=generation||generation==0{return Ok(vec![])}worker.connected=false;
-                if worker.spot {rows.push(json!({"type":"spot_route","token":worker.token,"generation":generation,"connected":false,"symbols":self.settings.spot_symbols}));}
+                if worker.spot {rows.push(spot_route_row(worker,false,&self.settings.spot_symbols,&self.native_spot));}
                 else {rows.push(json!({"type":"feed","action":{"type":"route","route":route,"slot":worker.slot,"token":worker.token,"generation":generation,"connected":false,"replacement":worker.replacement,"applied":[]}}));}
+            },
+            Event::VenueQuote{route,token,generation,quote,clock,batch_has_more}=>{
+                let worker=&self.workers[&route];
+                let venue=worker.venue.ok_or("missing native spot venue")?;
+                if !worker.connected || worker.token!=token || worker.generation!=generation
+                    || !venue_current(&self.control,&route,&token,generation)?
+                    || !self.native_spot[&venue].instruments.contains_key(&quote.symbol) {
+                    self.retired_frames+=1;
+                    return Ok(vec![]);
+                }
+                let processing=self.clock();
+                self.supplied+=1;
+                self.queue_age.record(processing.monotonic_ms-clock.monotonic_ms);
+                self.source_age.record(processing.wall_ms-quote.source_ms);
+                rows.push(json!({"type":"native_spot_quote","venue":venue,"token":token,"generation":generation,"quote":quote,"now_ms":processing.wall_ms,"batch_has_more":batch_has_more}));
             },
             Event::Frame{route,token,generation,mut payload,clock}=>{
                 let processing=self.clock();
@@ -1045,7 +1301,7 @@ impl Runtime {
         }
         let mut first=None;for route in self.workers.keys().cloned().collect::<Vec<_>>(){if let Err(e)=self.retire(&route){if first.is_none(){first=Some(e)}}}
         if let Err(error)=self.finish_retiring(){if first.is_none(){first=Some(error)}}
-        let mut purged=0;while let Ok(event)=self.receiver.try_recv(){let event=event.release_credit();if matches!(event,Event::Frame{..}){purged+=1;}else{self.retired+=1;}}
+        let mut purged=0;while let Ok(event)=self.receiver.try_recv(){let event=event.release_credit();if event.is_quote(){purged+=1;}else{self.retired+=1;}}
         if purged>0 {let error=format!("shutdown retained {purged} unconsumed native frames; owner incomplete");fail_notified(&self.failure,&self.control.wake,error.clone());if first.is_none(){first=Some(error)}}
         self.retired_frames+=purged;
         if let Ok(mut retained)=self.control.failure_accounting.lock(){if let Some(report)=retained.as_mut(){report["cleanup"]=json!({"workers_after_shutdown":self.workers.len(),"purged_frames":purged,"retired_frames_total":self.retired_frames});if self.control.handoff.is_some(){report["cleanup"]["active_workers"]=json!(self.workers.len());report["cleanup"]["retiring_workers"]=json!(self.retiring.len());report["cleanup"]["cleanup_complete"]=json!(self.workers.is_empty()&&self.retiring.is_empty()&&purged==0);}}}
@@ -1360,8 +1616,93 @@ mod handoff_tests {
     pub(super) fn empty_runtime()->Runtime {
         let settings:Settings=serde_json::from_value(json!({"session":"handoff","mode":"single","perpetual":{"address":"127.0.0.1:1","uri":"ws://127.0.0.1:1"},"spot":{"address":"127.0.0.1:1","uri":"ws://127.0.0.1:1"},"perpetual_symbols":["ETHUSDT"],"spot_symbols":["ETHUSDT"]})).unwrap();
         let control=Control::default();let (sender,receiver)=mpsc::sync_channel(CAPACITY);
-        Runtime{settings,workers:BTreeMap::new(),sender,receiver,failure:control.failure.clone(),origin:control.origin,next:0,generations:BTreeMap::new(),memberships:BTreeMap::from([("ETHUSDT".into(),1)]),serials:BTreeMap::new(),supplied:0,retired:0,fixture_wall:control.fixture_wall.clone(),anchored:false,received:Arc::new(AtomicU64::new(0)),retired_frames:0,queue_age:AgeStats::default(),source_age:AgeStats::default(),control,recv_total:Timing::default(),channel_wait:Timing::default(),lifecycle:LifecyclePolicy::default(),retiring:BTreeMap::new(),pending_targets:None,ingress_mode:IngressMode::Off,ingress_credits:None}
+        Runtime{settings,workers:BTreeMap::new(),sender,receiver,native_spot:BTreeMap::new(),native_spot_generation:Arc::new(AtomicU64::new(0)),failure:control.failure.clone(),origin:control.origin,next:0,generations:BTreeMap::new(),memberships:BTreeMap::from([("ETHUSDT".into(),1)]),serials:BTreeMap::new(),supplied:0,retired:0,fixture_wall:control.fixture_wall.clone(),anchored:false,received:Arc::new(AtomicU64::new(0)),retired_frames:0,queue_age:AgeStats::default(),source_age:AgeStats::default(),control,recv_total:Timing::default(),channel_wait:Timing::default(),lifecycle:LifecyclePolicy::default(),retiring:BTreeMap::new(),pending_targets:None,ingress_mode:IngressMode::Off,ingress_credits:None}
     }
+
+    #[test]
+    fn native_route_detach_with_full_ingress_preserves_first_failure() {
+        use std::net::TcpListener;
+        use tungstenite::Message;
+
+        let limit = Duration::from_secs(4);
+        let poll = Duration::from_millis(5);
+        for mode in [IngressMode::Off, IngressMode::V1] {
+            for (acknowledged, fatal) in [(true, false), (false, false), (true, true)] {
+                let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+                listener.set_nonblocking(true).unwrap();
+                let address = listener.local_addr().unwrap();
+                let mut runtime = empty_runtime();
+                runtime.enable_handoff().unwrap();
+                runtime.ingress_mode = mode;
+                runtime.native_spot.insert(SpotVenue::Okx, SpotSubscription {
+                    endpoint:Endpoint {address,uri:format!("ws://{address}/fixture")},
+                    instruments:BTreeMap::from([("ETHUSDT".into(),"ETH-USDT".into())]),
+                });
+                runtime.spawn_worker(0,true,false,Some(SpotVenue::Okx)).unwrap();
+                let deadline = Instant::now() + limit;
+                let tcp = loop {
+                    assert!(Instant::now()<deadline,"native route did not dial");
+                    if let Ok((tcp,_)) = listener.accept() {break tcp;}
+                    thread::sleep(poll);
+                };
+                tcp.set_read_timeout(Some(limit)).unwrap();
+                tcp.set_write_timeout(Some(limit)).unwrap();
+                let mut peer = tungstenite::accept(tcp).unwrap();
+                assert!(matches!(peer.read().unwrap(),Message::Text(_)));
+                let ack = Message::Text(json!({"event":"subscribe","arg":{"channel":"tickers","instId":"ETH-USDT"}}).to_string().into());
+                if acknowledged {
+                    peer.send(ack.clone()).unwrap();
+                    loop {
+                        assert!(Instant::now()<deadline,"native route did not ACK");
+                        if runtime.recv(poll).unwrap().iter().any(|row| row["connected"]==true) {break;}
+                    }
+                }
+                peer.send(Message::Ping(vec![1].into())).unwrap();
+                assert_eq!(peer.read().unwrap(),Message::Pong(vec![1].into()));
+                for _ in 0..CAPACITY {
+                    assert!(runtime.sender.try_send(Event::Disconnected{route:"fixture-queue".into(),generation:1}).is_ok());
+                }
+                if fatal {
+                    fail(&runtime.failure,"first fixture failure".into());
+                }
+                let retired = runtime.request_handoff_shutdown().unwrap();
+                assert_eq!(retired.len(),usize::from(acknowledged));
+                assert!(runtime.control.physical.lock().unwrap().is_empty());
+                if !acknowledged {
+                    let _ = peer.send(ack);
+                }
+                while !runtime.retiring.is_empty() {
+                    assert!(Instant::now()<deadline,"native route did not retire");
+                    runtime.reap_ready().unwrap();
+                    thread::sleep(poll);
+                }
+                assert_eq!(runtime.receiver.try_iter().count(),CAPACITY);
+                assert_eq!(runtime.failure.lock().unwrap().as_deref(),fatal.then_some("first fixture failure"));
+                if fatal {
+                    assert_eq!(runtime.handoff_shutdown_ready().unwrap_err(),"first fixture failure");
+                } else {
+                    assert!(runtime.handoff_shutdown_ready().unwrap());
+                }
+                runtime.shutdown().unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn buffered_quote_order_uses_sequence_then_source_and_decimal_equality() {
+        let quote = |sequence, source_ms, bid: &str| SpotQuote {
+            symbol:"ETHUSDT".into(),bid:bid.into(),ask:"2".into(),source_ms,receive_ms:99,sequence,
+        };
+        let old = quote(Some(3),20,"1.00");
+        assert!(buffered_quote_is_old(&old,&quote(Some(2),21,"1")));
+        assert!(buffered_quote_is_old(&old,&quote(Some(3),21,"1")));
+        assert!(!buffered_quote_is_old(&old,&quote(Some(4),19,"1")));
+        assert!(buffered_quote_is_old(&old,&quote(None,19,"1.1")));
+        assert!(buffered_quote_is_old(&old,&quote(None,20,"1e0")));
+        assert!(!buffered_quote_is_old(&old,&quote(None,20,"1.1")));
+        assert!(!buffered_quote_is_old(&old,&quote(None,21,"1")));
+    }
+
     #[test]
     fn configuration_retirement_progress_keeps_status_responsive_with_real_unfinished_handle(){
         let mut runtime=empty_runtime();runtime.enable_handoff().unwrap();
@@ -1370,8 +1711,8 @@ mod handoff_tests {
         physical.lock().unwrap().insert("old".into(),json!({"token":"old-token","generation":1,"connected":true,"applied":["ETHUSDT"]}));
         let resurrected=Arc::new(AtomicBool::new(false));let checked=resurrected.clone();
         let join=thread::spawn(move||{while !release.load(Ordering::Acquire){thread::sleep(Duration::from_millis(1));}if let Some(row)=physical.lock().unwrap().get_mut("old"){row["connected"]=json!(true);checked.store(true,Ordering::Release);}WorkerExit::default()});
-        runtime.workers.insert("old".into(),Worker{stop:stopped.clone(),join:Some(join),slot:0,spot:false,replacement:false,token:"old-token".into(),generation:1,connected:true,created_ms:0,due_ms:u64::MAX,spot_ingress:None});
-        let targets=Targets{perpetual:vec!["BTCUSDT".into()],spot:vec![]};runtime.prepare_handoff(1,targets.clone()).unwrap();
+        runtime.workers.insert("old".into(),Worker{stop:stopped.clone(),join:Some(join),slot:0,spot:false,venue:None,replacement:false,token:"old-token".into(),generation:1,connected:true,created_ms:0,due_ms:u64::MAX,spot_ingress:None});
+        let targets=Targets{perpetual:vec!["BTCUSDT".into()],spot:vec![],native_spot:Default::default()};runtime.prepare_handoff(1,targets.clone()).unwrap();
         let slot=runtime.control.handoff.clone().unwrap();
         assert_eq!(slot.lock().unwrap().status().0.unwrap().phase,Phase::Prepared);
         assert!(runtime.progress_handoff().unwrap().is_empty());assert_eq!(runtime.workers.len(),1);assert!(!stopped.load(Ordering::Acquire));
@@ -1396,12 +1737,12 @@ mod handoff_tests {
     #[test]
     fn configuration_reordered_targets_preserve_worker_identity_and_due_time(){
         let mut runtime=empty_runtime();runtime.settings.perpetual_symbols=vec!["ETHUSDT".into(),"BTCUSDT".into()];runtime.settings.spot_symbols=vec!["ETHUSDT".into(),"BTCUSDT".into()];runtime.memberships.insert("BTCUSDT".into(),1);runtime.enable_handoff().unwrap();
-        runtime.workers.insert("old".into(),Worker{stop:Arc::new(AtomicBool::new(false)),join:None,slot:0,spot:false,replacement:false,token:"token".into(),generation:7,connected:true,created_ms:4,due_ms:99,spot_ingress:None});
+        runtime.workers.insert("old".into(),Worker{stop:Arc::new(AtomicBool::new(false)),join:None,slot:0,spot:false,venue:None,replacement:false,token:"token".into(),generation:7,connected:true,created_ms:4,due_ms:99,spot_ingress:None});
         runtime.control.physical.lock().unwrap().insert("old".into(),json!({"token":"token","generation":7,"connected":true,"applied":["ETHUSDT","BTCUSDT"]}));
-        runtime.workers.insert("spot".into(),Worker{stop:Arc::new(AtomicBool::new(false)),join:None,slot:0,spot:true,replacement:false,token:"spot-token".into(),generation:8,connected:true,created_ms:5,due_ms:100,spot_ingress:None});
+        runtime.workers.insert("spot".into(),Worker{stop:Arc::new(AtomicBool::new(false)),join:None,slot:0,spot:true,venue:None,replacement:false,token:"spot-token".into(),generation:8,connected:true,created_ms:5,due_ms:100,spot_ingress:None});
         runtime.control.physical.lock().unwrap().insert("spot".into(),json!({"token":"spot-token","generation":8,"connected":true,"applied":["ETHUSDT","BTCUSDT"]}));
         let memberships=runtime.memberships.clone();let truth=runtime.control.physical.lock().unwrap().clone();
-        runtime.prepare_handoff(1,Targets{perpetual:vec!["BTCUSDT".into(),"ETHUSDT".into()],spot:vec!["BTCUSDT".into(),"ETHUSDT".into()]}).unwrap();
+        runtime.prepare_handoff(1,Targets{perpetual:vec!["BTCUSDT".into(),"ETHUSDT".into()],spot:vec!["BTCUSDT".into(),"ETHUSDT".into()],native_spot:Default::default()}).unwrap();
         runtime.control.handoff.as_ref().unwrap().lock().unwrap().commit_logical(1,||Ok(())).unwrap();
         assert!(runtime.progress_handoff().unwrap().is_empty());assert_eq!(runtime.memberships,memberships);assert_eq!(*runtime.control.physical.lock().unwrap(),truth);
         assert_eq!((runtime.workers["old"].token.as_str(),runtime.workers["old"].generation,runtime.workers["old"].due_ms),("token",7,99));assert!(runtime.retiring.is_empty());
@@ -1410,7 +1751,7 @@ mod handoff_tests {
     }
     #[test]
     fn configuration_preexisting_failure_wins_without_side_effects(){
-        let mut runtime=empty_runtime();runtime.enable_handoff().unwrap();runtime.prepare_handoff(1,Targets{perpetual:vec!["BTCUSDT".into()],spot:vec![]}).unwrap();
+        let mut runtime=empty_runtime();runtime.enable_handoff().unwrap();runtime.prepare_handoff(1,Targets{perpetual:vec!["BTCUSDT".into()],spot:vec![],native_spot:Default::default()}).unwrap();
         fail(&runtime.failure,"original transport failure".into());
         assert_eq!(runtime.progress_handoff().unwrap_err(),"original transport failure");
         let slot=runtime.control.handoff.as_ref().unwrap().lock().unwrap();assert_eq!(slot.status().0.unwrap().phase,Phase::Failed);assert_eq!(slot.first_failure().as_deref(),Some("original transport failure"));
@@ -1419,7 +1760,7 @@ mod handoff_tests {
     #[test]
     fn configuration_slot_is_bounded_pure_and_preserves_first_failure(){
         let mut runtime=empty_runtime();runtime.enable_handoff().unwrap();let before=runtime.target_state();
-        let targets=Targets{perpetual:vec!["BTCUSDT".into()],spot:vec![]};runtime.prepare_handoff(1,targets.clone()).unwrap();
+        let targets=Targets{perpetual:vec!["BTCUSDT".into()],spot:vec![],native_spot:Default::default()};runtime.prepare_handoff(1,targets.clone()).unwrap();
         assert_eq!(before,runtime.target_state());assert_eq!(runtime.settings.perpetual_symbols,["ETHUSDT"]);assert_eq!(runtime.memberships.len(),1);
         assert!(runtime.prepare_handoff(2,targets.clone()).is_err());let slot=runtime.control.handoff.clone().unwrap();
         slot.lock().unwrap().abort(1).unwrap();runtime.prepare_handoff(2,targets.clone()).unwrap();
@@ -1449,7 +1790,7 @@ mod rotation_reclamation_tests {
     impl Drop for Release {fn drop(&mut self){self.release();}}
 
     fn worker(token:&str,generation:u64,replacement:bool)->Worker {
-        Worker{stop:Arc::new(AtomicBool::new(false)),join:None,slot:0,spot:false,replacement,token:token.into(),generation,connected:true,created_ms:0,due_ms:u64::MAX,spot_ingress:None}
+        Worker{stop:Arc::new(AtomicBool::new(false)),join:None,slot:0,spot:false,venue:None,replacement,token:token.into(),generation,connected:true,created_ms:0,due_ms:u64::MAX,spot_ingress:None}
     }
     fn install(runtime:&mut Runtime,route:&str,worker:Worker) {
         runtime.control.physical.lock().unwrap().insert(route.into(),json!({"type":"route","route":route,"slot":worker.slot,"spot":worker.spot,"token":worker.token,"generation":worker.generation,"connected":true,"replacement":worker.replacement,"applied":["ETHUSDT"]}));
@@ -2411,6 +2752,58 @@ mod ingress_credit_v2_tests {
     fn configured(pool:&Arc<IngressCredits>)->Runtime {
         let mut runtime=empty_runtime();runtime.enable_handoff().unwrap();
         runtime.ingress_mode=IngressMode::V2;runtime.ingress_credits=Some(pool.clone());runtime
+    }
+
+    #[test]
+    fn venue_batch_captures_every_row_and_accounts_for_benign_stop_tail() {
+        for fatal in [false, true] {
+            let pool = IngressCredits::new();
+            let mut runtime = configured(&pool);
+            let stop = Arc::new(AtomicBool::new(false));
+            let permits: Vec<_> = (1..CAPACITY).map(|_| {
+                pool.reserve(&stop, &runtime.failure, None).ok().unwrap()
+            }).collect();
+            let ingress = ingress(&pool, stop.clone());
+            let (sender, failure, wake, received) = (
+                runtime.sender.clone(), runtime.failure.clone(),
+                runtime.control.wake.clone(), runtime.received.clone(),
+            );
+            let join = thread::spawn(move || {
+                let clock = Clock {wall_ms:WALL, monotonic_ms:1};
+                let quotes = (1..=3).map(|sequence| SpotQuote {
+                    symbol:"ETHUSDT".into(), bid:"1".into(), ask:"2".into(),
+                    source_ms:WALL, receive_ms:WALL, sequence:Some(sequence),
+                }).collect();
+                offer_venue_batch(quotes, &received, |quote,batch_has_more| ingress.offer(&sender, &failure, &wake,
+                    Event::VenueQuote {route:"okx".into(),token:"test-okx".into(),generation:2,quote,clock,batch_has_more}))
+            });
+            await_pressure(&pool);
+            assert_eq!(runtime.received.load(Ordering::Acquire), 3);
+            if fatal {
+                fail(&runtime.failure, "original batch ingress failure".into());
+            }
+            stop.store(true, Ordering::Release);
+            let outcome = join.join().unwrap();
+            if fatal {
+                assert_eq!(outcome.unwrap_err(), "ingress failed");
+                assert_eq!(runtime.failure.lock().unwrap().as_deref(), Some("original batch ingress failure"));
+                assert_eq!(runtime.retired_frames, 0);
+            } else {
+                let canceled_post_ack = outcome.unwrap();
+                assert_eq!(canceled_post_ack, 2);
+                assert!(runtime.collect_worker_exit(WorkerExit {canceled_post_ack}, None).is_err());
+                runtime.collect_worker_exit(WorkerExit {canceled_post_ack}, Some(SpotVenue::Okx)).unwrap();
+                assert_eq!(runtime.retired_frames, 2);
+            }
+            let Event::VenueQuote {quote,clock,batch_has_more,..} = runtime.receiver.try_recv().unwrap().release_credit() else {
+                panic!("expected the first batch quote");
+            };
+            assert_eq!(quote.sequence, Some(1));
+            assert_eq!((clock.wall_ms,clock.monotonic_ms,batch_has_more),(WALL,1,true));
+            assert!(matches!(runtime.receiver.try_recv(), Err(mpsc::TryRecvError::Empty)));
+            drop(permits);
+            assert_eq!(free(&pool), CAPACITY);
+        }
     }
 
     #[test]
