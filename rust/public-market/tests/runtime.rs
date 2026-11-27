@@ -107,6 +107,7 @@ mod native_bn_decimal_string_tests {
     struct WireFixture {
         settings:Settings,release:Arc<AtomicBool>,stop:Arc<AtomicBool>,
         errors:Arc<Mutex<Vec<String>>>,join:Option<std::thread::JoinHandle<usize>>,
+        unclean_closes:Arc<Mutex<Vec<String>>>,
     }
     impl WireFixture {
         fn start(role:&str,fields:[String;4])->Self {
@@ -114,6 +115,8 @@ mod native_bn_decimal_string_tests {
             let address=listener.local_addr().unwrap();let target=role.to_owned();
             let stop=Arc::new(AtomicBool::new(false));let release=Arc::new(AtomicBool::new(false));let errors=Arc::new(Mutex::new(Vec::new()));
             let (server_stop,server_release,server_errors)=(stop.clone(),release.clone(),errors.clone());
+            let unclean_closes = Arc::new(Mutex::new(Vec::new()));
+            let server_unclean_closes = unclean_closes.clone();
             let join=std::thread::spawn(move||{
                 let mut peers=Vec::new();
                 while !server_stop.load(Ordering::Acquire) {
@@ -122,6 +125,7 @@ mod native_bn_decimal_string_tests {
                         Err(error)=>{server_errors.lock().unwrap().push(error.to_string());break},
                     };
                     let (stop,release,errors,target,fields)=(server_stop.clone(),server_release.clone(),server_errors.clone(),target.clone(),fields.clone());
+                    let unclean_closes = server_unclean_closes.clone();
                     peers.push(std::thread::spawn(move||{
                         let served=(||->std::result::Result<(),String>{
                             stream.set_read_timeout(Some(Duration::from_millis(500))).map_err(|e|e.to_string())?;
@@ -139,6 +143,10 @@ mod native_bn_decimal_string_tests {
                                 match socket.read() {
                                     Err(tungstenite::Error::Io(e)) if matches!(e.kind(),std::io::ErrorKind::TimedOut|std::io::ErrorKind::WouldBlock)=>{},
                                     Ok(Message::Close(_))|Err(tungstenite::Error::ConnectionClosed)|Err(tungstenite::Error::AlreadyClosed)=>break,
+                                    Err(tungstenite::Error::Protocol(tungstenite::error::ProtocolError::ResetWithoutClosingHandshake)) => {
+                                        unclean_closes.lock().unwrap().push(path.clone());
+                                        break;
+                                    }
                                     Err(error)=>{if !stop.load(Ordering::Acquire){return Err(error.to_string())}break},_=>{},
                                 }
                             }Ok(())
@@ -152,7 +160,7 @@ mod native_bn_decimal_string_tests {
                 "perpetual":{"address":address,"uri":format!("ws://localhost:{}/perp",address.port())},
                 "spot":{"address":address,"uri":format!("ws://localhost:{}/spot",address.port())},
                 "perpetual_symbols":["BTCUSDT"],"spot_symbols":["BTCUSDT"]})).unwrap();
-            Self{settings,release,stop,errors,join:Some(join)}
+            Self{settings,release,stop,errors,join:Some(join),unclean_closes}
         }
         fn finish(&mut self)->(usize,Vec<String>) {
             self.stop.store(true,Ordering::Release);
@@ -191,6 +199,12 @@ mod native_bn_decimal_string_tests {
         loop {let _=runtime.shutdown();if runtime.accounting()["workers"]==0{break}assert!(Instant::now()<cleanup_deadline,"runtime retained a worker");std::thread::sleep(Duration::from_millis(5));}
         assert_eq!(runtime.accounting()["workers"],0);drop(runtime);
         let (peers,errors)=fixture.finish();assert_eq!(peers,2);assert!(errors.is_empty(),"fixture errors: {errors:?}");
+        let unclean_closes = fixture.unclean_closes.lock().unwrap();
+        if !unclean_closes.is_empty() {
+            assert!(configured && result.as_ref().err().map(String::as_str) == Some(STRICT_ERROR)
+                    && after["supplied"] == supplied,
+                    "unclean peer close without the expected fail-closed result: {unclean_closes:?}");
+        }
         (result,after,supplied)
     }
 
@@ -420,8 +434,8 @@ mod foundation_runtime_tests {
         let mut fixture=RuntimeFixture::start(Scenario::ChangedTargets);
         let mut runtime=Runtime::start_configured(fixture.settings.clone()).unwrap();
         let mut selector=configured_selector(&runtime);recv_until_acknowledged(&mut runtime,2,&mut selector);
-        let before=truth(&runtime);assert_truth(&before,&Targets{perpetual:vec!["BTCUSDT".into()],spot:vec!["BTCUSDT".into()]});
-        let targets=Targets{perpetual:vec!["ETHUSDT".into()],spot:vec!["SOLUSDT".into()]};
+        let before=truth(&runtime);assert_truth(&before,&Targets{perpetual:vec!["BTCUSDT".into()],spot:vec!["BTCUSDT".into()],native_spot:Default::default()});
+        let targets=Targets{perpetual:vec!["ETHUSDT".into()],spot:vec!["SOLUSDT".into()],native_spot:Default::default()};
         runtime.prepare_handoff(41,targets.clone()).unwrap();assert_eq!(phase(&runtime),Phase::Prepared);
         runtime.revalidate_handoff(41).unwrap();let slot=runtime.control().handoff.unwrap();
         slot.lock().unwrap().commit_logical(41,||selector.apply(Action::Targets{symbols:targets.perpetual.clone()}).map(|_|())).unwrap();

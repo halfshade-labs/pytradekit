@@ -1047,7 +1047,7 @@ class HuobiAuxiliary(Enum):
 class OkexAuxiliary(Enum):
     url = 'https://www.okx.com'
     url_ws = 'wss://ws.okx.com:8443/ws/v5/private'
-    url_ws_public = 'wss://ws.okx.com:8443/ws/v5/public'
+    url_ws_public = 'wss://ws.okx.com/ws/v5/public'
     url_ws_private = 'wss://ws.okx.com:8443/ws/v5/private'
     perp_url = 'https://www.okx.com'
     url_perp_position = '/api/v5/account/positions'

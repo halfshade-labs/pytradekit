@@ -7,8 +7,9 @@ publish = false
 
 [dependencies]
 serde = { version = "=1.0.228", default-features = false, features = ["std", "derive"] }
-serde_json = { version = "=1.0.145", default-features = false, features = ["std"] }
+serde_json = { version = "=1.0.145", default-features = false, features = ["std", "raw_value"] }
 rust_decimal = { version = "=1.39.0", default-features = false, features = ["std"] }
 tungstenite = { version = "=0.28.0", default-features = false, features = ["handshake", "native-tls"] }
 
 native-tls = "=0.2.18"
+flate2 = "=1.1.5"
