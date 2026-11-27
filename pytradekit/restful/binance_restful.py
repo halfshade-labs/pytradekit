@@ -33,6 +33,8 @@ RETRY_INTERVAL = 5
 # 长生命周期复用 session 时下次请求会拿到死 socket 触发 RemoteDisconnected。
 # 仅对 GET 自动重试，避免 POST/DELETE（下单/撤单）被重复执行。
 SYNC_HTTP_TIMEOUT = (5, 30)  # (connect, read)
+_POSITION_CLOCK_TIMEOUT = (1, 1)
+_POSITION_CLOCK_MAX_RTT_NS = 1_000_000_000
 _SIGNED_GET_TRANSPORT_HEADER = 'X-PTK-Signed-Get-Transport'
 _SIGNED_GET_TRANSPORT_VALUE = 'single-attempt'
 
@@ -196,14 +198,7 @@ class BinanceClient:
             }
             self._sign_parameters(signed_params, self.get_timestamp())
             try:
-                response = self.session.get(
-                    url, headers={
-                        'X-MBX-APIKEY': self.api_key,
-                        _SIGNED_GET_TRANSPORT_HEADER: _SIGNED_GET_TRANSPORT_VALUE,
-                    },
-                    params=signed_params, timeout=SYNC_HTTP_TIMEOUT,
-                    allow_redirects=False, stream=True,
-                )
+                response = self._send_signed_get(url, signed_params)
             except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as error:
                 cause = _get_transport_cause(error)
                 if (isinstance(error, requests.exceptions.SSLError)
@@ -215,18 +210,70 @@ class BinanceClient:
                 )
                 retry.sleep()
                 continue
-            if 300 <= response.status_code < 400:
-                response.close()
-                raise ExchangeException('Signed GET redirect rejected')
             should_retry = retry.is_retry(
                 'GET', response.status_code,
                 has_retry_after=bool(response.headers.get('Retry-After')),
             )
             if not should_retry or attempt == max_attempts - 1:
-                return self._consume_signed_get_response(response)
+                response = self._consume_signed_get_response(response)
+                if attempt < max_attempts - 1 and self._is_position_clock_rejection(url, response):
+                    return self._recover_position_query_clock(url, signed_params, response)
+                return response
             retry = retry.increment(method='GET', response=response.raw)
             response.close()
             retry.sleep(response.raw)
+
+    def _send_signed_get(self, url: str, params: Dict[str, Any]) -> requests.Response:
+        response = self.session.get(
+            url, headers={
+                'X-MBX-APIKEY': self.api_key,
+                _SIGNED_GET_TRANSPORT_HEADER: _SIGNED_GET_TRANSPORT_VALUE,
+            }, params=params, timeout=SYNC_HTTP_TIMEOUT, allow_redirects=False, stream=True,
+        )
+        if 300 <= response.status_code < 400:
+            response.close()
+            raise ExchangeException('Signed GET redirect rejected')
+        return response
+
+    @staticmethod
+    def _is_position_clock_rejection(url: str, response: requests.Response) -> bool:
+        position_url = BinanceAuxiliary.perp_url.value + BinanceAuxiliary.url_perp_position_risk.value
+        if url != position_url or response.status_code != 400:
+            return False
+        try:
+            body = response.json()
+        except ValueError:
+            return False
+        code = body.get('code') if isinstance(body, dict) else None
+        return type(code) is int and code == -1021
+
+    def _recover_position_query_clock(
+        self, url: str, params: Dict[str, Any], rejected: requests.Response,
+    ) -> requests.Response:
+        started = time.monotonic_ns()
+        try:
+            with self.session.get(
+                BinanceAuxiliary.perp_url.value + '/fapi/v1/time',
+                headers={'X-MBX-APIKEY': None, _SIGNED_GET_TRANSPORT_HEADER: _SIGNED_GET_TRANSPORT_VALUE},
+                timeout=_POSITION_CLOCK_TIMEOUT, allow_redirects=False, stream=True,
+            ) as clock:
+                if clock.status_code != 200:
+                    return rejected
+                sample = clock.json()
+        except (requests.exceptions.RequestException, ValueError):
+            return rejected
+
+        rtt_ns = time.monotonic_ns() - started
+        server_ms = sample.get('serverTime') if isinstance(sample, dict) else None
+        if type(server_ms) is not int or not 10**12 <= server_ms < 10**13 or rtt_ns > _POSITION_CLOCK_MAX_RTT_NS:
+            return rejected
+        self.logger.warning('BN positionRisk retry after -1021: clock_rtt_ms=%d server_minus_local_ms=%d',
+                            rtt_ns // 1_000_000, server_ms - self.get_timestamp())
+        # The server sample is from within the bounded round trip. Using it
+        # directly avoids advancing the signed timestamp based on local skew.
+        retry_params = {name: value for name, value in params.items() if name != 'signature'}
+        self._sign_parameters(retry_params, server_ms)
+        return self._consume_signed_get_response(self._send_signed_get(url, retry_params))
 
     @staticmethod
     def _consume_signed_get_response(response: requests.Response) -> requests.Response:
