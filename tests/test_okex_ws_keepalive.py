@@ -13,6 +13,7 @@ from unittest.mock import Mock
 import pytest
 from websocket import WebSocket, WebSocketApp
 from websocket._abnf import ABNF
+from websocket._app import SSLDispatcher
 
 from pytradekit.gateway.websocket.base_ws_manager import _TransportEvidence
 from pytradekit.gateway.websocket import base_ws_manager
@@ -115,7 +116,7 @@ def _read_opening_headers(peer):
     return bytes(data)
 
 
-@pytest.mark.parametrize('phase', ['proxy_connect', 'tls_to_upgrade', 'opened'])
+@pytest.mark.parametrize('phase', ['proxy_connect', 'tls_to_upgrade', 'opened', 'missed_shutdown_wake'])
 def test_public_opening_read_deadline_and_restore(phase, tmp_path, monkeypatch):
     for name in ('HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY'):
         monkeypatch.delenv(name, raising=False)
@@ -124,6 +125,18 @@ def test_public_opening_read_deadline_and_restore(phase, tmp_path, monkeypatch):
     manager._connect_timeout_s = 1.0
     completed = Event()
     steady_timeouts = []
+    selector_entered = Event()
+    release_selector = Event()
+
+    if phase == 'missed_shutdown_wake':
+        def lose_close_notification(dispatcher):
+            # Linux can remove a closed descriptor before a selector consumes
+            # its shutdown notification. Model only that missed wake.
+            selector_entered.set()
+            release_selector.wait(min(dispatcher.ping_timeout, 3))
+            return None
+
+        monkeypatch.setattr(SSLDispatcher, 'select', lose_close_notification)
 
     def on_open(ws):
         manager._on_open(ws)
@@ -170,7 +183,7 @@ def test_public_opening_read_deadline_and_restore(phase, tmp_path, monkeypatch):
                     with server.wrap_socket(peer, server_side=True) as tls:
                         request = _read_opening_headers(tls)
                         assert request.startswith(b'GET /quotes HTTP/1.1')
-                        if phase == 'opened':
+                        if phase in ('opened', 'missed_shutdown_wake'):
                             ws_key, = [line.split(b':', 1)[1].strip() for line in request.splitlines()
                                        if line.lower().startswith(b'sec-websocket-key:')]
                             accept = base64.b64encode(hashlib.sha1(
@@ -179,10 +192,13 @@ def test_public_opening_read_deadline_and_restore(phase, tmp_path, monkeypatch):
                                         b'Connection: Upgrade\r\nSec-WebSocket-Accept: ' + accept + b'\r\n\r\n')
                             assert completed.wait(2)
                             assert steady_timeouts == [(None, None)]
+                            if phase == 'missed_shutdown_wake':
+                                assert selector_entered.wait(2)
                             manager.close()
                         worker.join(2)
                         assert not worker.is_alive()
         finally:
+            release_selector.set()
             manager.close()
             worker.join(3)
 

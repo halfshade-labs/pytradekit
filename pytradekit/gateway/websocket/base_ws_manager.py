@@ -17,6 +17,7 @@ from pytradekit.utils.time_handler import get_monotonic_timestamp_ns, get_timest
 
 
 SLOW_CALLBACK_MS = 100
+_PUBLIC_STOP_POLL_S = 0.25
 LOCAL_CLOSE_REASONS = frozenset({
     'stop', 'connection_recovery', 'socket_close', 'socket_error', 'url_rotation',
     'handshake_timeout', 'callback_error', 'run_exit', 'heartbeat_timeout',
@@ -91,6 +92,14 @@ class WebSocketApp(_LibraryWebSocketApp):
         if self._opening_deadline_ns is not None and self.sock is not None:
             self.sock.settimeout(self._steady_timeout)
             self._opening_deadline_ns = None
+
+    def create_dispatcher(self, ping_timeout, dispatcher=None):
+        reader = super().create_dispatcher(ping_timeout, dispatcher)
+        if self._opening_deadline_ns is not None and dispatcher is None:
+            # Closing a socket can remove its selector registration before the
+            # read loop sees the shutdown wake. Bound its next stop check.
+            reader.ping_timeout = min(reader.ping_timeout, _PUBLIC_STOP_POLL_S)
+        return reader
 
 
 class _OpeningTLS:
